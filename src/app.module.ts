@@ -8,6 +8,7 @@ import { PrismaModule } from './common/prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { UsersModule } from './users/users.module';
 import { EquiposModule } from './equipos/equipos.module';
+import { InventarioModule } from './inventario/inventario.module';
 import { TerrenoModule } from './terreno/terreno.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { auth } from './auth/auth';
@@ -22,9 +23,10 @@ import { auth } from './auth/auth';
     PrismaModule,
     HealthModule,
     UsersModule,
-    // Dominio Operación en Terreno (Alexander) — EquiposModule es PROVISIONAL
-    // (solo lectura) hasta que exista el módulo real de Flota (Amin).
+    // Dominio Flota + Inventario (Amin)
     EquiposModule,
+    InventarioModule,
+    // Dominio Operación en Terreno (Alexander)
     TerrenoModule,
     UploadsModule,
     AuthModule.forRoot({
