@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { Roles } from '@thallesp/nestjs-better-auth';
 
-import { ROLES } from '../../../auth/roles';
+import { ROLES } from '../../auth/roles';
 import { HorometroService } from './horometro.service';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
 import { UpdateHorometroDto } from './dto/update-horometro.dto';

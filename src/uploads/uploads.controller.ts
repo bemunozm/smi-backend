@@ -11,7 +11,7 @@ import { diskStorage } from 'multer';
 import { existsSync, mkdirSync } from 'fs';
 import { extname, join } from 'path';
 
-import { ROLES } from '../../auth/roles';
+import { ROLES } from '../auth/roles';
 
 export const UPLOAD_DIR = join(process.cwd(), 'uploads');
 if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
