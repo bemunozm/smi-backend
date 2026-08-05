@@ -6,6 +6,7 @@ import { AuthModule } from '@thallesp/nestjs-better-auth';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { HealthModule } from './health/health.module';
+import { MantenimientoModule } from './mantenimiento/mantenimiento.module';
 import { UsersModule } from './users/users.module';
 import { auth } from './auth/auth';
 
@@ -19,6 +20,7 @@ import { auth } from './auth/auth';
     PrismaModule,
     HealthModule,
     UsersModule,
+    MantenimientoModule,
     AuthModule.forRoot({
       auth,
       // Tier 1 #1: CORS vive SOLO en main.ts (app.enableCors). Sin este

@@ -1,6 +1,7 @@
-// Prisma schema — SOLO tablas de autenticación (Better Auth).
-// Prohibido agregar modelos de dominio aquí (Equipo, Insumo, etc.):
-// ese schema lo define el equipo por separado.
+// Prisma schema — tablas de autenticación (Better Auth) + modelos de
+// dominio agregados por cada equipo dueño de su dominio. Cada dev agrega
+// SOLO los modelos de su propio dominio al final del archivo (ver
+// CLAUDE.md § "schema.prisma — zona sensible").
 
 generator client {
   provider = "prisma-client-js"
@@ -80,4 +81,136 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+// ---------------------------------------------------------------------------
+// Dominio Mantenimiento (dueño: Joaquín). Referencias a otros dominios
+// (equipoId → Equipo de Flota/Amin, insumoId → Insumo de Inventario/Amin,
+// asignadoAId/realizadaPorId → user.id de Better Auth, hallazgoId → Hallazgo
+// de Terreno) son "soft refs": strings sin relación Prisma, porque esas
+// tablas son de otros dueños y todavía no existen (o, en el caso de `user`,
+// no se agrega back-relation para no acoplar el modelo de Auth a este
+// dominio). Relaciones Prisma reales SOLO entre tablas propias de este
+// dominio (OrdenTrabajo/TareaOT/Intervencion/IntervencionInsumo).
+// ---------------------------------------------------------------------------
+
+enum EstadoOT {
+  PENDIENTE
+  ASIGNADA
+  EN_PROCESO
+  COMPLETADA
+  CANCELADA
+}
+
+enum TipoOT {
+  CORRECTIVA
+  PREVENTIVA
+}
+
+enum OrigenOT {
+  MANUAL
+  PREVENTIVO
+  HALLAZGO
+}
+
+enum PrioridadOT {
+  BAJA
+  MEDIA
+  ALTA
+  CRITICA
+}
+
+enum EstadoActividad {
+  PENDIENTE
+  COMPLETADA
+}
+
+enum OrigenActividad {
+  HALLAZGO
+  EQUIPO
+  MANUAL
+}
+
+model OrdenTrabajo {
+  id             String         @id @default(cuid())
+  equipoId       String // soft ref → Equipo (Flota/Amin), sin FK aún
+  asignadoAId    String? // soft ref → user.id
+  titulo         String
+  estado         EstadoOT       @default(PENDIENTE)
+  prioridad      PrioridadOT    @default(MEDIA)
+  tipo           TipoOT         @default(CORRECTIVA)
+  origen         OrigenOT       @default(MANUAL)
+  origenDetalle  String?
+  tareas         TareaOT[]
+  intervenciones Intervencion[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([estado])
+  @@index([equipoId])
+  @@map("orden_trabajo")
+}
+
+model TareaOT {
+  id       String       @id @default(cuid())
+  ordenId  String
+  orden    OrdenTrabajo @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  texto    String
+  hecha    Boolean      @default(false)
+  posicion Int          @default(0)
+
+  @@index([ordenId])
+  @@map("tarea_ot")
+}
+
+model Intervencion {
+  id             String               @id @default(cuid())
+  ordenId        String
+  orden          OrdenTrabajo         @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  tipo           TipoOT               @default(CORRECTIVA)
+  detalle        String
+  horasHombre    Float                @default(0)
+  horometro      Float?
+  realizadaPorId String? // soft ref → user.id
+  soloLectura    Boolean              @default(false)
+  insumos        IntervencionInsumo[]
+  fecha          DateTime             @default(now())
+
+  @@index([ordenId])
+  @@map("intervencion")
+}
+
+model IntervencionInsumo {
+  id             String       @id @default(cuid())
+  intervencionId String
+  intervencion   Intervencion @relation(fields: [intervencionId], references: [id], onDelete: Cascade)
+  insumoId       String // soft ref → Insumo (Inventario/Amin), sin FK aún
+  cantidad       Int
+
+  @@index([intervencionId])
+  @@map("intervencion_insumo")
+}
+
+model UmbralMantenimiento {
+  id             String @id @default(cuid())
+  tipoEquipo     String
+  tipoMantencion String
+  umbralHoras    Int
+
+  @@map("umbral_mantenimiento")
+}
+
+model Actividad {
+  id          String          @id @default(cuid())
+  descripcion String
+  origen      OrigenActividad @default(MANUAL)
+  referencia  String?
+  asignadoAId String? // soft ref → user.id
+  equipoId    String? // soft ref → Equipo
+  hallazgoId  String? // soft ref → Hallazgo (Terreno)
+  estado      EstadoActividad @default(PENDIENTE)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@map("actividad")
 }

@@ -20,6 +20,7 @@ import { Logger } from '@nestjs/common';
 import { prismaClient } from '../src/common/prisma/prisma.service';
 import { auth } from '../src/auth/auth';
 import { ROLES } from '../src/auth/roles';
+import { seedMantenimiento } from './seeds/mantenimiento.seed';
 
 const logger = new Logger('Seed');
 
@@ -88,6 +89,11 @@ async function seed(): Promise<void> {
       throw error;
     }
   }
+
+  // Dominio Mantenimiento (Joaquín): corre DESPUÉS de los usuarios porque
+  // resuelve el `asignadoAId` de sus OTs/actividades buscando al mantenedor
+  // seed por email.
+  await seedMantenimiento();
 }
 
 // `void` en la cadena completa: es un script top-level (no dentro de una
