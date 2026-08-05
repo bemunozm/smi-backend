@@ -1,6 +1,7 @@
-// Prisma schema — SOLO tablas de autenticación (Better Auth).
-// Prohibido agregar modelos de dominio aquí (Equipo, Insumo, etc.):
-// ese schema lo define el equipo por separado.
+// Prisma schema — tablas de autenticación (Better Auth) + dominio Operación en Terreno.
+// El `Equipo` de acá es PROVISIONAL (dueño real: Amin/Flota); se mezcla con su
+// modelo cuando lo suba. Modelos de dominio agregados por Alexander en su rama
+// (patrón del CLAUDE.md: "cada dev agrega los modelos de su dominio").
 
 generator client {
   provider = "prisma-client-js"
@@ -80,4 +81,75 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+// ============================================================================
+// Dominio: Operación en Terreno (Alexander)
+// PROVISIONAL: el modelo `Equipo` es un placeholder hasta que Amin (Flota)
+// suba el real; entonces se reconcilian estas relaciones.
+// ============================================================================
+
+model Equipo {
+  id                String   @id @default(cuid())
+  codigo            String   @unique
+  tipo              String
+  marca             String
+  modelo            String
+  estado            String   @default("OPERATIVO") // OPERATIVO | DETENIDO | MANTENIMIENTO
+  horometroActual   Float    @default(0)
+  kilometrajeActual Float    @default(0)
+
+  combustibles  RegistroCombustible[]
+  horometros    RegistroHorometro[]
+  trabajosExtra TrabajoExtraordinario[]
+  hallazgos     Hallazgo[]
+}
+
+model RegistroCombustible {
+  id       String   @id @default(cuid())
+  equipoId String
+  equipo   Equipo   @relation(fields: [equipoId], references: [id])
+  litros   Float
+  tipo     String // PETROLEO | BENCINA
+  fotoUrl  String?
+  fecha    DateTime @default(now())
+}
+
+model RegistroHorometro {
+  id               String   @id @default(cuid())
+  equipoId         String
+  equipo           Equipo   @relation(fields: [equipoId], references: [id])
+  operador         String // nombre y apellido
+  turno            String // DIURNO | NOCTURNO
+  valorInicial     Float
+  valorFinal       Float?
+  nivelCombustible Float? // % de combustible
+  fecha            DateTime @default(now())
+}
+
+model TrabajoExtraordinario {
+  id               String   @id @default(cuid())
+  equipoId         String
+  equipo           Equipo   @relation(fields: [equipoId], references: [id])
+  operador         String
+  faena            String
+  turno            String // DIURNO | NOCTURNO
+  horometroInicial Float
+  horometroFinal   Float
+  totalHoras       Float
+  actividad        String // REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL | LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA
+  descripcion      String
+  observaciones    String?
+  fecha            DateTime @default(now())
+}
+
+model Hallazgo {
+  id          String   @id @default(cuid())
+  equipoId    String
+  equipo      Equipo   @relation(fields: [equipoId], references: [id])
+  descripcion String
+  prioridad   String // BAJA | MEDIA | ALTA | CRITICA
+  estado      String   @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO
+  fotoUrl     String?
+  fecha       DateTime @default(now())
 }
