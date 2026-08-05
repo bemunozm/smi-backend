@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// PROVISIONAL — dueño real: Amin (Flota). Placeholder mínimo para resolver relaciones.
+model Equipo {
+  id                String   @id @default(cuid())
+  codigo            String   @unique
+  tipo              String
+  marca             String
+  modelo            String
+  estado            String   @default("OPERATIVO") // OPERATIVO | DETENIDO | MANTENIMIENTO
+  horometroActual   Float    @default(0)
+  kilometrajeActual Float    @default(0)
+
+  combustibles  RegistroCombustible[]
+  horometros    RegistroHorometro[]
+  trabajosExtra TrabajoExtraordinario[]
+  hallazgos     Hallazgo[]
+}
+
+model RegistroCombustible {
+  id          String   @id @default(cuid())
+  equipoId    String
+  equipo      Equipo   @relation(fields: [equipoId], references: [id])
+  litros      Float
+  fotoUrl     String?
+  rendimiento Float?
+  fecha       DateTime @default(now())
+}
+
+model RegistroHorometro {
+  id           String   @id @default(cuid())
+  equipoId     String
+  equipo       Equipo   @relation(fields: [equipoId], references: [id])
+  operadorId   String // referencia futura a user.id de Better Auth
+  turno        String // MANANA | TARDE | NOCHE
+  valorInicial Float
+  valorFinal   Float?
+  fecha        DateTime @default(now())
+}
+
+model TrabajoExtraordinario {
+  id           String   @id @default(cuid())
+  equipoId     String
+  equipo       Equipo   @relation(fields: [equipoId], references: [id])
+  cliente      String
+  horasMaquina Float
+  tonelaje     Float?
+  tarifa       Float
+  monto        Float
+  fotoUrl      String?
+  fecha        DateTime @default(now())
+}
+
+model Hallazgo {
+  id          String   @id @default(cuid())
+  equipoId    String
+  equipo      Equipo   @relation(fields: [equipoId], references: [id])
+  descripcion String
+  criticidad  String // BAJA | MEDIA | ALTA | CRITICA
+  estado      String   @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO
+  fotoUrl     String?
+  fecha       DateTime @default(now())
+}

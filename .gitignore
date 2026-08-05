@@ -43,3 +43,8 @@ lerna-debug.log*
 # Temporary folders
 tmp/
 temp/
+
+# Prisma local SQLite database (no versionar la BD de dev)
+prisma/dev.db
+prisma/dev.db-journal
+*.db
