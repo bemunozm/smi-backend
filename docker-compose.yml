@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: smi-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: smi_user
+      POSTGRES_PASSWORD: smi_password
+      POSTGRES_DB: smi_db
+    ports:
+      # Host 5433 -> contenedor 5432: el puerto 5432 del host ya está tomado
+      # por otro proyecto local (contenedor backend-postgres-1).
+      - '5433:5432'
+    volumes:
+      - smi_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U smi_user -d smi_db']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  smi_postgres_data:
