@@ -1,11 +1,13 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger, ValidationPipe } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { join } from 'path';
 
 import { env } from './common/config/env';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     // Better Auth necesita el body sin parsear; el paquete
     // @thallesp/nestjs-better-auth re-agrega los parsers por defecto
     // para el resto de las rutas.
@@ -37,6 +39,10 @@ async function bootstrap(): Promise<void> {
   // de Better Auth: éste se registra como middleware crudo sobre su propio
   // basePath ('/api/auth'), al margen del prefijo global de Nest.
   app.setGlobalPrefix('api');
+
+  // Sirve las imágenes subidas (módulo terreno/uploads) en
+  // http://localhost:PORT/uploads/... — fuera del prefijo /api.
+  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
 
   // Tier 2 #8: permite que Nest invoque OnModuleDestroy (PrismaService)
   // ante SIGINT/SIGTERM, para cerrar el pool de Postgres limpiamente.

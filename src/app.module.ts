@@ -8,6 +8,9 @@ import { PrismaModule } from './common/prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { MantenimientoModule } from './mantenimiento/mantenimiento.module';
 import { UsersModule } from './users/users.module';
+import { EquiposModule } from './modules/equipos/equipos.module';
+import { TerrenoModule } from './modules/terreno/terreno.module';
+import { UploadsModule } from './modules/uploads/uploads.module';
 import { auth } from './auth/auth';
 
 @Module({
@@ -21,6 +24,11 @@ import { auth } from './auth/auth';
     HealthModule,
     UsersModule,
     MantenimientoModule,
+    // Dominio Operación en Terreno (Alexander) — EquiposModule es PROVISIONAL
+    // (solo lectura) hasta que exista el módulo real de Flota (Amin).
+    EquiposModule,
+    TerrenoModule,
+    UploadsModule,
     AuthModule.forRoot({
       auth,
       // Tier 1 #1: CORS vive SOLO en main.ts (app.enableCors). Sin este

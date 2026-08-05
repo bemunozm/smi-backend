@@ -1,19 +1,12 @@
 /**
- * Seed de usuarios de desarrollo — un usuario por cada rol del sistema.
- * Usa `auth.api.createUser` (no un insert directo a la BD) para que la
- * contraseña quede hasheada exactamente como Better Auth espera.
+ * Seed de desarrollo. Dos partes:
+ *  1. Usuarios (Better Auth): un usuario por rol vía `auth.api.createUser`
+ *     (contraseña hasheada como Better Auth espera).
+ *  2. Operación en Terreno (Alexander): equipos PROVISIONALES (dueño real:
+ *     Amin/Flota) + registros de ejemplo de las 4 tablas del dominio.
  *
- * IMPORTANTE: `auth.api.createUser` sólo aplica los checks de permisos de
- * admin cuando se le pasan `headers`/`request` en el contexto. Al llamarlo
- * server-side sin headers (como aquí), Better Auth lo trata como una
- * operación de confianza (trusted server call) y no exige sesión de admin
- * — es el patrón soportado para scripts de seed/migración.
- *
- * Prisma (Tier 2 #8): este script es un proceso Node aparte del server de
- * Nest, así que nunca corre `PrismaService.onModuleDestroy` automáticamente.
- * Para no abrir un segundo pool reutiliza el MISMO singleton `prismaClient`
- * que usa `auth.ts` (ver src/common/prisma/prisma.service.ts), y cierra la
- * conexión explícitamente al final.
+ * Reutiliza el MISMO singleton `prismaClient` que usa `auth.ts` (una sola pool),
+ * y cierra la conexión explícitamente al final.
  */
 import { Logger } from '@nestjs/common';
 
@@ -34,16 +27,8 @@ interface SeedUser {
 
 const SEED_USERS: SeedUser[] = [
   { name: 'Admin SMI', email: 'admin@smi.local', role: ROLES.ADMIN },
-  {
-    name: 'Supervisor SMI',
-    email: 'supervisor@smi.local',
-    role: ROLES.SUPERVISOR,
-  },
-  {
-    name: 'Mantenedor SMI',
-    email: 'mantenedor@smi.local',
-    role: ROLES.MANTENEDOR,
-  },
+  { name: 'Supervisor SMI', email: 'supervisor@smi.local', role: ROLES.SUPERVISOR },
+  { name: 'Mantenedor SMI', email: 'mantenedor@smi.local', role: ROLES.MANTENEDOR },
   { name: 'Operador SMI', email: 'operador@smi.local', role: ROLES.OPERADOR },
 ];
 
@@ -58,20 +43,9 @@ function isUserAlreadyExistsError(error: unknown): boolean {
   );
 }
 
-async function seed(): Promise<void> {
-  // A2 (auditoría de seguridad): el seed crea usuarios con contraseña de
-  // desarrollo conocida — nunca debe poder correr contra un entorno de
-  // producción, sin importar quién lo dispare.
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('Seed with dev credentials must NOT run in production');
-  }
-
+async function seedUsers(): Promise<void> {
   for (const seedUser of SEED_USERS) {
     try {
-      // Tier 3 #11: con `ac`/`roles` custom configurados en auth.ts, el
-      // tipo de `role` ya infiere los 4 roles reales (ADMIN|SUPERVISOR|
-      // MANTENEDOR|OPERADOR) — ya no hace falta castear contra el default
-      // built-in "admin"|"user" de Better Auth.
       await auth.api.createUser({
         body: {
           email: seedUser.email,
@@ -96,9 +70,71 @@ async function seed(): Promise<void> {
   await seedMantenimiento();
 }
 
-// `void` en la cadena completa: es un script top-level (no dentro de una
-// función async), y con `@typescript-eslint/no-floating-promises` en
-// 'error' hay que marcar explícitamente que no se espera esta promesa.
+// PROVISIONAL — normalmente los equipos los siembra Amin (Flota).
+const EQUIPOS = [
+  { codigo: 'EX-001', tipo: 'Excavadora', marca: 'Caterpillar', modelo: '336', estado: 'OPERATIVO', horometroActual: 1200 },
+  { codigo: 'CG-002', tipo: 'Cargador', marca: 'Komatsu', modelo: 'WA320', estado: 'OPERATIVO', horometroActual: 800 },
+  { codigo: 'CM-003', tipo: 'Camión', marca: 'Volvo', modelo: 'FMX', estado: 'MANTENIMIENTO', horometroActual: 5400 },
+  { codigo: 'PE-004', tipo: 'Perforadora', marca: 'Sandvik', modelo: 'DP1500', estado: 'DETENIDO', horometroActual: 300 },
+  { codigo: 'BD-005', tipo: 'Bulldozer', marca: 'Caterpillar', modelo: 'D6', estado: 'OPERATIVO', horometroActual: 2100 },
+  { codigo: 'CM-006', tipo: 'Camión', marca: 'Scania', modelo: 'R450', estado: 'OPERATIVO', horometroActual: 3300 },
+];
+
+async function seedTerreno(): Promise<void> {
+  await prismaClient.registroCombustible.deleteMany();
+  await prismaClient.registroHorometro.deleteMany();
+  await prismaClient.trabajoExtraordinario.deleteMany();
+  await prismaClient.hallazgo.deleteMany();
+  await prismaClient.equipo.deleteMany();
+
+  const equipos: { id: string }[] = [];
+  for (const e of EQUIPOS) equipos.push(await prismaClient.equipo.create({ data: e }));
+
+  await prismaClient.registroCombustible.createMany({
+    data: [
+      { equipoId: equipos[0].id, litros: 120, tipo: 'PETROLEO' },
+      { equipoId: equipos[1].id, litros: 90, tipo: 'PETROLEO' },
+      { equipoId: equipos[5].id, litros: 45, tipo: 'BENCINA' },
+    ],
+  });
+
+  await prismaClient.registroHorometro.createMany({
+    data: [
+      { equipoId: equipos[0].id, operador: 'Juan Rojas', turno: 'DIURNO', valorInicial: 1180, valorFinal: 1200, nivelCombustible: 75 },
+      { equipoId: equipos[1].id, operador: 'Marcela Díaz', turno: 'NOCTURNO', valorInicial: 790, valorFinal: 800, nivelCombustible: 40 },
+    ],
+  });
+
+  await prismaClient.trabajoExtraordinario.createMany({
+    data: [
+      { equipoId: equipos[2].id, operador: 'Juan Rojas', faena: 'Rajo Norte', turno: 'DIURNO', horometroInicial: 5388, horometroFinal: 5400, totalHoras: 12, actividad: 'REGULACION_CARGA', descripcion: 'Regulación y carga de material en frente 3.', observaciones: 'Sin novedades.' },
+      { equipoId: equipos[5].id, operador: 'Pedro Soto', faena: 'Rajo Sur', turno: 'NOCTURNO', horometroInicial: 3292, horometroFinal: 3300, totalHoras: 8, actividad: 'LIMPIEZA_CANCHA', descripcion: 'Limpieza de cancha de acopio.', observaciones: null },
+    ],
+  });
+
+  await prismaClient.hallazgo.createMany({
+    data: [
+      { equipoId: equipos[3].id, descripcion: 'Fuga de aceite hidráulico en cilindro de levante', prioridad: 'ALTA', estado: 'ABIERTO' },
+      { equipoId: equipos[0].id, descripcion: 'Ruido anormal en motor al acelerar en vacío', prioridad: 'MEDIA', estado: 'EN_PROCESO' },
+      { equipoId: equipos[2].id, descripcion: 'Frenos con baja respuesta — equipo fuera de servicio', prioridad: 'CRITICA', estado: 'ABIERTO' },
+    ],
+  });
+
+  logger.log(`Terreno: ${equipos.length} equipos + registros de ejemplo`);
+}
+
+async function seed(): Promise<void> {
+  // A2 (auditoría de seguridad): el seed crea usuarios con contraseña de
+  // desarrollo conocida — nunca debe poder correr contra un entorno de
+  // producción, sin importar quién lo dispare.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Seed with dev credentials must NOT run in production');
+  }
+
+  await seedUsers();
+  await seedTerreno();
+}
+
 void seed()
   .then(() => {
     logger.log('Seed completado.');
