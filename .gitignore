@@ -48,3 +48,7 @@ temp/
 prisma/dev.db
 prisma/dev.db-journal
 *.db
+
+# Imágenes subidas (no versionar los archivos, sí la carpeta)
+uploads/*
+!uploads/.gitkeep
