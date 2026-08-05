@@ -283,3 +283,137 @@ model Hallazgo {
   fotoUrl     String?
   fecha       DateTime @default(now())
 }
+
+// ---------------------------------------------------------------------------
+// 4. Dominio Mantenimiento (dueño: Joaquín). Órdenes de trabajo, bitácora de
+// intervención, motor preventivo y actividades.
+//
+// Referencias a otros dominios (equipoId → Equipo de Flota, insumoId → Insumo
+// de Inventario, hallazgoId → Hallazgo de Terreno, asignadoAId/realizadaPorId →
+// user.id de Better Auth) se mantienen como "soft refs": String sin relación
+// Prisma. Esas tablas ya existen, pero se dejan desacopladas por ahora para no
+// atar esta migración a las de Flota/Inventario/Terreno; convertirlas a FK real
+// es un cambio a coordinar con Amin/Alexander. Relaciones Prisma reales SOLO
+// entre tablas propias de este dominio.
+// ---------------------------------------------------------------------------
+
+enum EstadoOT {
+  PENDIENTE
+  ASIGNADA
+  EN_PROCESO
+  COMPLETADA
+  CANCELADA
+}
+
+enum TipoOT {
+  CORRECTIVA
+  PREVENTIVA
+}
+
+enum OrigenOT {
+  MANUAL
+  PREVENTIVO
+  HALLAZGO
+}
+
+enum PrioridadOT {
+  BAJA
+  MEDIA
+  ALTA
+  CRITICA
+}
+
+enum EstadoActividad {
+  PENDIENTE
+  COMPLETADA
+}
+
+enum OrigenActividad {
+  HALLAZGO
+  EQUIPO
+  MANUAL
+}
+
+model OrdenTrabajo {
+  id             String         @id @default(cuid())
+  equipoId       String // soft ref → Equipo (Flota/Amin)
+  asignadoAId    String? // soft ref → user.id
+  titulo         String
+  estado         EstadoOT       @default(PENDIENTE)
+  prioridad      PrioridadOT    @default(MEDIA)
+  tipo           TipoOT         @default(CORRECTIVA)
+  origen         OrigenOT       @default(MANUAL)
+  origenDetalle  String?
+  tareas         TareaOT[]
+  intervenciones Intervencion[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([estado])
+  @@index([equipoId])
+  @@map("orden_trabajo")
+}
+
+model TareaOT {
+  id       String       @id @default(cuid())
+  ordenId  String
+  orden    OrdenTrabajo @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  texto    String
+  hecha    Boolean      @default(false)
+  posicion Int          @default(0)
+
+  @@index([ordenId])
+  @@map("tarea_ot")
+}
+
+model Intervencion {
+  id             String               @id @default(cuid())
+  ordenId        String
+  orden          OrdenTrabajo         @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  tipo           TipoOT               @default(CORRECTIVA)
+  detalle        String
+  horasHombre    Float                @default(0)
+  horometro      Float?
+  realizadaPorId String? // soft ref → user.id
+  soloLectura    Boolean              @default(false)
+  insumos        IntervencionInsumo[]
+  fecha          DateTime             @default(now())
+
+  @@index([ordenId])
+  @@map("intervencion")
+}
+
+model IntervencionInsumo {
+  id             String       @id @default(cuid())
+  intervencionId String
+  intervencion   Intervencion @relation(fields: [intervencionId], references: [id], onDelete: Cascade)
+  insumoId       String // soft ref → Insumo (Inventario/Amin)
+  cantidad       Int
+
+  @@index([intervencionId])
+  @@map("intervencion_insumo")
+}
+
+model UmbralMantenimiento {
+  id             String @id @default(cuid())
+  tipoEquipo     String
+  tipoMantencion String
+  umbralHoras    Int
+
+  @@map("umbral_mantenimiento")
+}
+
+model Actividad {
+  id          String          @id @default(cuid())
+  descripcion String
+  origen      OrigenActividad @default(MANUAL)
+  referencia  String?
+  asignadoAId String? // soft ref → user.id
+  equipoId    String? // soft ref → Equipo
+  hallazgoId  String? // soft ref → Hallazgo (Terreno)
+  estado      EstadoActividad @default(PENDIENTE)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@map("actividad")
+}

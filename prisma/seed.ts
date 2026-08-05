@@ -23,6 +23,7 @@ import { prismaClient } from '../src/common/prisma/prisma.service';
 import { auth } from '../src/auth/auth';
 import { ROLES } from '../src/auth/roles';
 import { InventarioService } from '../src/inventario/inventario.service';
+import { seedMantenimiento } from './seeds/mantenimiento.seed';
 
 const logger = new Logger('Seed');
 
@@ -468,6 +469,10 @@ async function seed(): Promise<void> {
   // Terreno depende de Flota: los equipos se crean primero y se pasan.
   const equipos = await seedFlotaEInventario(admin?.id ?? null);
   await seedTerreno(equipos);
+
+  // Dominio Mantenimiento (Joaquín): corre al final; resuelve el asignadoAId
+  // buscando al mantenedor seed por email. No depende de Flota/Terreno (soft refs).
+  await seedMantenimiento();
 }
 
 void seed()
