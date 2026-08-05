@@ -11,28 +11,28 @@ export const ACTIVIDADES = [
 
 export class CreateTrabajoExtraDto {
   @IsString()
-  equipoId: string;
+  equipoId!: string;
 
   @IsString()
-  operador: string;
+  operador!: string;
 
   @IsString()
-  faena: string;
+  faena!: string;
 
   @IsIn(['DIURNO', 'NOCTURNO'])
-  turno: string;
+  turno!: string;
 
   @IsNumber()
-  horometroInicial: number;
+  horometroInicial!: number;
 
   @IsNumber()
-  horometroFinal: number;
+  horometroFinal!: number;
 
   @IsIn(ACTIVIDADES as unknown as string[])
-  actividad: string;
+  actividad!: string;
 
   @IsString()
-  descripcion: string;
+  descripcion!: string;
 
   @IsOptional()
   @IsString()

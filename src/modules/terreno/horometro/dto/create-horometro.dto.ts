@@ -2,16 +2,16 @@ import { IsIn, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateHorometroDto {
   @IsString()
-  equipoId: string;
+  equipoId!: string;
 
   @IsString()
-  operador: string;
+  operador!: string;
 
   @IsIn(['DIURNO', 'NOCTURNO'])
-  turno: string;
+  turno!: string;
 
   @IsNumber()
-  valorInicial: number;
+  valorInicial!: number;
 
   @IsOptional()
   @IsNumber()

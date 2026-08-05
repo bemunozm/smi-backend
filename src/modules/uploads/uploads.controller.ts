@@ -6,10 +6,12 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Roles } from '@thallesp/nestjs-better-auth';
 import { diskStorage } from 'multer';
 import { existsSync, mkdirSync } from 'fs';
 import { extname, join } from 'path';
-import { Roles } from '../../common/decorators/roles.decorator';
+
+import { ROLES } from '../../auth/roles';
 
 export const UPLOAD_DIR = join(process.cwd(), 'uploads');
 if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -17,7 +19,7 @@ if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
 @Controller('uploads')
 export class UploadsController {
   @Post()
-  @Roles('SUPERVISOR', 'ADMIN')
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
   @UseInterceptors(
     FileInterceptor('file', {
       storage: diskStorage({
@@ -36,6 +38,6 @@ export class UploadsController {
   )
   upload(@UploadedFile() file?: Express.Multer.File) {
     if (!file) throw new BadRequestException('No se recibió archivo');
-    return { url: `/uploads/${file.filename}` };
+    return { data: { url: `/uploads/${file.filename}` }, message: 'Archivo subido' };
   }
 }

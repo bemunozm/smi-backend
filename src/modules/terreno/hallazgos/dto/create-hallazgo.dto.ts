@@ -2,13 +2,13 @@ import { IsIn, IsOptional, IsString } from 'class-validator';
 
 export class CreateHallazgoDto {
   @IsString()
-  equipoId: string;
+  equipoId!: string;
 
   @IsString()
-  descripcion: string;
+  descripcion!: string;
 
   @IsIn(['BAJA', 'MEDIA', 'ALTA', 'CRITICA'])
-  prioridad: string;
+  prioridad!: string;
 
   @IsOptional()
   @IsString()

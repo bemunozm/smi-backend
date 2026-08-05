@@ -2,14 +2,14 @@ import { IsIn, IsNumber, IsOptional, IsPositive, IsString } from 'class-validato
 
 export class CreateCombustibleDto {
   @IsString()
-  equipoId: string;
+  equipoId!: string;
 
   @IsNumber()
   @IsPositive()
-  litros: number;
+  litros!: number;
 
   @IsIn(['PETROLEO', 'BENCINA'])
-  tipo: string;
+  tipo!: string;
 
   @IsOptional()
   @IsString()

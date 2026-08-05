@@ -1,32 +1,34 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Roles } from '@thallesp/nestjs-better-auth';
+
+import { ROLES } from '../../../auth/roles';
 import { HallazgosService } from './hallazgos.service';
 import { CreateHallazgoDto } from './dto/create-hallazgo.dto';
 import { UpdateHallazgoDto } from './dto/update-hallazgo.dto';
-import { Roles } from '../../../common/decorators/roles.decorator';
 
 @Controller('hallazgos')
 export class HallazgosController {
   constructor(private readonly service: HallazgosService) {}
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  async findAll() {
+    return { data: await this.service.findAll(), message: 'ok' };
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.service.findOne(id);
+  async findOne(@Param('id') id: string) {
+    return { data: await this.service.findOne(id), message: 'ok' };
   }
 
   @Post()
-  @Roles('SUPERVISOR', 'ADMIN')
-  create(@Body() dto: CreateHallazgoDto) {
-    return this.service.create(dto);
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  async create(@Body() dto: CreateHallazgoDto) {
+    return { data: await this.service.create(dto), message: 'Hallazgo registrado' };
   }
 
   @Patch(':id')
-  @Roles('SUPERVISOR', 'ADMIN')
-  update(@Param('id') id: string, @Body() dto: UpdateHallazgoDto) {
-    return this.service.update(id, dto);
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  async update(@Param('id') id: string, @Body() dto: UpdateHallazgoDto) {
+    return { data: await this.service.update(id, dto), message: 'Hallazgo actualizado' };
   }
 }

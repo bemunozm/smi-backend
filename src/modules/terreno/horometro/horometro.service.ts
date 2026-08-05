@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../../../prisma/prisma.service';
+import { PrismaService } from '../../../common/prisma/prisma.service';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
 import { UpdateHorometroDto } from './dto/update-horometro.dto';
 

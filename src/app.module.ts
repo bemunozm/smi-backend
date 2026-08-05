@@ -1,11 +1,49 @@
 import { Module } from '@nestjs/common';
-import { PrismaModule } from './prisma/prisma.module';
-import { CommonModule } from './common/common.module';
+import { APP_FILTER } from '@nestjs/core';
+import { ConfigModule } from '@nestjs/config';
+import { AuthModule } from '@thallesp/nestjs-better-auth';
+
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { PrismaModule } from './common/prisma/prisma.module';
+import { HealthModule } from './health/health.module';
+import { UsersModule } from './users/users.module';
 import { EquiposModule } from './modules/equipos/equipos.module';
 import { TerrenoModule } from './modules/terreno/terreno.module';
 import { UploadsModule } from './modules/uploads/uploads.module';
+import { auth } from './auth/auth';
 
 @Module({
-  imports: [PrismaModule, CommonModule, EquiposModule, TerrenoModule, UploadsModule],
+  imports: [
+    // Global para que los módulos de dominio puedan inyectar ConfigService
+    // de forma idiomática. `auth.ts`/`main.ts` NO lo usan (corren fuera o
+    // antes del ciclo de Nest) — leen `src/common/config/env.ts` directo,
+    // que es la única fuente de verdad validada de env. Ver ese archivo.
+    ConfigModule.forRoot({ isGlobal: true }),
+    PrismaModule,
+    HealthModule,
+    UsersModule,
+    // Dominio Operación en Terreno (Alexander) — EquiposModule es PROVISIONAL
+    // (solo lectura) hasta que exista el módulo real de Flota (Amin).
+    EquiposModule,
+    TerrenoModule,
+    UploadsModule,
+    AuthModule.forRoot({
+      auth,
+      // Tier 1 #1: CORS vive SOLO en main.ts (app.enableCors). Sin este
+      // flag, AuthModule detecta `trustedOrigins` (array) y llama su
+      // propio `enableCors` con methods limitados (sin PATCH/DELETE
+      // completos) — doble configuración que solo "funciona" por orden de
+      // middlewares. Con el flag, `trustedOrigins` sigue siendo usado por
+      // Better Auth para su propia validación de origin/CSRF, pero ya no
+      // dispara una segunda config de CORS a nivel de Nest.
+      disableTrustedOriginsCors: true,
+    }),
+  ],
+  providers: [
+    {
+      provide: APP_FILTER,
+      useClass: HttpExceptionFilter,
+    },
+  ],
 })
 export class AppModule {}

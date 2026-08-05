@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { HorometroService } from './horometro.service';
-import { PrismaService } from '../../../prisma/prisma.service';
+import { PrismaService } from '../../../common/prisma/prisma.service';
 
 describe('HorometroService', () => {
   let service: HorometroService;

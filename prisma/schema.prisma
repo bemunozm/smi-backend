@@ -1,13 +1,94 @@
+// Prisma schema — tablas de autenticación (Better Auth) + dominio Operación en Terreno.
+// El `Equipo` de acá es PROVISIONAL (dueño real: Amin/Flota); se mezcla con su
+// modelo cuando lo suba. Modelos de dominio agregados por Alexander en su rama
+// (patrón del CLAUDE.md: "cada dev agrega los modelos de su dominio").
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-// PROVISIONAL — dueño real: Amin (Flota). Placeholder mínimo para resolver relaciones.
+model User {
+  id            String    @id
+  name          String
+  email         String
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  /// Valores válidos: ADMIN | SUPERVISOR | MANTENEDOR | OPERADOR (ver src/auth/roles.ts).
+  /// String (no enum Prisma) a propósito: el admin plugin de Better Auth tipa
+  /// el rol como string dinámico; un enum Prisma introduciría fricción de tipos.
+  role          String    @default("OPERADOR")
+  banned        Boolean?  @default(false)
+  banReason     String?
+  banExpires    DateTime?
+  sessions      Session[]
+  accounts      Account[]
+
+  @@unique([email])
+  @@map("user")
+}
+
+model Session {
+  id             String   @id
+  expiresAt      DateTime
+  token          String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  ipAddress      String?
+  userAgent      String?
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  impersonatedBy String?
+
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ============================================================================
+// Dominio: Operación en Terreno (Alexander)
+// PROVISIONAL: el modelo `Equipo` es un placeholder hasta que Amin (Flota)
+// suba el real; entonces se reconcilian estas relaciones.
+// ============================================================================
+
 model Equipo {
   id                String   @id @default(cuid())
   codigo            String   @unique
@@ -56,7 +137,7 @@ model TrabajoExtraordinario {
   horometroInicial Float
   horometroFinal   Float
   totalHoras       Float
-  actividad        String // regulacion-carga | limpieza-cancha | soltar-material | limpieza-silos | hacer-petril | arreglo-cancha
+  actividad        String // REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL | LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA
   descripcion      String
   observaciones    String?
   fecha            DateTime @default(now())
