@@ -18,15 +18,15 @@ describe('CombustibleService', () => {
     prisma.registroCombustible.create.mockImplementation(({ data }: any) => data);
   });
 
-  it('calcula rendimiento = delta / litros', async () => {
-    prisma.equipo.findUnique.mockResolvedValue({ id: 'e1', horometroActual: 100 });
-    const res = await service.create({ equipoId: 'e1', litros: 10, lecturaActual: 150 } as any);
-    expect(res.rendimiento).toBe(5);
+  it('guarda litros y tipo de combustible', async () => {
+    prisma.equipo.findUnique.mockResolvedValue({ id: 'e1' });
+    const res = await service.create({ equipoId: 'e1', litros: 120, tipo: 'PETROLEO' } as any);
+    expect(res.litros).toBe(120);
+    expect(res.tipo).toBe('PETROLEO');
   });
 
-  it('deja rendimiento null si no hay lecturaActual', async () => {
-    prisma.equipo.findUnique.mockResolvedValue({ id: 'e1', horometroActual: 100 });
-    const res = await service.create({ equipoId: 'e1', litros: 10 } as any);
-    expect(res.rendimiento).toBeNull();
+  it('rechaza si el equipo no existe', async () => {
+    prisma.equipo.findUnique.mockResolvedValue(null);
+    await expect(service.create({ equipoId: 'x', litros: 10, tipo: 'BENCINA' } as any)).rejects.toThrow();
   });
 });

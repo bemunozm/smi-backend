@@ -24,31 +24,53 @@ async function main() {
 
   await prisma.registroCombustible.createMany({
     data: [
-      { equipoId: equipos[0].id, litros: 120, rendimiento: 4.5 },
-      { equipoId: equipos[1].id, litros: 90, rendimiento: 5.1 },
-      { equipoId: equipos[5].id, litros: 200, rendimiento: 3.8 },
+      { equipoId: equipos[0].id, litros: 120, tipo: 'PETROLEO' },
+      { equipoId: equipos[1].id, litros: 90, tipo: 'PETROLEO' },
+      { equipoId: equipos[5].id, litros: 45, tipo: 'BENCINA' },
     ],
   });
 
   await prisma.registroHorometro.createMany({
     data: [
-      { equipoId: equipos[0].id, operadorId: 'user-operador-1', turno: 'MANANA', valorInicial: 1180, valorFinal: 1200 },
-      { equipoId: equipos[1].id, operadorId: 'user-operador-2', turno: 'TARDE', valorInicial: 790, valorFinal: 800 },
+      { equipoId: equipos[0].id, operador: 'Juan Rojas', turno: 'DIURNO', valorInicial: 1180, valorFinal: 1200, nivelCombustible: 75 },
+      { equipoId: equipos[1].id, operador: 'Marcela Díaz', turno: 'NOCTURNO', valorInicial: 790, valorFinal: 800, nivelCombustible: 40 },
     ],
   });
 
   await prisma.trabajoExtraordinario.createMany({
     data: [
-      { equipoId: equipos[2].id, cliente: 'Minera Norte', horasMaquina: 12, tonelaje: 340, tarifa: 85000, monto: 1020000 },
-      { equipoId: equipos[5].id, cliente: 'Áridos Sur', horasMaquina: 8, tonelaje: 210, tarifa: 70000, monto: 560000 },
+      {
+        equipoId: equipos[2].id,
+        operador: 'Juan Rojas',
+        faena: 'Rajo Norte',
+        turno: 'DIURNO',
+        horometroInicial: 5388,
+        horometroFinal: 5400,
+        totalHoras: 12,
+        actividad: 'REGULACION_CARGA',
+        descripcion: 'Regulación y carga de material en frente 3.',
+        observaciones: 'Sin novedades.',
+      },
+      {
+        equipoId: equipos[5].id,
+        operador: 'Pedro Soto',
+        faena: 'Rajo Sur',
+        turno: 'NOCTURNO',
+        horometroInicial: 3292,
+        horometroFinal: 3300,
+        totalHoras: 8,
+        actividad: 'LIMPIEZA_CANCHA',
+        descripcion: 'Limpieza de cancha de acopio.',
+        observaciones: null,
+      },
     ],
   });
 
   await prisma.hallazgo.createMany({
     data: [
-      { equipoId: equipos[3].id, descripcion: 'Fuga de aceite hidráulico', criticidad: 'ALTA', estado: 'ABIERTO' },
-      { equipoId: equipos[0].id, descripcion: 'Ruido anormal en el motor', criticidad: 'MEDIA', estado: 'EN_PROCESO' },
-      { equipoId: equipos[2].id, descripcion: 'Frenos con baja respuesta', criticidad: 'CRITICA', estado: 'ABIERTO' },
+      { equipoId: equipos[3].id, descripcion: 'Fuga de aceite hidráulico en cilindro de levante', prioridad: 'ALTA', estado: 'ABIERTO' },
+      { equipoId: equipos[0].id, descripcion: 'Ruido anormal en motor al acelerar en vacío', prioridad: 'MEDIA', estado: 'EN_PROCESO' },
+      { equipoId: equipos[2].id, descripcion: 'Frenos con baja respuesta — equipo fuera de servicio', prioridad: 'CRITICA', estado: 'ABIERTO' },
     ],
   });
 

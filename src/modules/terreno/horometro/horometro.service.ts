@@ -14,10 +14,11 @@ export class HorometroService {
     const registro = await this.prisma.registroHorometro.create({
       data: {
         equipoId: dto.equipoId,
-        operadorId: dto.operadorId,
+        operador: dto.operador,
         turno: dto.turno,
         valorInicial: dto.valorInicial,
         valorFinal: dto.valorFinal ?? null,
+        nivelCombustible: dto.nivelCombustible ?? null,
       },
     });
 
@@ -26,8 +27,7 @@ export class HorometroService {
         where: { id: dto.equipoId },
         data: { horometroActual: dto.valorFinal },
       });
-      // TODO(motor-preventivo): disparar el umbral de Mantenimiento (Joaquín, guía §5)
-      // cuando exista el módulo. Aquí se compararía valorFinal contra UmbralMantenimiento.
+      // TODO(motor-preventivo): disparar el umbral de Mantenimiento (Joaquín, guía §5).
     }
 
     return registro;

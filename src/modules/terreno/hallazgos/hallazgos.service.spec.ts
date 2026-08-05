@@ -19,8 +19,9 @@ describe('HallazgosService', () => {
     prisma.hallazgo.create.mockImplementation(({ data }: any) => data);
   });
 
-  it('crea con estado ABIERTO por defecto', async () => {
-    const res = await service.create({ equipoId: 'e1', descripcion: 'Fuga', criticidad: 'ALTA' } as any);
+  it('crea con estado ABIERTO y guarda la prioridad', async () => {
+    const res = await service.create({ equipoId: 'e1', descripcion: 'Fuga', prioridad: 'ALTA' } as any);
     expect(res.estado).toBe('ABIERTO');
+    expect(res.prioridad).toBe('ALTA');
   });
 });

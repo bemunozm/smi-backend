@@ -25,37 +25,41 @@ model Equipo {
 }
 
 model RegistroCombustible {
-  id          String   @id @default(cuid())
-  equipoId    String
-  equipo      Equipo   @relation(fields: [equipoId], references: [id])
-  litros      Float
-  fotoUrl     String?
-  rendimiento Float?
-  fecha       DateTime @default(now())
+  id       String   @id @default(cuid())
+  equipoId String
+  equipo   Equipo   @relation(fields: [equipoId], references: [id])
+  litros   Float
+  tipo     String // PETROLEO | BENCINA
+  fotoUrl  String?
+  fecha    DateTime @default(now())
 }
 
 model RegistroHorometro {
-  id           String   @id @default(cuid())
-  equipoId     String
-  equipo       Equipo   @relation(fields: [equipoId], references: [id])
-  operadorId   String // referencia futura a user.id de Better Auth
-  turno        String // MANANA | TARDE | NOCHE
-  valorInicial Float
-  valorFinal   Float?
-  fecha        DateTime @default(now())
+  id               String   @id @default(cuid())
+  equipoId         String
+  equipo           Equipo   @relation(fields: [equipoId], references: [id])
+  operador         String // nombre y apellido
+  turno            String // DIURNO | NOCTURNO
+  valorInicial     Float
+  valorFinal       Float?
+  nivelCombustible Float? // % de combustible
+  fecha            DateTime @default(now())
 }
 
 model TrabajoExtraordinario {
-  id           String   @id @default(cuid())
-  equipoId     String
-  equipo       Equipo   @relation(fields: [equipoId], references: [id])
-  cliente      String
-  horasMaquina Float
-  tonelaje     Float?
-  tarifa       Float
-  monto        Float
-  fotoUrl      String?
-  fecha        DateTime @default(now())
+  id               String   @id @default(cuid())
+  equipoId         String
+  equipo           Equipo   @relation(fields: [equipoId], references: [id])
+  operador         String
+  faena            String
+  turno            String // DIURNO | NOCTURNO
+  horometroInicial Float
+  horometroFinal   Float
+  totalHoras       Float
+  actividad        String // regulacion-carga | limpieza-cancha | soltar-material | limpieza-silos | hacer-petril | arreglo-cancha
+  descripcion      String
+  observaciones    String?
+  fecha            DateTime @default(now())
 }
 
 model Hallazgo {
@@ -63,7 +67,7 @@ model Hallazgo {
   equipoId    String
   equipo      Equipo   @relation(fields: [equipoId], references: [id])
   descripcion String
-  criticidad  String // BAJA | MEDIA | ALTA | CRITICA
+  prioridad   String // BAJA | MEDIA | ALTA | CRITICA
   estado      String   @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO
   fotoUrl     String?
   fecha       DateTime @default(now())

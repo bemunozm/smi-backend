@@ -19,10 +19,17 @@ describe('TrabajosExtraService', () => {
     prisma.trabajoExtraordinario.create.mockImplementation(({ data }: any) => data);
   });
 
-  it('calcula monto = horasMaquina * tarifa', async () => {
+  it('calcula totalHoras = horometroFinal - horometroInicial', async () => {
     const res = await service.create({
-      equipoId: 'e1', cliente: 'X', horasMaquina: 12, tarifa: 85000,
+      equipoId: 'e1',
+      operador: 'Juan Rojas',
+      faena: 'Rajo Norte',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      actividad: 'REGULACION_CARGA',
+      descripcion: 'Carga de material',
     } as any);
-    expect(res.monto).toBe(1020000);
+    expect(res.totalHoras).toBe(12);
   });
 });

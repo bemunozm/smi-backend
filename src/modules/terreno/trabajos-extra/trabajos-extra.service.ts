@@ -11,16 +11,19 @@ export class TrabajosExtraService {
     const equipo = await this.prisma.equipo.findUnique({ where: { id: dto.equipoId } });
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
-    const monto = Number((dto.horasMaquina * dto.tarifa).toFixed(2));
+    const totalHoras = Number(Math.max(0, dto.horometroFinal - dto.horometroInicial).toFixed(2));
     return this.prisma.trabajoExtraordinario.create({
       data: {
         equipoId: dto.equipoId,
-        cliente: dto.cliente,
-        horasMaquina: dto.horasMaquina,
-        tonelaje: dto.tonelaje ?? null,
-        tarifa: dto.tarifa,
-        monto,
-        fotoUrl: dto.fotoUrl ?? null,
+        operador: dto.operador,
+        faena: dto.faena,
+        turno: dto.turno,
+        horometroInicial: dto.horometroInicial,
+        horometroFinal: dto.horometroFinal,
+        totalHoras,
+        actividad: dto.actividad,
+        descripcion: dto.descripcion,
+        observaciones: dto.observaciones ?? null,
       },
     });
   }

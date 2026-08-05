@@ -5,9 +5,9 @@ export class CreateHorometroDto {
   equipoId: string;
 
   @IsString()
-  operadorId: string;
+  operador: string;
 
-  @IsIn(['MANANA', 'TARDE', 'NOCHE'])
+  @IsIn(['DIURNO', 'NOCTURNO'])
   turno: string;
 
   @IsNumber()
@@ -16,4 +16,8 @@ export class CreateHorometroDto {
   @IsOptional()
   @IsNumber()
   valorFinal?: number;
+
+  @IsOptional()
+  @IsNumber()
+  nivelCombustible?: number;
 }

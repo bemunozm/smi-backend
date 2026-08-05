@@ -11,14 +11,13 @@ export class CombustibleService {
     const equipo = await this.prisma.equipo.findUnique({ where: { id: dto.equipoId } });
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
-    let rendimiento: number | null = null;
-    if (dto.lecturaActual != null && dto.litros > 0) {
-      const delta = dto.lecturaActual - equipo.horometroActual;
-      rendimiento = delta > 0 ? Number((delta / dto.litros).toFixed(2)) : null;
-    }
-
     return this.prisma.registroCombustible.create({
-      data: { equipoId: dto.equipoId, litros: dto.litros, fotoUrl: dto.fotoUrl ?? null, rendimiento },
+      data: {
+        equipoId: dto.equipoId,
+        litros: dto.litros,
+        tipo: dto.tipo,
+        fotoUrl: dto.fotoUrl ?? null,
+      },
     });
   }
 

@@ -8,7 +8,7 @@ export class CreateHallazgoDto {
   descripcion: string;
 
   @IsIn(['BAJA', 'MEDIA', 'ALTA', 'CRITICA'])
-  criticidad: string;
+  prioridad: string;
 
   @IsOptional()
   @IsString()

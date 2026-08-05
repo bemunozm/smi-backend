@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
 
 export class CreateCombustibleDto {
   @IsString()
@@ -8,11 +8,10 @@ export class CreateCombustibleDto {
   @IsPositive()
   litros: number;
 
+  @IsIn(['PETROLEO', 'BENCINA'])
+  tipo: string;
+
   @IsOptional()
   @IsString()
   fotoUrl?: string;
-
-  @IsOptional()
-  @IsNumber()
-  lecturaActual?: number;
 }

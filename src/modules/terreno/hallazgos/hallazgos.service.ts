@@ -15,7 +15,7 @@ export class HallazgosService {
       data: {
         equipoId: dto.equipoId,
         descripcion: dto.descripcion,
-        criticidad: dto.criticidad,
+        prioridad: dto.prioridad,
         estado: 'ABIERTO',
         fotoUrl: dto.fotoUrl ?? null,
       },
