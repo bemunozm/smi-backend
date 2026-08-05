@@ -1,7 +1,20 @@
 // Prisma schema — tablas de autenticación (Better Auth) + modelos de dominio.
-// Cada dev agrega SOLO los modelos de su propio dominio (ver CLAUDE.md
-// § "schema.prisma — zona sensible"). El `Equipo` de Terreno es PROVISIONAL
-// (dueño real: Amin/Flota); se reconcilia cuando suba el módulo real de Flota.
+//
+// Orden de las secciones:
+//   1. Better Auth (Benjamín)      — generado por `npm run auth:schema`, no editar a mano.
+//   2. Flota + Inventario (Amin)   — Equipo, Insumo, MovimientoInventario.
+//   3. Operación en Terreno (Alex) — RegistroCombustible, RegistroHorometro,
+//                                    TrabajoExtraordinario, Hallazgo.
+//
+// Convenciones de este schema (Amin, responsable de la base — guía §11):
+//   - IDs: `String @id @default(cuid())` en TODAS las tablas de dominio.
+//   - Enums Prisma para los vocabularios cerrados de Flota/Inventario. Las
+//     columnas de Terreno siguen como `String` (decisión de su dueño); migrarlas
+//     a enum es un cambio suyo, no mío.
+//   - `user.role` sigue siendo String: lo exige el plugin `admin` de Better Auth.
+//   - Referencias a usuarios (`responsableId`) son `String` SIN foreign key: la
+//     tabla `user` la regenera el CLI de Better Auth y una back-relation nuestra
+//     se perdería en la próxima regeneración.
 
 generator client {
   provider = "prisma-client-js"
@@ -83,15 +96,205 @@ model Verification {
   @@map("verification")
 }
 
+// ============================================================================
+// Dominio: Flota + Inventario (Amin)
+// ============================================================================
+
+/// Estado operativo de una unidad. Vocabulario del documento de requerimientos
+/// (§5.1) — es también el que asume el dashboard de Benjamín para contar la
+/// flota disponible. Reemplaza al placeholder OPERATIVO|DETENIDO|MANTENIMIENTO.
+enum EstadoEquipo {
+  DISPONIBLE
+  EN_RUTA
+  EN_MANTENCION
+  DE_BAJA
+}
+
+model Equipo {
+  id     String @id @default(cuid())
+  /// Patente o ID interno de la unidad. Es el identificador que usa la
+  /// operación en terreno, por eso es único y por el que se ordena/busca.
+  codigo String @unique
+  tipo   String
+  marca  String
+  modelo String
+  anio   Int?
+
+  estado EstadoEquipo @default(DISPONIBLE)
+
+  /// Valor ACTUAL de uso de la máquina (guía §4): vive acá como columna, no
+  /// como tabla. El historial de lecturas por turno es `RegistroHorometro`.
+  horometroActual   Float @default(0)
+  kilometrajeActual Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Flota / Inventario (Amin)
+  movimientos MovimientoInventario[]
+
+  // Operación en Terreno (Alexander)
+  combustibles  RegistroCombustible[]
+  horometros    RegistroHorometro[]
+  trabajosExtra TrabajoExtraordinario[]
+  hallazgos     Hallazgo[]
+
+  @@index([estado])
+}
+
+/// Unidad de medida del insumo. Determina cómo se muestra el stock en la UI
+/// (litros y kilos admiten decimales; unidades, en la práctica, no).
+enum UnidadInsumo {
+  UNIDAD
+  LITRO
+  KILOGRAMO
+  METRO
+}
+
+model Insumo {
+  id          String       @id @default(cuid())
+  codigo      String       @unique
+  nombre      String
+  descripcion String?
+  unidad      UnidadInsumo @default(UNIDAD)
+
+  /// Saldo actual. NUNCA se escribe directo desde otro dominio: se mueve
+  /// exclusivamente vía `InventarioService` (registrarEntrada/registrarSalida/
+  /// ajustarPorConteo), que en la misma transacción deja el `MovimientoInventario`
+  /// correspondiente. Esa es la garantía de que el kardex cuadra con el stock.
+  stock       Float @default(0)
+  /// Umbral que dispara la alerta de stock bajo (requerimientos §5.1).
+  stockMinimo Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  movimientos MovimientoInventario[]
+
+  @@index([nombre])
+}
+
+/// Dirección del movimiento. El "Ajuste por inventario físico" de los
+/// requerimientos (§5.1, "suma o resta") NO es un tipo aparte: se registra como
+/// ENTRADA o SALIDA con `origen = AJUSTE_FISICO`, según el signo de la
+/// diferencia. Así `cantidad` es SIEMPRE positiva y el signo lo da `tipo`.
+enum TipoMovimiento {
+  ENTRADA
+  SALIDA
+}
+
+/// Por qué se movió el stock. Cubre 1:1 la tabla de tipos de movimiento del
+/// documento de requerimientos (§5.1).
+enum OrigenMovimiento {
+  COMPRA // Entrada / reposición
+  DEVOLUCION // Material no usado que vuelve a bodega
+  AJUSTE_FISICO // Corrección tras conteo físico
+  INTERVENCION // Consumo por mantención (Joaquín)
+  ACTIVIDAD // Consumo por actividad/tarea (Joaquín)
+  TRABAJO_EXTRAORDINARIO // Consumo en un trabajo facturable (Alexander)
+}
+
+/// Kardex: un registro por cada entrada/salida, con el saldo resultante.
+model MovimientoInventario {
+  id       String @id @default(cuid())
+  insumoId String
+  insumo   Insumo @relation(fields: [insumoId], references: [id], onDelete: Cascade)
+
+  tipo   TipoMovimiento
+  origen OrigenMovimiento
+
+  /// Siempre > 0. El signo lo determina `tipo`.
+  cantidad        Float
+  /// Stock del insumo DESPUÉS de aplicar este movimiento, calculado dentro de la
+  /// misma transacción que lo movió. Denormalizado a propósito: hace que el
+  /// kardex sea una lectura ordenada simple y deja evidencia auditable del
+  /// saldo en cada punto (requerimientos §5.1: "con saldo resultante").
+  saldoResultante Float
+
+  /// `user.id` de Better Auth. Sin FK — ver nota de convenciones arriba.
+  responsableId String?
+  /// Unidad a la que se imputa el consumo, si aplica. `SetNull` y no `Cascade`:
+  /// borrar un equipo no debe borrar el historial de stock.
+  equipoId      String?
+  equipo        Equipo? @relation(fields: [equipoId], references: [id], onDelete: SetNull)
+  /// Id del documento que originó el movimiento (intervencionId, actividadId…).
+  /// String suelto a propósito: apunta a tablas de otros dominios que todavía
+  /// no existen, y una FK polimórfica no se puede expresar en Prisma.
+  referenciaId  String?
+
+  observacion String?
+  fecha       DateTime @default(now())
+
+  @@index([insumoId, fecha])
+  @@index([equipoId])
+}
+
+// ============================================================================
+// Dominio: Operación en Terreno (Alexander)
+// Las relaciones ahora apuntan al `Equipo` real de Flota. Los modelos de abajo
+// no fueron modificados salvo por eso.
+// ============================================================================
+
+model RegistroCombustible {
+  id       String   @id @default(cuid())
+  equipoId String
+  equipo   Equipo   @relation(fields: [equipoId], references: [id])
+  litros   Float
+  tipo     String // PETROLEO | BENCINA
+  fotoUrl  String?
+  fecha    DateTime @default(now())
+}
+
+model RegistroHorometro {
+  id               String   @id @default(cuid())
+  equipoId         String
+  equipo           Equipo   @relation(fields: [equipoId], references: [id])
+  operador         String // nombre y apellido
+  turno            String // DIURNO | NOCTURNO
+  valorInicial     Float
+  valorFinal       Float?
+  nivelCombustible Float? // % de combustible
+  fecha            DateTime @default(now())
+}
+
+model TrabajoExtraordinario {
+  id               String   @id @default(cuid())
+  equipoId         String
+  equipo           Equipo   @relation(fields: [equipoId], references: [id])
+  operador         String
+  faena            String
+  turno            String // DIURNO | NOCTURNO
+  horometroInicial Float
+  horometroFinal   Float
+  totalHoras       Float
+  actividad        String // REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL | LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA
+  descripcion      String
+  observaciones    String?
+  fecha            DateTime @default(now())
+}
+
+model Hallazgo {
+  id          String   @id @default(cuid())
+  equipoId    String
+  equipo      Equipo   @relation(fields: [equipoId], references: [id])
+  descripcion String
+  prioridad   String // BAJA | MEDIA | ALTA | CRITICA
+  estado      String   @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO
+  fotoUrl     String?
+  fecha       DateTime @default(now())
+}
+
 // ---------------------------------------------------------------------------
-// Dominio Mantenimiento (dueño: Joaquín). Referencias a otros dominios
-// (equipoId → Equipo de Flota/Amin, insumoId → Insumo de Inventario/Amin,
-// asignadoAId/realizadaPorId → user.id de Better Auth, hallazgoId → Hallazgo
-// de Terreno) son "soft refs": strings sin relación Prisma, porque esas
-// tablas son de otros dueños y todavía no existen (o, en el caso de `user`,
-// no se agrega back-relation para no acoplar el modelo de Auth a este
-// dominio). Relaciones Prisma reales SOLO entre tablas propias de este
-// dominio (OrdenTrabajo/TareaOT/Intervencion/IntervencionInsumo).
+// 4. Dominio Mantenimiento (dueño: Joaquín). Órdenes de trabajo, bitácora de
+// intervención, motor preventivo y actividades.
+//
+// Referencias a otros dominios (equipoId → Equipo de Flota, insumoId → Insumo
+// de Inventario, hallazgoId → Hallazgo de Terreno, asignadoAId/realizadaPorId →
+// user.id de Better Auth) se mantienen como "soft refs": String sin relación
+// Prisma. Esas tablas ya existen, pero se dejan desacopladas por ahora para no
+// atar esta migración a las de Flota/Inventario/Terreno; convertirlas a FK real
+// es un cambio a coordinar con Amin/Alexander. Relaciones Prisma reales SOLO
+// entre tablas propias de este dominio.
 // ---------------------------------------------------------------------------
 
 enum EstadoOT {
@@ -133,7 +336,7 @@ enum OrigenActividad {
 
 model OrdenTrabajo {
   id             String         @id @default(cuid())
-  equipoId       String // soft ref → Equipo (Flota/Amin), sin FK aún
+  equipoId       String // soft ref → Equipo (Flota/Amin)
   asignadoAId    String? // soft ref → user.id
   titulo         String
   estado         EstadoOT       @default(PENDIENTE)
@@ -184,7 +387,7 @@ model IntervencionInsumo {
   id             String       @id @default(cuid())
   intervencionId String
   intervencion   Intervencion @relation(fields: [intervencionId], references: [id], onDelete: Cascade)
-  insumoId       String // soft ref → Insumo (Inventario/Amin), sin FK aún
+  insumoId       String // soft ref → Insumo (Inventario/Amin)
   cantidad       Int
 
   @@index([intervencionId])
@@ -213,75 +416,4 @@ model Actividad {
   updatedAt   DateTime        @updatedAt
 
   @@map("actividad")
-}
-
-// ============================================================================
-// Dominio: Operación en Terreno (Alexander)
-// PROVISIONAL: el modelo `Equipo` es un placeholder hasta que Amin (Flota)
-// suba el real; entonces se reconcilian estas relaciones.
-// ============================================================================
-
-model Equipo {
-  id                String @id @default(cuid())
-  codigo            String @unique
-  tipo              String
-  marca             String
-  modelo            String
-  estado            String @default("OPERATIVO") // OPERATIVO | DETENIDO | MANTENIMIENTO
-  horometroActual   Float  @default(0)
-  kilometrajeActual Float  @default(0)
-
-  combustibles  RegistroCombustible[]
-  horometros    RegistroHorometro[]
-  trabajosExtra TrabajoExtraordinario[]
-  hallazgos     Hallazgo[]
-}
-
-model RegistroCombustible {
-  id       String   @id @default(cuid())
-  equipoId String
-  equipo   Equipo   @relation(fields: [equipoId], references: [id])
-  litros   Float
-  tipo     String // PETROLEO | BENCINA
-  fotoUrl  String?
-  fecha    DateTime @default(now())
-}
-
-model RegistroHorometro {
-  id               String   @id @default(cuid())
-  equipoId         String
-  equipo           Equipo   @relation(fields: [equipoId], references: [id])
-  operador         String // nombre y apellido
-  turno            String // DIURNO | NOCTURNO
-  valorInicial     Float
-  valorFinal       Float?
-  nivelCombustible Float? // % de combustible
-  fecha            DateTime @default(now())
-}
-
-model TrabajoExtraordinario {
-  id               String   @id @default(cuid())
-  equipoId         String
-  equipo           Equipo   @relation(fields: [equipoId], references: [id])
-  operador         String
-  faena            String
-  turno            String // DIURNO | NOCTURNO
-  horometroInicial Float
-  horometroFinal   Float
-  totalHoras       Float
-  actividad        String // REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL | LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA
-  descripcion      String
-  observaciones    String?
-  fecha            DateTime @default(now())
-}
-
-model Hallazgo {
-  id          String   @id @default(cuid())
-  equipoId    String
-  equipo      Equipo   @relation(fields: [equipoId], references: [id])
-  descripcion String
-  prioridad   String // BAJA | MEDIA | ALTA | CRITICA
-  estado      String   @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO
-  fotoUrl     String?
-  fecha       DateTime @default(now())
 }
