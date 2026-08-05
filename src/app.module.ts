@@ -9,6 +9,7 @@ import { HealthModule } from './health/health.module';
 import { MantenimientoModule } from './mantenimiento/mantenimiento.module';
 import { UsersModule } from './users/users.module';
 import { EquiposModule } from './equipos/equipos.module';
+import { FichaModule } from './ficha/ficha.module';
 import { InventarioModule } from './inventario/inventario.module';
 import { TerrenoModule } from './terreno/terreno.module';
 import { UploadsModule } from './uploads/uploads.module';
@@ -31,6 +32,8 @@ import { auth } from './auth/auth';
     // Dominio Operación en Terreno (Alexander)
     TerrenoModule,
     UploadsModule,
+    // Núcleo (Benjamín): ficha consolidada de un equipo, cruza los 4 dominios
+    FichaModule,
     AuthModule.forRoot({
       auth,
       // Tier 1 #1: CORS vive SOLO en main.ts (app.enableCors). Sin este

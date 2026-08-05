@@ -52,3 +52,6 @@ prisma/dev.db-journal
 # Imágenes subidas (no versionar los archivos, sí la carpeta)
 uploads/*
 !uploads/.gitkeep
+
+# CodeGraph index (local)
+.codegraph/
