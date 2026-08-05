@@ -7,9 +7,9 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { UsersModule } from './users/users.module';
-import { EquiposModule } from './modules/equipos/equipos.module';
-import { TerrenoModule } from './modules/terreno/terreno.module';
-import { UploadsModule } from './modules/uploads/uploads.module';
+import { EquiposModule } from './equipos/equipos.module';
+import { TerrenoModule } from './terreno/terreno.module';
+import { UploadsModule } from './uploads/uploads.module';
 import { auth } from './auth/auth';
 
 @Module({

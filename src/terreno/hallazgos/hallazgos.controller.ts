@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { Roles } from '@thallesp/nestjs-better-auth';
 
-import { ROLES } from '../../../auth/roles';
+import { ROLES } from '../../auth/roles';
 import { HallazgosService } from './hallazgos.service';
 import { CreateHallazgoDto } from './dto/create-hallazgo.dto';
 import { UpdateHallazgoDto } from './dto/update-hallazgo.dto';

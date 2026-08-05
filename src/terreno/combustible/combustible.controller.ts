@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { Roles } from '@thallesp/nestjs-better-auth';
 
-import { ROLES } from '../../../auth/roles';
+import { ROLES } from '../../auth/roles';
 import { CombustibleService } from './combustible.service';
 import { CreateCombustibleDto } from './dto/create-combustible.dto';
 import { UpdateCombustibleDto } from './dto/update-combustible.dto';

@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { Roles } from '@thallesp/nestjs-better-auth';
 
-import { ROLES } from '../../../auth/roles';
+import { ROLES } from '../../auth/roles';
 import { TrabajosExtraService } from './trabajos-extra.service';
 import { CreateTrabajoExtraDto } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';

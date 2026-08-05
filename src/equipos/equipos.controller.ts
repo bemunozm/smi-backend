@@ -1,7 +1,7 @@
 // PROVISIONAL — dueño real: Amin (Flota). Solo lectura para poblar selects del
 // front. Bajo el AuthGuard global (exige sesión); cualquier rol autenticado lee.
 import { Controller, Get, Param } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaService } from '../common/prisma/prisma.service';
 
 @Controller('equipos')
 export class EquiposController {
