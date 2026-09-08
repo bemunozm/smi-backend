@@ -1,7 +1,9 @@
 import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../common/prisma/prisma.service';
+import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import { OrdenesService } from './ordenes.service';
 
 const MOCK_ORDEN = {
@@ -37,6 +39,7 @@ describe('OrdenesService', () => {
   const tareaOTFindUnique = jest.fn();
   const tareaOTUpdate = jest.fn();
   const userFindMany = jest.fn();
+  const emit = jest.fn();
 
   beforeEach(async () => {
     ordenTrabajoFindMany.mockReset();
@@ -46,6 +49,7 @@ describe('OrdenesService', () => {
     tareaOTFindUnique.mockReset();
     tareaOTUpdate.mockReset();
     userFindMany.mockReset();
+    emit.mockReset();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -66,6 +70,7 @@ describe('OrdenesService', () => {
             user: { findMany: userFindMany },
           },
         },
+        { provide: EventEmitter2, useValue: { emit } },
       ],
     }).compile();
 
@@ -163,5 +168,70 @@ describe('OrdenesService', () => {
       select: { id: true, texto: true, hecha: true, posicion: true },
     });
     expect(result.hecha).toBe(true);
+  });
+
+  describe('update — eventos de dominio', () => {
+    it('emite ORDEN_ASSIGNED cuando la orden pasa a ASIGNADA', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'PENDIENTE',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'ASIGNADA',
+      });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      await service.update('orden_1', {
+        estado: 'ASIGNADA',
+        asignadoAId: 'user_mantenedor',
+      } as never);
+
+      expect(emit).toHaveBeenCalledWith(DOMAIN_EVENTS.ORDEN_ASSIGNED, {
+        ordenId: 'orden_1',
+        equipoId: 'CM-003',
+        asignadoId: 'user_mantenedor',
+        titulo: 'Frenos con baja respuesta',
+      });
+    });
+
+    it('emite ORDEN_COMPLETED cuando la orden pasa a COMPLETADA', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'COMPLETADA',
+      });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      await service.update('orden_1', { estado: 'COMPLETADA' } as never);
+
+      expect(emit).toHaveBeenCalledWith(DOMAIN_EVENTS.ORDEN_COMPLETED, {
+        ordenId: 'orden_1',
+        equipoId: 'CM-003',
+        titulo: 'Frenos con baja respuesta',
+      });
+    });
+
+    it('no emite nada si el estado no cambia', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'PENDIENTE',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'PENDIENTE',
+        titulo: 'Título editado',
+      });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      await service.update('orden_1', {
+        titulo: 'Título editado',
+      });
+
+      expect(emit).not.toHaveBeenCalled();
+    });
   });
 });

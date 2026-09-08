@@ -74,4 +74,17 @@ describe('UsersService', () => {
     expect(result.email).toBe('admin@smi.local');
     expect(result.createdAt).toBe('2026-01-01T00:00:00.000Z');
   });
+
+  it('findByRole filters by role and maps rows to the public DTO', async () => {
+    findMany.mockResolvedValue([MOCK_USER]);
+
+    const result = await service.findByRole('ADMIN');
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { role: 'ADMIN' } }),
+    );
+    expect(result).toEqual([
+      expect.objectContaining({ id: 'user_1', role: 'ADMIN' }),
+    ]);
+  });
 });

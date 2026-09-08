@@ -1,8 +1,10 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { OrigenMovimiento, TipoMovimiento } from '@prisma/client';
 
 import { PrismaService } from '../common/prisma/prisma.service';
+import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import { InventarioService } from './inventario.service';
 
 const INSUMO = {
@@ -24,12 +26,14 @@ describe('InventarioService', () => {
   const insumoUpdate = jest.fn();
   const insumoUpdateMany = jest.fn();
   const movimientoCreate = jest.fn();
+  const emit = jest.fn();
 
   beforeEach(async () => {
     insumoFindUnique.mockReset();
     insumoUpdate.mockReset();
     insumoUpdateMany.mockReset();
     movimientoCreate.mockReset();
+    emit.mockReset();
     movimientoCreate.mockImplementation(
       ({ data }: { data: Record<string, unknown> }) => Promise.resolve(data),
     );
@@ -51,6 +55,7 @@ describe('InventarioService', () => {
       providers: [
         InventarioService,
         { provide: PrismaService, useValue: prismaMock },
+        { provide: EventEmitter2, useValue: { emit } },
       ],
     }).compile();
 
@@ -134,6 +139,44 @@ describe('InventarioService', () => {
           origen: OrigenMovimiento.INTERVENCION,
         }),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('emite INSUMO_LOW_STOCK cuando el stock cruza el mínimo hacia abajo', async () => {
+      // INSUMO: stock 100, stockMinimo 50. Salida de 60 → queda en 40 (<=50).
+      // stockAntes se deriva como 40 + 60 = 100, que SÍ estaba por sobre el
+      // mínimo: es el cruce.
+      insumoUpdateMany.mockResolvedValue({ count: 1 });
+      insumoFindUnique.mockResolvedValue({ ...INSUMO, stock: 40 });
+
+      await service.registrarSalida({
+        insumoId: 'ins_1',
+        cantidad: 60,
+        origen: OrigenMovimiento.INTERVENCION,
+      });
+
+      expect(emit).toHaveBeenCalledWith(DOMAIN_EVENTS.INSUMO_LOW_STOCK, {
+        insumoId: 'ins_1',
+        nombre: 'Aceite motor 15W-40',
+        stock: 40,
+        stockMinimo: 50,
+      });
+    });
+
+    it('NO reemite INSUMO_LOW_STOCK si el insumo ya estaba bajo el mínimo', async () => {
+      // Insumo queda en 35 (post-decremento) tras esta salida de 10.
+      // stockAntes se deriva como 35 + 10 = 45, que YA estaba bajo el mínimo
+      // (50): no es un cruce, es "seguir bajando" — no se debe re-emitir
+      // (evita spam).
+      insumoUpdateMany.mockResolvedValue({ count: 1 });
+      insumoFindUnique.mockResolvedValue({ ...INSUMO, stock: 35 });
+
+      await service.registrarSalida({
+        insumoId: 'ins_1',
+        cantidad: 10,
+        origen: OrigenMovimiento.INTERVENCION,
+      });
+
+      expect(emit).not.toHaveBeenCalled();
     });
   });
 

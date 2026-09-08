@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AuthModule } from '@thallesp/nestjs-better-auth';
 
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -11,6 +12,7 @@ import { UsersModule } from './users/users.module';
 import { EquiposModule } from './equipos/equipos.module';
 import { FichaModule } from './ficha/ficha.module';
 import { InventarioModule } from './inventario/inventario.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { TerrenoModule } from './terreno/terreno.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { auth } from './auth/auth';
@@ -22,6 +24,10 @@ import { auth } from './auth/auth';
     // antes del ciclo de Nest) — leen `src/common/config/env.ts` directo,
     // que es la única fuente de verdad validada de env. Ver ese archivo.
     ConfigModule.forRoot({ isGlobal: true }),
+    // Bus de eventos de dominio (Núcleo): los dominios emiten
+    // `DOMAIN_EVENTS.*` (ver common/events/domain-events.ts) y
+    // NotificationsModule los escucha para crear notificaciones/correos.
+    EventEmitterModule.forRoot(),
     PrismaModule,
     HealthModule,
     UsersModule,
@@ -34,6 +40,9 @@ import { auth } from './auth/auth';
     UploadsModule,
     // Núcleo (Benjamín): ficha consolidada de un equipo, cruza los 4 dominios
     FichaModule,
+    // Núcleo (Benjamín): notificaciones in-app + correo, alimentadas por el
+    // bus de eventos de dominio
+    NotificationsModule,
     AuthModule.forRoot({
       auth,
       // Tier 1 #1: CORS vive SOLO en main.ts (app.enableCors). Sin este
