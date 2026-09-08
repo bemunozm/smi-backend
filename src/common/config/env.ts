@@ -21,6 +21,12 @@ export interface AppEnv {
   betterAuthUrl: string;
   frontendUrl: string;
   port: number;
+  smtpHost: string | undefined;
+  smtpPort: number | undefined;
+  smtpUser: string | undefined;
+  smtpPass: string | undefined;
+  smtpFrom: string | undefined;
+  smtpSecure: boolean;
 }
 
 const MIN_SECRET_LENGTH = 32;
@@ -57,10 +63,40 @@ function parsePort(rawValue: string | undefined): number {
   return parsed;
 }
 
+/** Igual que `parsePort`, pero sin default: `undefined` cuando no viene seteada (SMTP es opcional). */
+function parseOptionalPort(rawValue: string | undefined): number | undefined {
+  if (rawValue === undefined || rawValue.trim().length === 0) {
+    return undefined;
+  }
+  const parsed = Number(rawValue);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    throw new Error(`Invalid SMTP_PORT env var: "${rawValue}"`);
+  }
+  return parsed;
+}
+
+function optional(name: string): string | undefined {
+  const value = process.env[name];
+  return value && value.trim().length > 0 ? value : undefined;
+}
+
+function parseBoolean(rawValue: string | undefined): boolean {
+  return rawValue?.trim().toLowerCase() === 'true';
+}
+
 export const env: AppEnv = {
   databaseUrl: required('DATABASE_URL'),
   betterAuthSecret: validateSecret(required('BETTER_AUTH_SECRET')),
   betterAuthUrl: required('BETTER_AUTH_URL'),
   frontendUrl: process.env.FRONTEND_URL ?? DEFAULT_FRONTEND_URL,
   port: parsePort(process.env.PORT),
+  // SMTP: todas opcionales a propósito (ver mail/mail.service.ts) — sin
+  // host/user/pass configurados, MailService queda en no-op y el boot no se
+  // rompe para quien no tenga credenciales de correo en su entorno.
+  smtpHost: optional('SMTP_HOST'),
+  smtpPort: parseOptionalPort(process.env.SMTP_PORT),
+  smtpUser: optional('SMTP_USER'),
+  smtpPass: optional('SMTP_PASS'),
+  smtpFrom: optional('SMTP_FROM'),
+  smtpSecure: parseBoolean(process.env.SMTP_SECURE),
 };

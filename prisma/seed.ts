@@ -11,6 +11,7 @@
  * y cierra la conexión explícitamente al final.
  */
 import { Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   Equipo,
   EstadoEquipo,
@@ -268,7 +269,11 @@ const INSUMOS: readonly SeedInsumo[] = [
  * y no pueden quedar descuadrados por un error de aritmética en el seed.
  */
 async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
-  const inventario = new InventarioService(prismaClient);
+  // EventEmitter2 standalone: el seed no levanta la app Nest (no hay
+  // NotificationsListener suscrito), así que los eventos de dominio que
+  // dispare InventarioService acá simplemente no tienen listeners — no hace
+  // falta el bus real de app.module.ts para que el seed compile ni corra.
+  const inventario = new InventarioService(prismaClient, new EventEmitter2());
 
   const equipos: Equipo[] = [];
   for (const equipo of EQUIPOS) {

@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   MovimientoInventario,
   OrigenMovimiento,
@@ -11,6 +12,8 @@ import {
 } from '@prisma/client';
 
 import { PrismaService } from '../common/prisma/prisma.service';
+import { DOMAIN_EVENTS } from '../common/events/domain-events';
+import type { InsumoLowStockEvent } from '../common/events/domain-events';
 
 /**
  * Cliente Prisma capaz de ejecutar la operación: o bien el servicio global, o
@@ -80,7 +83,10 @@ export interface AjustarPorConteoInput {
  */
 @Injectable()
 export class InventarioService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
   /** Suma stock: compra/reposición o devolución a bodega. */
   registrarEntrada(
@@ -187,7 +193,28 @@ export class InventarioService {
     }
 
     const insumo = await this.buscarInsumo(client, input.insumoId);
-    return this.registrar(client, input, TipoMovimiento.SALIDA, insumo.stock);
+    const movimiento = await this.registrar(
+      client,
+      input,
+      TipoMovimiento.SALIDA,
+      insumo.stock,
+    );
+
+    // Cruce de mínimo (evita spam): solo se emite la primera vez que el
+    // stock queda en o bajo el mínimo, no en cada salida subsiguiente
+    // mientras siga bajo. `stockAntes` se deriva del descuento atómico de
+    // arriba (stock post + lo descontado) — no hace falta otra query.
+    const stockAntes = insumo.stock + input.cantidad;
+    if (stockAntes > insumo.stockMinimo && insumo.stock <= insumo.stockMinimo) {
+      this.eventEmitter.emit(DOMAIN_EVENTS.INSUMO_LOW_STOCK, {
+        insumoId: insumo.id,
+        nombre: insumo.nombre,
+        stock: insumo.stock,
+        stockMinimo: insumo.stockMinimo,
+      } satisfies InsumoLowStockEvent);
+    }
+
+    return movimiento;
   }
 
   private registrar(

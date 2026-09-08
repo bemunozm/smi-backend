@@ -38,7 +38,7 @@ prisma/
 **Trabaja dentro de la carpeta de tu dominio.** Archivos compartidos (`app.module.ts`, `common/`, `prisma/schema.prisma`) se editan avisando al equipo.
 
 ## schema.prisma — zona sensible
-Hoy contiene **solo las tablas de Better Auth** (`user`, `session`, `account`, `verification`). El campo `role` (String, default `OPERADOR`) vive en `user`. **Cada dev agrega los modelos de su dominio** (Equipo, Insumo, etc.) en su rama; los choques se resuelven al hacer PR. **NO crear una tabla `Usuario` propia** — se referencia `user.id` de Better Auth.
+Contiene las tablas de Better Auth (`user`, `session`, `account`, `verification`) **y los modelos de todos los dominios ya integrados** (Equipo, Insumo, MovimientoInventario, RegistroCombustible, RegistroHorometro, TrabajoExtraordinario, Hallazgo, OrdenTrabajo, Intervencion, UmbralMantenimiento, Actividad, Notificacion). El campo `role` (String, default `OPERADOR`) vive en `user`. **NO crear una tabla `Usuario` propia** — se referencia `user.id` de Better Auth. Todo cambio al schema va por **rama corta + migración Prisma versionada + PR** (avisar al equipo; ver `CONTRIBUTING.md`).
 
 ## Cómo agregar un módulo de dominio (sigue `users/` como plantilla)
 1. `src/<dominio>/<dominio>.module.ts` + `.controller.ts` + `.service.ts` + `dto/`.
@@ -74,14 +74,15 @@ npm run start:dev                    # API en http://localhost:3000  (rutas bajo
 ```
 Env clave: `DATABASE_URL`, `BETTER_AUTH_SECRET` (≥32 chars), `BETTER_AUTH_URL`, `FRONTEND_URL`, `PORT`.
 
-## Git (GitHub Flow, Conventional Commits)
-- `main` es estable y **protegida (PR obligatorio)**. **Nunca push directo a main.**
-- Rama por funcionalidad: `feat/<dominio>/<descripcion>` (también `fix/…`, `chore/…`, `docs/…`).
-- Commits: `tipo(contexto): descripción` en **inglés**, imperativo, ≤100 chars, sin mayúscula inicial ni punto final. Sin co-autoría de IA.
-- PR a `main` con ≥1 revisor.
+## Flujo de trabajo y Git
+La **metodología completa** (regla de oro, Producto→RFC→Desarrollo, review cruzado, Definition of Done de producción, tableros) vive en **`CONTRIBUTING.md`** — léela antes de tomar una tarea. Esencial:
+- **Regla de oro:** sin **ticket de Producto** + **RFC aprobado**, no se desarrolla.
+- `main` estable y **protegida**: PR obligatorio + **review del otro dev** + CI verde. **Nunca push directo a main.**
+- Rama por funcionalidad: `feat/<dominio>/<descripcion>` (`fix/…`, `chore/…`, `docs/…`). El cuerpo del PR referencia `PROD·RFC·DEV`.
+- Commits: `tipo(contexto): descripción` en **inglés**, imperativo, ≤100 chars, sin mayúscula inicial ni punto final. **Sin co-autoría de IA.**
 
-## Deuda conocida (ver `SECURITY-NOTES.md`)
-Rate limiting, bind de Postgres a `127.0.0.1`, helmet, cookies seguras para prod, TTL de sesión — todo diferido y aceptable **solo mientras la demo corra en localhost**. Si se expone fuera de localhost, resolverlas.
+## Deuda técnica y seguridad (ver `SECURITY-NOTES.md`)
+Rate limiting, bind de Postgres a `127.0.0.1`, helmet, cookies seguras, TTL de sesión, auth en `/uploads`, índices `@@index([equipoId])` faltantes. **El proyecto va a producción → ya NO son diferibles**: se saldan en la Fase 0 (RFC de CI/CD + hardening). No introducir código nuevo que dependa de estas deudas.
 
 ## Prohibiciones
 - ❌ `any` en TypeScript · ❌ `console.log` para errores · ❌ `new PrismaClient()` suelto (usa `PrismaService`)

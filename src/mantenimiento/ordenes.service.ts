@@ -1,7 +1,14 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import type { EstadoOT, Prisma } from '@prisma/client';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EstadoOT } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../common/prisma/prisma.service';
+import { DOMAIN_EVENTS } from '../common/events/domain-events';
+import type {
+  OrdenAssignedEvent,
+  OrdenCompletedEvent,
+} from '../common/events/domain-events';
 import { resolveAsignadosMap } from './common/asignado.util';
 import type { AsignadoResponseDto } from './dto/asignado-response.dto';
 import type { CreateOrdenDto } from './dto/create-orden.dto';
@@ -45,7 +52,10 @@ const TAREA_SELECT = {
 export class OrdenesService {
   private readonly logger = new Logger(OrdenesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
   async findAll(estado?: EstadoOT): Promise<OrdenResponseDto[]> {
     const ordenes = await this.prisma.ordenTrabajo.findMany({
@@ -101,7 +111,7 @@ export class OrdenesService {
   }
 
   async update(id: string, dto: UpdateOrdenDto): Promise<OrdenResponseDto> {
-    await this.findOrdenOrThrow(id);
+    const ordenAnterior = await this.findOrdenOrThrow(id);
 
     const orden = await this.prisma.ordenTrabajo.update({
       where: { id },
@@ -116,10 +126,40 @@ export class OrdenesService {
 
     this.logger.log(`Orden de trabajo actualizada: ${id}`);
 
+    this.emitTransicionEstado(ordenAnterior.estado, orden);
+
     const asignados = await resolveAsignadosMap(this.prisma, [
       orden.asignadoAId,
     ]);
     return this.toResponseDto(orden, asignados);
+  }
+
+  /**
+   * Emite el evento de dominio correspondiente SOLO en el cruce de estado
+   * (evita spam si `update` se llama sin cambiar `estado`, p.ej. solo
+   * cambia el título). Fire-and-forget (`emit`, no `emitAsync`): la latencia
+   * de notificación/correo no debe acoplarse a la respuesta del request.
+   */
+  private emitTransicionEstado(
+    estadoAnterior: EstadoOT,
+    orden: SelectedOrden,
+  ): void {
+    if (orden.estado === estadoAnterior) return;
+
+    if (orden.estado === EstadoOT.ASIGNADA) {
+      this.eventEmitter.emit(DOMAIN_EVENTS.ORDEN_ASSIGNED, {
+        ordenId: orden.id,
+        equipoId: orden.equipoId,
+        asignadoId: orden.asignadoAId,
+        titulo: orden.titulo,
+      } satisfies OrdenAssignedEvent);
+    } else if (orden.estado === EstadoOT.COMPLETADA) {
+      this.eventEmitter.emit(DOMAIN_EVENTS.ORDEN_COMPLETED, {
+        ordenId: orden.id,
+        equipoId: orden.equipoId,
+        titulo: orden.titulo,
+      } satisfies OrdenCompletedEvent);
+    }
   }
 
   async toggleTarea(

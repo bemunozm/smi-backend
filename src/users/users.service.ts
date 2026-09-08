@@ -17,6 +17,7 @@ import type { CreateUserDto } from './dto/create-user.dto';
 import type { UpdateUserDto } from './dto/update-user.dto';
 import type { UserResponseDto } from './dto/user-response.dto';
 import { ROLES } from '../auth/roles';
+import type { Role } from '../auth/roles';
 
 // `select` explícito (no `select *`/objeto Prisma crudo): así el shape
 // público nunca se desincroniza en silencio si el modelo Prisma gana campos
@@ -89,6 +90,20 @@ export class UsersService {
   async findOne(id: string): Promise<UserResponseDto> {
     const user = await this.findSelectedUserOrThrow(id);
     return this.toResponseDto(user);
+  }
+
+  /**
+   * Usuarios activos con un rol dado. Usado por `NotificationsService` para
+   * el fan-out de notificaciones por rol (p. ej. avisar a todo ADMIN +
+   * SUPERVISOR cuando se crea un Hallazgo).
+   */
+  async findByRole(role: Role): Promise<UserResponseDto[]> {
+    const users = await this.prisma.user.findMany({
+      where: { role },
+      select: USER_SELECT,
+      orderBy: { createdAt: 'asc' },
+    });
+    return users.map((user) => this.toResponseDto(user));
   }
 
   /**

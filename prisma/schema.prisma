@@ -97,6 +97,29 @@ model Verification {
 }
 
 // ============================================================================
+// Núcleo (Benjamín): Notificaciones
+// ============================================================================
+
+/// Notificación in-app dirigida a un usuario. `userId` es soft ref a
+/// `user.id` (mismo criterio que el resto del schema: la tabla `user` la
+/// regenera el CLI de Better Auth). Alimentada por `NotificationsService` en
+/// respuesta a los eventos de dominio (`common/events/domain-events.ts`).
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String // soft ref → user.id (destinatario)
+  tipo      String
+  titulo    String
+  cuerpo    String
+  data      Json?
+  leida     Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, leida])
+  @@index([userId, createdAt])
+  @@map("notification")
+}
+
+// ============================================================================
 // Dominio: Flota + Inventario (Amin)
 // ============================================================================
 
