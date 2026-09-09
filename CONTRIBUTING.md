@@ -47,6 +47,9 @@ Guía de **proceso** del equipo. La **arquitectura y convenciones de código** v
 - Ramas cortas (1 rama = 1 funcionalidad). `git pull` de `main` seguido para integrar temprano.
 - Cambios a `prisma/schema.prisma`: rama corta + **migración versionada** + PR, avisando al equipo.
 
+## Nombres e idioma
+Código y base de datos en **inglés** (identificadores: modelos, tablas, columnas, enums, funciones, variables, tipos, endpoints, archivos). Español solo para textos de UI de cara al usuario y comentarios. Casing y detalle en `CLAUDE.md`. **Migración gradual por módulo** (cada dueño renombra el suyo al tocarlo); todo lo nuevo nace en inglés.
+
 ## Referencias
 - **Playbook** (visión general + roadmap de 2 meses): https://claude.ai/code/artifact/2606ba46-5690-4e6a-b271-03565b68c892
 - **Tableros:** proyecto **SMI** en Notion (Producto · RFCs · Desarrollo).
