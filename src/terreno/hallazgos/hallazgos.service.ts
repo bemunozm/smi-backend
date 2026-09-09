@@ -14,7 +14,7 @@ export class HallazgosService {
   ) {}
 
   async create(dto: CreateHallazgoDto) {
-    const equipo = await this.prisma.equipo.findUnique({
+    const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },
     });
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
@@ -42,7 +42,7 @@ export class HallazgosService {
   findAll() {
     return this.prisma.hallazgo.findMany({
       orderBy: { fecha: 'desc' },
-      include: { equipo: { select: { codigo: true } } },
+      include: { equipo: { select: { internalCode: true } } },
     });
   }
 

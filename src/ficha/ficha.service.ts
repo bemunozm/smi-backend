@@ -20,7 +20,7 @@ type OrdenTrabajoConIntervenciones = OrdenTrabajo & {
 
 /**
  * Agregador de Núcleo para la ficha consolidada de un equipo (requerimientos
- * §5.5). Terreno y Mantenimiento NO tienen relación Prisma con `Equipo` (usan
+ * §5.5). Terreno y Mantenimiento NO tienen relación Prisma con `Equipment` (usan
  * `equipoId` como soft-ref), así que este servicio consulta cada tabla de
  * forma independiente vía `PrismaService` y normaliza el resultado a un único
  * timeline — no reemplaza ni modifica los módulos de cada dominio.
@@ -47,18 +47,18 @@ export class FichaService {
       ordenesAbiertasCount,
       actividadesCount,
     ] = await Promise.all([
-      this.prisma.equipo.findUnique({
+      this.prisma.equipment.findUnique({
         where: { id },
         select: {
           id: true,
-          codigo: true,
-          tipo: true,
-          marca: true,
-          modelo: true,
-          anio: true,
-          estado: true,
-          horometroActual: true,
-          kilometrajeActual: true,
+          internalCode: true,
+          type: true,
+          brand: true,
+          model: true,
+          year: true,
+          status: true,
+          currentHourmeter: true,
+          currentMileage: true,
         },
       }),
       this.prisma.registroCombustible.findMany({

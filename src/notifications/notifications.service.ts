@@ -182,8 +182,8 @@ export class NotificationsService {
     ref: string | null | undefined,
   ): Promise<string | null> {
     if (!ref) return null;
-    const equipo = await this.prisma.equipo.findFirst({
-      where: { OR: [{ id: ref }, { codigo: ref }] },
+    const equipo = await this.prisma.equipment.findFirst({
+      where: { OR: [{ id: ref }, { internalCode: ref }] },
       select: { id: true },
     });
     return equipo?.id ?? null;

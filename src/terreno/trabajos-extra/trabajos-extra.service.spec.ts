@@ -5,18 +5,23 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 describe('TrabajosExtraService', () => {
   let service: TrabajosExtraService;
   const prisma = {
-    equipo: { findUnique: jest.fn() },
+    equipment: { findUnique: jest.fn() },
     trabajoExtraordinario: { create: jest.fn() },
   };
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
-      providers: [TrabajosExtraService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        TrabajosExtraService,
+        { provide: PrismaService, useValue: prisma },
+      ],
     }).compile();
     service = mod.get(TrabajosExtraService);
     jest.clearAllMocks();
-    prisma.equipo.findUnique.mockResolvedValue({ id: 'e1' });
-    prisma.trabajoExtraordinario.create.mockImplementation(({ data }: any) => data);
+    prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+    prisma.trabajoExtraordinario.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => data,
+    );
   });
 
   it('calcula totalHoras = horometroFinal - horometroInicial', async () => {
@@ -29,7 +34,7 @@ describe('TrabajosExtraService', () => {
       horometroFinal: 1212,
       actividad: 'REGULACION_CARGA',
       descripcion: 'Carga de material',
-    } as any);
+    });
     expect(res.totalHoras).toBe(12);
   });
 });

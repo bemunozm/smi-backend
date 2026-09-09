@@ -12,13 +12,13 @@ import {
 import { Roles } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
-import { CreateEquipoDto } from './dto/create-equipo.dto';
-import { QueryEquiposDto } from './dto/query-equipos.dto';
+import { CreateEquipmentDto } from './dto/create-equipment.dto';
+import { QueryEquipmentDto } from './dto/query-equipment.dto';
 import {
-  UpdateEquipoDto,
-  UpdateEstadoEquipoDto,
-} from './dto/update-equipo.dto';
-import { EquiposService } from './equipos.service';
+  UpdateEquipmentDto,
+  UpdateEquipmentStatusDto,
+} from './dto/update-equipment.dto';
+import { EquipmentService } from './equipment.service';
 
 function assertNonEmptyId(id: string): void {
   if (!id || id.trim().length === 0) {
@@ -27,18 +27,18 @@ function assertNonEmptyId(id: string): void {
 }
 
 /**
- * Dominio Flota (Amin). El `AuthGuard` global ya exige sesión, así que la
+ * Dominio Flota (Benjamín). El `AuthGuard` global ya exige sesión, así que la
  * LECTURA queda abierta a cualquier rol autenticado: terreno y mantenimiento
  * necesitan listar equipos para sus propios formularios. La ESCRITURA de la
  * ficha es solo ADMIN; el cambio de estado lo comparte con SUPERVISOR
  * (requerimientos §5.2, "Control de Flota").
  */
-@Controller('equipos')
-export class EquiposController {
-  constructor(private readonly service: EquiposService) {}
+@Controller('equipment')
+export class EquipmentController {
+  constructor(private readonly service: EquipmentService) {}
 
   @Get()
-  async findAll(@Query() filtros: QueryEquiposDto) {
+  async findAll(@Query() filtros: QueryEquipmentDto) {
     return { data: await this.service.findAll(filtros), message: 'ok' };
   }
 
@@ -56,13 +56,13 @@ export class EquiposController {
 
   @Post()
   @Roles([ROLES.ADMIN])
-  async create(@Body() dto: CreateEquipoDto) {
+  async create(@Body() dto: CreateEquipmentDto) {
     return { data: await this.service.create(dto), message: 'Equipo creado' };
   }
 
   @Patch(':id')
   @Roles([ROLES.ADMIN])
-  async update(@Param('id') id: string, @Body() dto: UpdateEquipoDto) {
+  async update(@Param('id') id: string, @Body() dto: UpdateEquipmentDto) {
     assertNonEmptyId(id);
     return {
       data: await this.service.update(id, dto),
@@ -70,15 +70,15 @@ export class EquiposController {
     };
   }
 
-  @Patch(':id/estado')
+  @Patch(':id/status')
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
-  async updateEstado(
+  async updateStatus(
     @Param('id') id: string,
-    @Body() dto: UpdateEstadoEquipoDto,
+    @Body() dto: UpdateEquipmentStatusDto,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.updateEstado(id, dto),
+      data: await this.service.updateStatus(id, dto),
       message: 'Estado actualizado',
     };
   }

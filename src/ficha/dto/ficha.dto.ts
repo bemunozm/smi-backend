@@ -1,4 +1,4 @@
-import { EstadoEquipo } from '@prisma/client';
+import { EquipmentStatus } from '@prisma/client';
 
 /**
  * Tipos de origen de un evento en la línea de tiempo consolidada. Uno por
@@ -25,17 +25,22 @@ export interface EventoFicha {
   meta: Record<string, string | number | boolean | null>;
 }
 
-/** Subconjunto de `Equipo` que se muestra en el encabezado de la ficha. */
+/**
+ * Subconjunto de `Equipment` que se muestra en el encabezado de la ficha.
+ * Campos en inglés porque siguen 1:1 los nombres reales del modelo `Equipment`
+ * (Flota, RFC T01) — el resto de la ficha (Terreno/Mantenimiento) sigue en
+ * español, dominio de sus dueños.
+ */
 export interface EquipoFichaResumen {
   id: string;
-  codigo: string;
-  tipo: string;
-  marca: string;
-  modelo: string;
-  anio: number | null;
-  estado: EstadoEquipo;
-  horometroActual: number;
-  kilometrajeActual: number;
+  internalCode: string;
+  type: string;
+  brand: string;
+  model: string;
+  year: number | null;
+  status: EquipmentStatus;
+  currentHourmeter: number | null;
+  currentMileage: number | null;
 }
 
 /** Contadores agregados de la ficha, para tarjetas/KPIs del front. */

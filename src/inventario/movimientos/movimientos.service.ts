@@ -38,7 +38,7 @@ export class MovimientosService {
         insumo: {
           select: { id: true, codigo: true, nombre: true, unidad: true },
         },
-        equipo: { select: { id: true, codigo: true } },
+        equipo: { select: { id: true, internalCode: true } },
       },
     });
   }

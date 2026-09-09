@@ -13,8 +13,11 @@
 import { Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
-  Equipo,
-  EstadoEquipo,
+  Branch,
+  ControlUnit,
+  Equipment,
+  EquipmentClass,
+  EquipmentStatus,
   OrigenMovimiento,
   TipoMovimiento,
   UnidadInsumo,
@@ -85,19 +88,49 @@ async function seedUsers(): Promise<void> {
 }
 
 // ============================================================================
-// Flota + Inventario (Amin)
+// Flota (Benjamín) + Inventario (Joaquín)
 // ============================================================================
 
-const EQUIPOS = [
+/** Sucursales base (Plataforma/Benjamín) — homean a los equipos de Flota. */
+const BRANCHES = [
+  { name: 'Rajo Norte', address: 'Faena Rajo Norte, s/n' },
+  { name: 'Rajo Sur', address: 'Faena Rajo Sur, s/n' },
+];
+
+/**
+ * Índice (0-based) dentro de `BRANCHES` que homea a cada equipo, en el mismo
+ * orden que `EQUIPOS`. `seedTerreno` sigue referenciando equipos por índice
+ * (`equipos[0]`, `equipos[2]`…) — el orden/tamaño del arreglo no cambia.
+ */
+const HOME_BRANCH_INDEX = [0, 0, 0, 1, 1, 1, 0, 1] as const;
+
+interface SeedEquipo {
+  codigo: string;
+  tipo: string;
+  marca: string;
+  modelo: string;
+  anio: number;
+  equipmentClass: EquipmentClass;
+  controlUnit: ControlUnit;
+  estado: EquipmentStatus;
+  horometroActual: number | null;
+  kilometrajeActual: number | null;
+  /** Solo equipos que circulan por vía pública (camiones, camionetas…). */
+  patente?: string;
+}
+
+const EQUIPOS: SeedEquipo[] = [
   {
     codigo: 'EX-001',
     tipo: 'Excavadora',
     marca: 'Caterpillar',
     modelo: '336',
     anio: 2019,
-    estado: EstadoEquipo.DISPONIBLE,
+    equipmentClass: EquipmentClass.HEAVY,
+    controlUnit: ControlUnit.HOURS,
+    estado: EquipmentStatus.OPERATIONAL,
     horometroActual: 1200,
-    kilometrajeActual: 0,
+    kilometrajeActual: null,
   },
   {
     codigo: 'CG-002',
@@ -105,9 +138,11 @@ const EQUIPOS = [
     marca: 'Komatsu',
     modelo: 'WA320',
     anio: 2021,
-    estado: EstadoEquipo.DISPONIBLE,
+    equipmentClass: EquipmentClass.HEAVY,
+    controlUnit: ControlUnit.HOURS,
+    estado: EquipmentStatus.OPERATIONAL,
     horometroActual: 800,
-    kilometrajeActual: 0,
+    kilometrajeActual: null,
   },
   {
     codigo: 'CM-003',
@@ -115,9 +150,12 @@ const EQUIPOS = [
     marca: 'Volvo',
     modelo: 'FMX',
     anio: 2018,
-    estado: EstadoEquipo.EN_MANTENCION,
-    horometroActual: 5400,
+    equipmentClass: EquipmentClass.HEAVY,
+    controlUnit: ControlUnit.KM,
+    estado: EquipmentStatus.IN_WORKSHOP,
+    horometroActual: null,
     kilometrajeActual: 184300,
+    patente: 'RTFG-32',
   },
   {
     codigo: 'PE-004',
@@ -125,9 +163,11 @@ const EQUIPOS = [
     marca: 'Sandvik',
     modelo: 'DP1500',
     anio: 2016,
-    estado: EstadoEquipo.DE_BAJA,
+    equipmentClass: EquipmentClass.HEAVY,
+    controlUnit: ControlUnit.HOURS,
+    estado: EquipmentStatus.OUT_OF_SERVICE,
     horometroActual: 300,
-    kilometrajeActual: 0,
+    kilometrajeActual: null,
   },
   {
     codigo: 'BD-005',
@@ -135,9 +175,11 @@ const EQUIPOS = [
     marca: 'Caterpillar',
     modelo: 'D6',
     anio: 2020,
-    estado: EstadoEquipo.DISPONIBLE,
+    equipmentClass: EquipmentClass.HEAVY,
+    controlUnit: ControlUnit.HOURS,
+    estado: EquipmentStatus.OPERATIONAL,
     horometroActual: 2100,
-    kilometrajeActual: 0,
+    kilometrajeActual: null,
   },
   {
     codigo: 'CM-006',
@@ -145,9 +187,38 @@ const EQUIPOS = [
     marca: 'Scania',
     modelo: 'R450',
     anio: 2022,
-    estado: EstadoEquipo.EN_RUTA,
-    horometroActual: 3300,
+    equipmentClass: EquipmentClass.HEAVY,
+    controlUnit: ControlUnit.KM,
+    estado: EquipmentStatus.OPERATIONAL,
+    horometroActual: null,
     kilometrajeActual: 96500,
+    patente: 'KGHJ-98',
+  },
+  {
+    codigo: 'CN-007',
+    tipo: 'Camioneta',
+    marca: 'Toyota',
+    modelo: 'Hilux',
+    anio: 2023,
+    equipmentClass: EquipmentClass.LIGHT,
+    controlUnit: ControlUnit.KM,
+    estado: EquipmentStatus.OPERATIONAL,
+    horometroActual: null,
+    kilometrajeActual: 15000,
+    patente: 'ABCD-12',
+  },
+  {
+    codigo: 'MB-008',
+    tipo: 'Minibús',
+    marca: 'Mercedes-Benz',
+    modelo: 'Sprinter',
+    anio: 2022,
+    equipmentClass: EquipmentClass.LIGHT,
+    controlUnit: ControlUnit.KM,
+    estado: EquipmentStatus.OPERATIONAL,
+    horometroActual: null,
+    kilometrajeActual: 22000,
+    patente: 'XXYY-34',
   },
 ];
 
@@ -259,6 +330,16 @@ const INSUMOS: readonly SeedInsumo[] = [
   },
 ];
 
+/** Siembra las sucursales base (Plataforma/Benjamín) que homean a la flota. */
+async function seedBranches(): Promise<Branch[]> {
+  const branches: Branch[] = [];
+  for (const branch of BRANCHES) {
+    branches.push(await prismaClient.branch.create({ data: branch }));
+  }
+  logger.log(`Plataforma: ${branches.length} sucursales`);
+  return branches;
+}
+
 /**
  * Siembra flota e inventario y devuelve los equipos creados para que el seed de
  * Terreno cuelgue sus registros de ellos.
@@ -268,16 +349,36 @@ const INSUMOS: readonly SeedInsumo[] = [
  * `saldoResultante` del kardex salen del mismo código que corre en producción,
  * y no pueden quedar descuadrados por un error de aritmética en el seed.
  */
-async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
+async function seedFlotaEInventario(
+  adminId: string | null,
+  branches: Branch[],
+): Promise<Equipment[]> {
   // EventEmitter2 standalone: el seed no levanta la app Nest (no hay
   // NotificationsListener suscrito), así que los eventos de dominio que
   // dispare InventarioService acá simplemente no tienen listeners — no hace
   // falta el bus real de app.module.ts para que el seed compile ni corra.
   const inventario = new InventarioService(prismaClient, new EventEmitter2());
 
-  const equipos: Equipo[] = [];
-  for (const equipo of EQUIPOS) {
-    equipos.push(await prismaClient.equipo.create({ data: equipo }));
+  const equipos: Equipment[] = [];
+  for (const [index, equipo] of EQUIPOS.entries()) {
+    equipos.push(
+      await prismaClient.equipment.create({
+        data: {
+          internalCode: equipo.codigo,
+          licensePlate: equipo.patente ?? null,
+          type: equipo.tipo,
+          brand: equipo.marca,
+          model: equipo.modelo,
+          year: equipo.anio,
+          equipmentClass: equipo.equipmentClass,
+          controlUnit: equipo.controlUnit,
+          status: equipo.estado,
+          currentHourmeter: equipo.horometroActual,
+          currentMileage: equipo.kilometrajeActual,
+          homeBranchId: branches[HOME_BRANCH_INDEX[index]].id,
+        },
+      }),
+    );
   }
 
   for (const item of INSUMOS) {
@@ -305,7 +406,7 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
         origen: OrigenMovimiento.INTERVENCION,
         responsableId: adminId,
         equipoId: equipos[equipoIndex].id,
-        observacion: `Consumo en mantención de ${equipos[equipoIndex].codigo}`,
+        observacion: `Consumo en mantención de ${equipos[equipoIndex].internalCode}`,
       });
     }
   }
@@ -347,7 +448,7 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
 // Operación en Terreno (Alexander) — cuelga de los equipos de Flota
 // ============================================================================
 
-async function seedTerreno(equipos: Equipo[]): Promise<void> {
+async function seedTerreno(equipos: Equipment[]): Promise<void> {
   await prismaClient.registroCombustible.createMany({
     data: [
       { equipoId: equipos[0].id, litros: 120, tipo: 'PETROLEO' },
@@ -436,9 +537,10 @@ async function seedTerreno(equipos: Equipo[]): Promise<void> {
 
 /**
  * Borra los datos de dominio en orden de dependencia (hijos antes que padres):
- * todo cuelga de `Equipo`, así que va último. Vive acá y no dentro de cada
- * `seedX` porque el orden correcto cruza los dominios y hacerlo por partes
- * obligaba a que Flota borrara tablas de Terreno o al revés.
+ * todo cuelga de `Equipment`, y `Equipment` a su vez cuelga de `Branch`
+ * (`homeBranchId`), así que van últimos en ese orden. Vive acá y no dentro de
+ * cada `seedX` porque el orden correcto cruza los dominios y hacerlo por
+ * partes obligaba a que Flota borrara tablas de Terreno o al revés.
  *
  * No toca las tablas de Better Auth: los usuarios se crean de forma idempotente
  * (`seedUsers` omite los que ya existen).
@@ -450,7 +552,8 @@ async function limpiarDatosDeDominio(): Promise<void> {
   await prismaClient.registroHorometro.deleteMany();
   await prismaClient.trabajoExtraordinario.deleteMany();
   await prismaClient.hallazgo.deleteMany();
-  await prismaClient.equipo.deleteMany();
+  await prismaClient.equipment.deleteMany();
+  await prismaClient.branch.deleteMany();
 }
 
 async function seed(): Promise<void> {
@@ -471,8 +574,10 @@ async function seed(): Promise<void> {
     select: { id: true },
   });
 
-  // Terreno depende de Flota: los equipos se crean primero y se pasan.
-  const equipos = await seedFlotaEInventario(admin?.id ?? null);
+  // Flota depende de Plataforma (homeBranch); Terreno depende de Flota: se
+  // crean en ese orden y se pasan los resultados hacia abajo.
+  const branches = await seedBranches();
+  const equipos = await seedFlotaEInventario(admin?.id ?? null, branches);
   await seedTerreno(equipos);
 
   // Dominio Mantenimiento (Joaquín): corre al final; resuelve el asignadoAId
