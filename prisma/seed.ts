@@ -151,6 +151,42 @@ const EQUIPOS = [
     horometroActual: 3300,
     kilometrajeActual: 96500,
   },
+  {
+    // Gemelo de EX-001 (misma marca y modelo) y SIN compatibilidades propias:
+    // es el caso que hace visible el aviso "copiá las de EX-001" de RFC-12 §4.
+    codigo: 'EX-007',
+    tipo: 'Excavadora',
+    marca: 'Caterpillar',
+    modelo: '336',
+    anio: 2023,
+    estado: EstadoEquipo.DISPONIBLE,
+    horometroActual: 150,
+    kilometrajeActual: 0,
+  },
+];
+
+/**
+ * Compatibilidad repuesto ↔ equipo (RFC-12): qué le sirve a cada máquina.
+ * `[código de equipo, código de insumo, nota]`.
+ */
+const COMPATIBILIDADES: ReadonlyArray<
+  readonly [string, string, string | null]
+> = [
+  ['EX-001', 'FIL-001', null],
+  ['EX-001', 'FIL-002', null],
+  ['EX-001', 'ACE-001', null],
+  ['EX-001', 'ACE-002', 'Sistema hidráulico principal'],
+  ['EX-001', 'MAN-001', 'Tramo del brazo, medir antes de cortar'],
+  ['CG-002', 'FIL-001', null],
+  ['CG-002', 'ACE-001', null],
+  ['CG-002', 'COR-001', null],
+  ['CM-003', 'FIL-002', null],
+  ['CM-003', 'BAT-001', null],
+  // Existe solo en Faena Norte: en Casa Matriz aparece como "en otra sucursal".
+  ['CM-003', 'NEU-001', 'Solo eje trasero'],
+  ['BD-005', 'FIL-001', null],
+  ['BD-005', 'ACE-002', null],
+  ['BD-005', 'GRA-001', 'Engrase de cadenas cada 250 h'],
 ];
 
 /**
@@ -455,6 +491,28 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
     where: { stock: { lte: prismaClient.insumo.fields.stockMinimo } },
   });
 
+  // Compatibilidades (RFC-12). Se resuelven por código para que la lista de
+  // arriba se lea como la escribiría un mecánico, no como una lista de ids.
+  const porCodigoEquipo = new Map(equipos.map((eq) => [eq.codigo, eq.id]));
+  const insumosPorCodigo = new Map(
+    (
+      await prismaClient.insumo.findMany({ select: { id: true, codigo: true } })
+    ).map((ins) => [ins.codigo, ins.id]),
+  );
+
+  for (const [codigoEquipo, codigoInsumo, nota] of COMPATIBILIDADES) {
+    const equipoId = porCodigoEquipo.get(codigoEquipo);
+    const insumoId = insumosPorCodigo.get(codigoInsumo);
+    if (!equipoId || !insumoId) {
+      throw new Error(
+        `Compatibilidad inválida en el seed: ${codigoEquipo} ↔ ${codigoInsumo}`,
+      );
+    }
+    await prismaClient.compatibilidadEquipoInsumo.create({
+      data: { equipoId, insumoId, nota, declaradaPorId: adminId },
+    });
+  }
+
   // Verificación de la invariante de RFC-11 §5.2 sobre datos reales: si el seed
   // la rompe, el resto de la demo trabaja sobre números que no cuadran.
   const totales = await prismaClient.stockSucursal.groupBy({
@@ -478,7 +536,7 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
   }
 
   logger.log(
-    `Flota + Inventario: ${equipos.length} equipos, ${sucursales.length} sucursales, ${INSUMOS.length} insumos (${bajoMinimo} bajo mínimo global)`,
+    `Flota + Inventario: ${equipos.length} equipos, ${sucursales.length} sucursales, ${INSUMOS.length} insumos (${bajoMinimo} bajo mínimo global), ${COMPATIBILIDADES.length} compatibilidades`,
   );
 
   return equipos;

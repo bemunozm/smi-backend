@@ -14,6 +14,7 @@ import { FichaModule } from './ficha/ficha.module';
 import { InventarioModule } from './inventario/inventario.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SucursalesModule } from './sucursales/sucursales.module';
+import { CompatibilidadModule } from './compatibilidad/compatibilidad.module';
 import { TerrenoModule } from './terreno/terreno.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { auth } from './auth/auth';
@@ -38,6 +39,8 @@ import { auth } from './auth/auth';
     InventarioModule,
     // Sucursales (Joaquín, RFC-11): las bodegas sobre las que se reparte el stock
     SucursalesModule,
+    // Compatibilidad repuesto ↔ equipo (Joaquín, RFC-12): cruza Flota e Inventario
+    CompatibilidadModule,
     // Dominio Operación en Terreno (Alexander)
     TerrenoModule,
     UploadsModule,

@@ -5,6 +5,7 @@
 //   2. Flota + Inventario (Amin)   — Equipo, Insumo, MovimientoInventario.
 //      + Sucursales (Joaquín, RFC-11) — Sucursal, StockSucursal. El saldo por
 //        bodega es la fuente de verdad; `Insumo.stock` pasa a ser su suma.
+//      + Compatibilidad (Joaquín, RFC-12) — CompatibilidadEquipoInsumo.
 //   3. Operación en Terreno (Alex) — RegistroCombustible, RegistroHorometro,
 //                                    TrabajoExtraordinario, Hallazgo.
 //
@@ -158,6 +159,9 @@ model Equipo {
   // Flota / Inventario (Amin)
   movimientos MovimientoInventario[]
 
+  // Compatibilidad repuesto ↔ equipo (Joaquín, RFC-12)
+  repuestosCompatibles CompatibilidadEquipoInsumo[]
+
   // Operación en Terreno (Alexander)
   combustibles  RegistroCombustible[]
   horometros    RegistroHorometro[]
@@ -211,8 +215,9 @@ model Insumo {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  movimientos MovimientoInventario[]
-  stocks      StockSucursal[]
+  movimientos      MovimientoInventario[]
+  stocks           StockSucursal[]
+  compatibilidades CompatibilidadEquipoInsumo[]
 
   @@index([nombre])
   @@index([tipo])
@@ -332,6 +337,35 @@ model MovimientoInventario {
   @@index([insumoId, fecha])
   @@index([sucursalId, fecha])
   @@index([equipoId])
+}
+
+/// Qué repuestos sirven para qué máquina (RFC-12). N:M con FK reales en ambos
+/// lados a propósito: es lo que permite el join "compatible con este equipo Y
+/// con stock en mi bodega", que es la consulta con valor operativo. Una regla
+/// por marca/modelo no se podría cruzar con stock de forma confiable, porque
+/// `Equipo.marca`/`modelo` son texto libre sin catálogo ni normalización.
+model CompatibilidadEquipoInsumo {
+  id       String @id @default(cuid())
+  equipoId String
+  equipo   Equipo @relation(fields: [equipoId], references: [id], onDelete: Cascade)
+  insumoId String
+  insumo   Insumo @relation(fields: [insumoId], references: [id], onDelete: Cascade)
+
+  /// Salvedad de la compatibilidad: "solo desde nº serie 4500", "requiere
+  /// adaptador". Es el conocimiento que hoy vive en la cabeza del mecánico.
+  nota String?
+
+  /// `user.id` de Better Auth de quien la declaró — sin FK (ver convenciones).
+  declaradaPorId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Una máquina no puede declarar dos veces el mismo repuesto: la replicación
+  /// por marca/modelo se apoya en esto para ser idempotente.
+  @@unique([equipoId, insumoId])
+  @@index([insumoId])
+  @@map("compatibilidad_equipo_insumo")
 }
 
 // ============================================================================
