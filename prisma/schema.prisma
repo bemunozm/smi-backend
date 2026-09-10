@@ -3,7 +3,8 @@
 // Orden de las secciones:
 //   1. Better Auth (Benjamín)      — generado por `npm run auth:schema`, no editar a mano.
 //   2. Flota (Benjamín)            — Equipment, Branch (RFC T01, opción A — en inglés).
-//   3. Inventario (Joaquín)        — Insumo, MovimientoInventario (español, migración pendiente).
+//   3. Inventario (Joaquín)        — InventoryItem, ItemCategory, Stock,
+//                                    StockMovement, PartCompatibility (RFC-3).
 //   4. Operación en Terreno (Alex) — RegistroCombustible, RegistroHorometro,
 //                                    TrabajoExtraordinario, Hallazgo.
 //
@@ -123,8 +124,8 @@ model Notification {
 
 // ============================================================================
 // Dominio: Flota (Benjamín) — modelo rediseñado en inglés (RFC T01, opción A).
-// `Insumo`/`MovimientoInventario` (Inventario) siguen en español más abajo;
-// solo su relación con la unidad se repunta a `Equipment`.
+// El dominio de Inventario también quedó en inglés (RFC-3); su relación con la
+// unidad apunta a `Equipment`.
 // ============================================================================
 
 /// Clase de la unidad — filtro principal de Flota (RFC T01 §2, R8).
@@ -158,6 +159,14 @@ model Branch {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   homedEquipment Equipment[]
+
+  // Inventario (Joaquín, RFC-3). Las tres relaciones de movimiento son la misma
+  // tabla vista desde tres ángulos: los asientos que mueven ESTA bodega, y los
+  // traspasos en los que figura como origen o como destino.
+  stocks         Stock[]
+  stockMovements StockMovement[] @relation("StockMovementBranch")
+  transfersOut   StockMovement[] @relation("StockMovementSource")
+  transfersIn    StockMovement[] @relation("StockMovementDestination")
 
   @@map("branch")
 }
@@ -194,8 +203,9 @@ model Equipment {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  // Inventario (kardex) — dominio en español, se conserva la relación.
-  movimientos MovimientoInventario[]
+  // Inventario (Joaquín, RFC-3)
+  stockMovements      StockMovement[]
+  partCompatibilities PartCompatibility[]
 
   // Operación en Terreno (Alexander)
   combustibles  RegistroCombustible[]
@@ -209,94 +219,225 @@ model Equipment {
 }
 
 // ============================================================================
-// Dominio: Inventario (Joaquín)
+// Dominio: Inventario (Joaquín) — RFC-3, opción A. Modelo en inglés.
+//
+// El cambio de fondo respecto del modelo anterior: la existencia deja de ser
+// una columna del ítem y pasa a la tabla `Stock` (ítem × sucursal). No hay
+// total denormalizado — el consolidado se calcula sumando `Stock`. Esa es la
+// diferencia con el diseño previo (`Insumo.stock`), que obligaba a mantener dos
+// números sincronizados a mano.
+//
+// ⚠️ ASUNCIÓN EXPLÍCITA DE T01 — SIN TRAZABILIDAD DE LOTE.
+// RFC-3 dejó abierto "lote/serie/vencimiento (pendiente de Sima)". Este modelo
+// se cierra asumiendo que NO se trazan: el saldo se identifica por
+// (ítem × sucursal) y nada más.
+//
+// Si Sima confirma que hay que trazarlos, esto NO se resuelve agregando una
+// columna: cambia la clave del saldo a (ítem × sucursal × lote), `Stock` pasa a
+// tener una fila por lote, `StockMovement` necesita el lote, y el descuento
+// tiene que elegir de cuál lote sale (FIFO / por vencimiento). Es una segunda
+// migración y una reescritura del servicio de existencias, no un parche.
+// Presupuestarlo así al replanificar.
 // ============================================================================
 
-/// Unidad de medida del insumo. Determina cómo se muestra el stock en la UI
-/// (litros y kilos admiten decimales; unidades, en la práctica, no).
-enum UnidadInsumo {
-  UNIDAD
-  LITRO
-  KILOGRAMO
-  METRO
+enum UnitOfMeasure {
+  UNIT
+  LITER
+  KILOGRAM
+  METER
 }
 
-model Insumo {
-  id          String       @id @default(cuid())
-  codigo      String       @unique
-  nombre      String
-  descripcion String?
-  unidad      UnidadInsumo @default(UNIDAD)
-
-  /// Saldo actual. NUNCA se escribe directo desde otro dominio: se mueve
-  /// exclusivamente vía `InventarioService` (registrarEntrada/registrarSalida/
-  /// ajustarPorConteo), que en la misma transacción deja el `MovimientoInventario`
-  /// correspondiente. Esa es la garantía de que el kardex cuadra con el stock.
-  stock       Float @default(0)
-  /// Umbral que dispara la alerta de stock bajo (requerimientos §5.1).
-  stockMinimo Float @default(0)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  movimientos MovimientoInventario[]
-
-  @@index([nombre])
+/// Suministro (consumible: aceite, grasa, huaipe) vs. repuesto (pieza que se
+/// monta en una máquina). Gobierna las pestañas de la pantalla de Inventario
+/// (T15) y qué ítems ofrece por defecto el buscador de compatibilidades.
+enum ItemType {
+  SUPPLY
+  PART
 }
 
-/// Dirección del movimiento. El "Ajuste por inventario físico" de los
-/// requerimientos (§5.1, "suma o resta") NO es un tipo aparte: se registra como
-/// ENTRADA o SALIDA con `origen = AJUSTE_FISICO`, según el signo de la
-/// diferencia. Así `cantidad` es SIEMPRE positiva y el signo lo da `tipo`.
-enum TipoMovimiento {
-  ENTRADA
-  SALIDA
+/// Agrupación libre del catálogo (Filtros, Lubricantes, Neumáticos…). Tabla y
+/// no enum: la mantiene el administrador desde la aplicación, sin migración.
+model ItemCategory {
+  id   String @id @default(cuid())
+  name String @unique
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  items InventoryItem[]
+
+  @@map("item_category")
 }
 
-/// Por qué se movió el stock. Cubre 1:1 la tabla de tipos de movimiento del
-/// documento de requerimientos (§5.1).
-enum OrigenMovimiento {
-  COMPRA // Entrada / reposición
-  DEVOLUCION // Material no usado que vuelve a bodega
-  AJUSTE_FISICO // Corrección tras conteo físico
-  INTERVENCION // Consumo por mantención (Joaquín)
-  ACTIVIDAD // Consumo por actividad/tarea (Joaquín)
-  TRABAJO_EXTRAORDINARIO // Consumo en un trabajo facturable (Alexander)
+model InventoryItem {
+  id          String        @id @default(cuid())
+  /// Código interno del catálogo (ex `Insumo.codigo`).
+  sku         String        @unique
+  name        String
+  description String?
+  unit        UnitOfMeasure @default(UNIT)
+  type        ItemType      @default(SUPPLY)
+
+  categoryId String?       @map("category_id")
+  category   ItemCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  /// Número de parte del fabricante. Es lo que el mecánico tiene a la vista
+  /// cuando sostiene la pieza, y no coincide con nuestro `sku`.
+  partNumber      String? @map("part_number")
+  defaultSupplier String? @map("default_supplier")
+  /// Su falta detiene la máquina: la UI lo destaca y el reporte de compras lo
+  /// prioriza aunque el saldo todavía no cruce el mínimo.
+  isCritical      Boolean @default(false) @map("is_critical")
+  /// Baja lógica. El catálogo no se borra: los movimientos históricos lo
+  /// referencian y el kardex tiene que seguir siendo legible.
+  isActive        Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stocks          Stock[]
+  movements       StockMovement[]
+  compatibilities PartCompatibility[]
+
+  @@index([name])
+  @@index([type])
+  @@map("inventory_item")
 }
 
-/// Kardex: un registro por cada entrada/salida, con el saldo resultante.
-model MovimientoInventario {
-  id       String @id @default(cuid())
-  insumoId String
-  insumo   Insumo @relation(fields: [insumoId], references: [id], onDelete: Cascade)
+/// Existencia de un ítem EN una sucursal. Es la ÚNICA fuente de verdad del
+/// saldo: no hay columna espejo en `InventoryItem`, así que no hay dos números
+/// que puedan discrepar.
+///
+/// Un ítem sin fila en una sucursal se lee como saldo 0; la fila se crea
+/// (upsert) en el primer movimiento que ocurre en esa bodega.
+model Stock {
+  id     String        @id @default(cuid())
+  itemId String        @map("item_id")
+  item   InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
-  tipo   TipoMovimiento
-  origen OrigenMovimiento
+  branchId String @map("branch_id")
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
-  /// Siempre > 0. El signo lo determina `tipo`.
-  cantidad        Float
-  /// Stock del insumo DESPUÉS de aplicar este movimiento, calculado dentro de la
-  /// misma transacción que lo movió. Denormalizado a propósito: hace que el
-  /// kardex sea una lectura ordenada simple y deja evidencia auditable del
-  /// saldo en cada punto (requerimientos §5.1: "con saldo resultante").
-  saldoResultante Float
+  quantity Float @default(0)
+
+  /// Umbral de reposición PROPIO de esta bodega. `0` = no configurado, y por lo
+  /// tanto no alerta. El umbral de la empresa y el de una bodega no son la
+  /// misma magnitud: usar uno como el otro enciende la alerta en todas las
+  /// filas a la vez, que es peor que no alertar.
+  minimumQuantity Float @default(0) @map("minimum_quantity")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([itemId, branchId])
+  @@index([branchId])
+  @@map("stock")
+}
+
+/// Dirección del asiento. El ajuste por conteo físico NO es una dirección
+/// aparte: se registra como IN u OUT con `reason = PHYSICAL_ADJUSTMENT` según
+/// el signo de la diferencia. Así `quantity` es SIEMPRE positiva.
+enum MovementDirection {
+  IN
+  OUT
+}
+
+/// Por qué se movió el saldo.
+enum MovementReason {
+  PURCHASE // Entrada / reposición
+  RETURN // Material no usado que vuelve a bodega
+  PHYSICAL_ADJUSTMENT // Corrección tras conteo físico
+  INTERVENTION // Consumo por mantención
+  ACTIVITY // Consumo por actividad/tarea
+  EXTRAORDINARY_WORK // Consumo en un trabajo facturable
+  TRANSFER // Traspaso entre sucursales (RFC-3 D4: dos asientos)
+}
+
+/// Kardex: un asiento por cada entrada/salida, con el saldo resultante.
+///
+/// Un traspaso son DOS asientos (OUT en el origen + IN en el destino) que
+/// comparten `reference` y llevan `reason = TRANSFER`. Se modela así, y no como
+/// una fila con dos sucursales, para que el saldo de cada bodega se derive
+/// leyendo únicamente sus propios asientos.
+model StockMovement {
+  id     String        @id @default(cuid())
+  itemId String        @map("item_id")
+  item   InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  /// Bodega cuyo saldo mueve ESTE asiento. `Restrict` y no `Cascade`: dar de
+  /// baja una sucursal no puede llevarse su historial por delante.
+  branchId String @map("branch_id")
+  branch   Branch @relation("StockMovementBranch", fields: [branchId], references: [id], onDelete: Restrict)
+
+  direction MovementDirection
+  reason    MovementReason
+
+  /// Siempre > 0. El signo lo determina `direction`.
+  quantity Float
+  /// Saldo del ítem EN ESTA BODEGA después de aplicar el asiento, calculado
+  /// dentro de la misma transacción. Denormalizado a propósito: deja evidencia
+  /// auditable del saldo en cada punto sin recalcular la serie completa.
+  resultingBalance Float @map("resulting_balance")
+
+  /// Vínculo del asiento con lo que lo originó. Su significado lo determina
+  /// `reason`: en un TRANSFER agrupa los dos asientos del par; en un consumo
+  /// apunta al documento de origen (intervención, actividad…). String suelto:
+  /// una FK polimórfica no se puede expresar en Prisma.
+  reference String?
+
+  /// Contraparte del traspaso, para que cada renglón del kardex se explique
+  /// solo ("salida hacia Faena Norte" / "entrada desde Casa Matriz"). Nulos
+  /// fuera de un TRANSFER.
+  sourceBranchId      String? @map("source_branch_id")
+  sourceBranch        Branch? @relation("StockMovementSource", fields: [sourceBranchId], references: [id], onDelete: Restrict)
+  destinationBranchId String? @map("destination_branch_id")
+  destinationBranch   Branch? @relation("StockMovementDestination", fields: [destinationBranchId], references: [id], onDelete: Restrict)
 
   /// `user.id` de Better Auth. Sin FK — ver nota de convenciones arriba.
-  responsableId String?
+  performedById String? @map("performed_by_id")
+
   /// Unidad a la que se imputa el consumo, si aplica. `SetNull` y no `Cascade`:
   /// borrar un equipo no debe borrar el historial de stock.
-  equipoId      String?    @map("equipo_id")
-  equipo        Equipment? @relation(fields: [equipoId], references: [id], onDelete: SetNull)
-  /// Id del documento que originó el movimiento (intervencionId, actividadId…).
-  /// String suelto a propósito: apunta a tablas de otros dominios que todavía
-  /// no existen, y una FK polimórfica no se puede expresar en Prisma.
-  referenciaId  String?
+  equipmentId String?    @map("equipment_id")
+  equipment   Equipment? @relation(fields: [equipmentId], references: [id], onDelete: SetNull)
 
-  observacion String?
-  fecha       DateTime @default(now())
+  notes      String?
+  occurredAt DateTime @default(now()) @map("occurred_at")
 
-  @@index([insumoId, fecha])
-  @@index([equipoId])
+  @@index([itemId, occurredAt])
+  @@index([branchId, occurredAt])
+  @@index([equipmentId])
+  @@index([reference])
+  @@map("stock_movement")
+}
+
+/// Qué repuestos sirven para qué máquina. N:M con FK reales en ambos lados a
+/// propósito: es lo que permite el join "compatible con este equipo Y con
+/// existencia en mi bodega", que es la consulta con valor operativo. Una regla
+/// por marca/modelo no se podría cruzar con el saldo de forma confiable, porque
+/// `Equipment.brand`/`model` son texto libre sin catálogo ni normalización.
+model PartCompatibility {
+  id          String        @id @default(cuid())
+  equipmentId String        @map("equipment_id")
+  equipment   Equipment     @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+  itemId      String        @map("item_id")
+  item        InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  /// Salvedad de la compatibilidad: "solo desde nº serie 4500", "requiere
+  /// adaptador". Es el conocimiento que hoy vive en la cabeza del mecánico.
+  note String?
+
+  /// `user.id` de Better Auth de quien la declaró — sin FK.
+  declaredById String? @map("declared_by_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Una máquina no declara dos veces el mismo repuesto: la replicación por
+  /// marca+modelo se apoya en esto para ser idempotente.
+  @@unique([equipmentId, itemId])
+  @@index([itemId])
+  @@map("part_compatibility")
 }
 
 // ============================================================================

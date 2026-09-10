@@ -144,17 +144,39 @@ describe('NotificationsListener', () => {
     );
   });
 
-  it('insumo.low-stock notifica a ADMIN + SUPERVISOR', async () => {
-    await listener.onInsumoLowStock({
-      insumoId: 'i1',
-      nombre: 'Filtro de aceite',
-      stock: 2,
-      stockMinimo: 5,
+  it('item.low-stock notifica a ADMIN + SUPERVISOR', async () => {
+    await listener.onItemLowStock({
+      itemId: 'i1',
+      itemName: 'Filtro de aceite',
+      branchId: 'b1',
+      branchName: 'Faena Norte',
+      quantity: 2,
+      minimumQuantity: 5,
     });
 
     expect(createForRoles).toHaveBeenCalledWith(
       [ROLES.ADMIN, ROLES.SUPERVISOR],
-      expect.objectContaining({ tipo: 'insumo.low-stock' }),
+      expect.objectContaining({ tipo: 'item.low-stock' }),
+    );
+  });
+
+  it('nombra la bodega en el cuerpo del aviso', async () => {
+    await listener.onItemLowStock({
+      itemId: 'i1',
+      itemName: 'Filtro de aceite',
+      branchId: 'b1',
+      branchName: 'Faena Norte',
+      quantity: 2,
+      minimumQuantity: 5,
+    });
+
+    // Con existencias por sucursal, "quedan 2" sin decir dónde no le dice a
+    // nadie si le toca reponer a él.
+    expect(createForRoles).toHaveBeenCalledWith(
+      [ROLES.ADMIN, ROLES.SUPERVISOR],
+      expect.objectContaining({
+        cuerpo: 'Quedan 2 en Faena Norte (mínimo 5)',
+      }),
     );
   });
 });

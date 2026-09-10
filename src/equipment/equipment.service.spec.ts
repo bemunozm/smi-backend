@@ -20,7 +20,7 @@ const SIN_REGISTROS = {
   horometros: 0,
   trabajosExtra: 0,
   hallazgos: 0,
-  movimientos: 0,
+  stockMovements: 0,
 };
 
 /** Construye un error de Prisma real (no un duck-type) para que el `instanceof`

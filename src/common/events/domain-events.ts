@@ -16,7 +16,7 @@ export const DOMAIN_EVENTS = {
   HALLAZGO_CREATED: 'hallazgo.created',
   ORDEN_ASSIGNED: 'orden.assigned',
   ORDEN_COMPLETED: 'orden.completed',
-  INSUMO_LOW_STOCK: 'insumo.low-stock',
+  ITEM_LOW_STOCK: 'item.low-stock',
 } as const;
 
 export type DomainEventName =
@@ -46,9 +46,16 @@ export interface OrdenCompletedEvent {
 }
 
 /** Emitido por Inventario (Amin) cuando un Insumo cruza su stockMinimo. */
-export interface InsumoLowStockEvent {
-  insumoId: string;
-  nombre: string;
-  stock: number;
-  stockMinimo: number;
+export interface ItemLowStockEvent {
+  itemId: string;
+  itemName: string;
+  /**
+   * La alerta es POR BODEGA (RFC-3): con existencias por sucursal, avisar
+   * "quedan 3" sin decir dónde no le sirve a nadie — el bodeguero no sabe si
+   * le habla a él.
+   */
+  branchId: string;
+  branchName: string;
+  quantity: number;
+  minimumQuantity: number;
 }

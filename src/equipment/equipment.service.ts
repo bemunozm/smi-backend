@@ -109,14 +109,14 @@ export class EquipmentService {
             horometros: true,
             trabajosExtra: true,
             hallazgos: true,
-            movimientos: true,
+            stockMovements: true,
           },
         },
-        movimientos: {
-          orderBy: { fecha: 'desc' },
+        stockMovements: {
+          orderBy: { occurredAt: 'desc' },
           take: 10,
           include: {
-            insumo: { select: { codigo: true, nombre: true, unidad: true } },
+            item: { select: { sku: true, name: true, unit: true } },
           },
         },
       },
@@ -169,7 +169,7 @@ export class EquipmentService {
             horometros: true,
             trabajosExtra: true,
             hallazgos: true,
-            movimientos: true,
+            stockMovements: true,
           },
         },
       },
@@ -184,7 +184,7 @@ export class EquipmentService {
       equipment._count.horometros +
       equipment._count.trabajosExtra +
       equipment._count.hallazgos +
-      equipment._count.movimientos;
+      equipment._count.stockMovements;
 
     if (registros > 0) {
       throw new ConflictException(
