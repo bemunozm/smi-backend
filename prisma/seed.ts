@@ -18,15 +18,15 @@ import {
   Equipment,
   EquipmentClass,
   EquipmentStatus,
-  OrigenMovimiento,
-  TipoMovimiento,
-  UnidadInsumo,
+  ItemType,
+  MovementReason,
+  UnitOfMeasure,
 } from '@prisma/client';
 
 import { prismaClient } from '../src/common/prisma/prisma.service';
 import { auth } from '../src/auth/auth';
 import { ROLES } from '../src/auth/roles';
-import { InventarioService } from '../src/inventario/inventario.service';
+import { StockService } from '../src/inventory/stock.service';
 import { seedMantenimiento } from './seeds/mantenimiento.seed';
 
 const logger = new Logger('Seed');
@@ -93,8 +93,8 @@ async function seedUsers(): Promise<void> {
 
 /** Sucursales base (Plataforma/Benjamín) — homean a los equipos de Flota. */
 const BRANCHES = [
-  { name: 'Rajo Norte', address: 'Faena Rajo Norte, s/n' },
-  { name: 'Rajo Sur', address: 'Faena Rajo Sur, s/n' },
+  { name: 'Casa Matriz', address: 'Iquique' },
+  { name: 'Faena', address: 'Faena minera, s/n' },
 ];
 
 /**
@@ -227,105 +227,121 @@ const EQUIPOS: SeedEquipo[] = [
  * para que 4 de los 10 queden en o bajo su mínimo — la pantalla de Inventario
  * necesita mostrar la alerta de stock bajo con datos reales, no vacía.
  */
-interface SeedInsumo {
-  codigo: string;
-  nombre: string;
-  unidad: UnidadInsumo;
-  stockMinimo: number;
-  /** Reposición inicial (entrada por COMPRA). */
-  entrada: number;
+interface SeedItem {
+  sku: string;
+  name: string;
+  unit: UnitOfMeasure;
+  type: ItemType;
+  /**
+   * Umbral de reposición de la bodega que recibe la existencia inicial. Es POR
+   * BODEGA: el umbral de la empresa y el de una sucursal no son la misma
+   * magnitud (ver `Stock.minimumQuantity`).
+   */
+  minimumQuantity: number;
+  /** Reposición inicial (entrada por PURCHASE). */
+  initialQuantity: number;
   /** Consumos posteriores: [cantidad, índice del equipo al que se imputa]. */
   consumos: ReadonlyArray<readonly [number, number]>;
 }
 
-const INSUMOS: readonly SeedInsumo[] = [
+const ITEMS: readonly SeedItem[] = [
   {
-    codigo: 'FIL-001',
-    nombre: 'Filtro de aceite motor',
-    unidad: UnidadInsumo.UNIDAD,
-    stockMinimo: 10,
-    entrada: 40,
+    sku: 'FIL-001',
+    type: ItemType.PART,
+    name: 'Filtro de aceite motor',
+    unit: UnitOfMeasure.UNIT,
+    minimumQuantity: 10,
+    initialQuantity: 40,
     consumos: [
       [6, 0],
       [4, 2],
     ],
   },
   {
-    codigo: 'FIL-002',
-    nombre: 'Filtro de aire primario',
-    unidad: UnidadInsumo.UNIDAD,
-    stockMinimo: 8,
-    entrada: 24,
+    sku: 'FIL-002',
+    type: ItemType.PART,
+    name: 'Filtro de aire primario',
+    unit: UnitOfMeasure.UNIT,
+    minimumQuantity: 8,
+    initialQuantity: 24,
     consumos: [[4, 1]],
   },
   {
-    codigo: 'ACE-001',
-    nombre: 'Aceite motor 15W-40',
-    unidad: UnidadInsumo.LITRO,
-    stockMinimo: 200,
-    entrada: 400,
+    sku: 'ACE-001',
+    type: ItemType.SUPPLY,
+    name: 'Aceite motor 15W-40',
+    unit: UnitOfMeasure.LITER,
+    minimumQuantity: 200,
+    initialQuantity: 400,
     consumos: [
       [120, 2],
       [60, 0],
     ],
   },
   {
-    codigo: 'ACE-002',
-    nombre: 'Aceite hidráulico ISO 68',
-    unidad: UnidadInsumo.LITRO,
-    stockMinimo: 150,
-    entrada: 200,
+    sku: 'ACE-002',
+    type: ItemType.SUPPLY,
+    name: 'Aceite hidráulico ISO 68',
+    unit: UnitOfMeasure.LITER,
+    minimumQuantity: 150,
+    initialQuantity: 200,
     consumos: [
       [80, 0],
       [60, 3],
     ],
   },
   {
-    codigo: 'REF-001',
-    nombre: 'Refrigerante concentrado',
-    unidad: UnidadInsumo.LITRO,
-    stockMinimo: 40,
-    entrada: 80,
+    sku: 'REF-001',
+    type: ItemType.SUPPLY,
+    name: 'Refrigerante concentrado',
+    unit: UnitOfMeasure.LITER,
+    minimumQuantity: 40,
+    initialQuantity: 80,
     consumos: [[20, 5]],
   },
   {
-    codigo: 'NEU-001',
-    nombre: 'Neumático 29.5R25',
-    unidad: UnidadInsumo.UNIDAD,
-    stockMinimo: 4,
-    entrada: 6,
+    sku: 'NEU-001',
+    type: ItemType.PART,
+    name: 'Neumático 29.5R25',
+    unit: UnitOfMeasure.UNIT,
+    minimumQuantity: 4,
+    initialQuantity: 6,
     consumos: [[4, 1]],
   },
   {
-    codigo: 'COR-001',
-    nombre: 'Correa de alternador',
-    unidad: UnidadInsumo.UNIDAD,
-    stockMinimo: 5,
-    entrada: 12,
+    sku: 'COR-001',
+    type: ItemType.PART,
+    name: 'Correa de alternador',
+    unit: UnitOfMeasure.UNIT,
+    minimumQuantity: 5,
+    initialQuantity: 12,
     consumos: [[2, 4]],
   },
   {
-    codigo: 'GRA-001',
-    nombre: 'Grasa EP-2',
-    unidad: UnidadInsumo.KILOGRAMO,
-    stockMinimo: 25,
-    entrada: 50,
+    sku: 'GRA-001',
+    type: ItemType.SUPPLY,
+    name: 'Grasa EP-2',
+    unit: UnitOfMeasure.KILOGRAM,
+    minimumQuantity: 25,
+    initialQuantity: 50,
     consumos: [[30, 4]],
   },
   {
-    codigo: 'MAN-001',
-    nombre: 'Manguera hidráulica 1/2"',
-    unidad: UnidadInsumo.METRO,
-    stockMinimo: 20,
-    entrada: 60,
+    sku: 'MAN-001',
+    type: ItemType.PART,
+    name: 'Manguera hidráulica 1/2"',
+    unit: UnitOfMeasure.METER,
+    minimumQuantity: 20,
+    initialQuantity: 60,
     consumos: [[18, 3]],
   },
   {
-    codigo: 'BAT-001',
-    nombre: 'Batería 12V 180Ah',
-    unidad: UnidadInsumo.UNIDAD,
-    stockMinimo: 2,
-    entrada: 3,
+    sku: 'BAT-001',
+    type: ItemType.PART,
+    name: 'Batería 12V 180Ah',
+    unit: UnitOfMeasure.UNIT,
+    minimumQuantity: 2,
+    initialQuantity: 3,
     consumos: [[1, 5]],
   },
 ];
@@ -357,7 +373,10 @@ async function seedFlotaEInventario(
   // NotificationsListener suscrito), así que los eventos de dominio que
   // dispare InventarioService acá simplemente no tienen listeners — no hace
   // falta el bus real de app.module.ts para que el seed compile ni corra.
-  const inventario = new InventarioService(prismaClient, new EventEmitter2());
+  const stock = new StockService(prismaClient, new EventEmitter2());
+  // T01 deja toda la existencia inicial en la primera bodega; repartirla entre
+  // sucursales es alcance de T17 (seed de datos de ejemplo).
+  const mainBranch = branches[0];
 
   const equipos: Equipment[] = [];
   for (const [index, equipo] of EQUIPOS.entries()) {
@@ -381,64 +400,81 @@ async function seedFlotaEInventario(
     );
   }
 
-  for (const item of INSUMOS) {
-    const insumo = await prismaClient.insumo.create({
+  for (const item of ITEMS) {
+    const created = await prismaClient.inventoryItem.create({
       data: {
-        codigo: item.codigo,
-        nombre: item.nombre,
-        unidad: item.unidad,
-        stockMinimo: item.stockMinimo,
+        sku: item.sku,
+        name: item.name,
+        unit: item.unit,
+        type: item.type,
       },
     });
 
-    await inventario.registrarEntrada({
-      insumoId: insumo.id,
-      cantidad: item.entrada,
-      origen: OrigenMovimiento.COMPRA,
-      responsableId: adminId,
-      observacion: 'Reposición inicial de bodega',
+    await stock.receive({
+      itemId: created.id,
+      branchId: mainBranch.id,
+      quantity: item.initialQuantity,
+      reason: MovementReason.PURCHASE,
+      performedById: adminId,
+      notes: 'Reposición inicial de bodega',
+    });
+
+    // El umbral se fija después de la entrada: la fila de saldo ya existe.
+    await prismaClient.stock.update({
+      where: {
+        itemId_branchId: { itemId: created.id, branchId: mainBranch.id },
+      },
+      data: { minimumQuantity: item.minimumQuantity },
     });
 
     for (const [cantidad, equipoIndex] of item.consumos) {
-      await inventario.registrarSalida({
-        insumoId: insumo.id,
-        cantidad,
-        origen: OrigenMovimiento.INTERVENCION,
-        responsableId: adminId,
-        equipoId: equipos[equipoIndex].id,
-        observacion: `Consumo en mantención de ${equipos[equipoIndex].internalCode}`,
+      await stock.issue({
+        itemId: created.id,
+        branchId: mainBranch.id,
+        quantity: cantidad,
+        reason: MovementReason.INTERVENTION,
+        performedById: adminId,
+        equipmentId: equipos[equipoIndex].id,
+        notes: `Consumo en mantención de ${equipos[equipoIndex].internalCode}`,
       });
     }
   }
 
   // Un par de movimientos de los otros tipos, para que el kardex de la demo no
   // sea solo compras y consumos.
-  const grasa = await prismaClient.insumo.findUniqueOrThrow({
-    where: { codigo: 'GRA-001' },
+  const grease = await prismaClient.inventoryItem.findUniqueOrThrow({
+    where: { sku: 'GRA-001' },
   });
-  await inventario.registrarEntrada({
-    insumoId: grasa.id,
-    cantidad: 5,
-    origen: OrigenMovimiento.DEVOLUCION,
-    responsableId: adminId,
-    observacion: 'Material no utilizado devuelto a bodega',
-  });
-
-  const refrigerante = await prismaClient.insumo.findUniqueOrThrow({
-    where: { codigo: 'REF-001' },
-  });
-  await inventario.ajustarPorConteo({
-    insumoId: refrigerante.id,
-    stockContado: 57,
-    responsableId: adminId,
+  await stock.receive({
+    itemId: grease.id,
+    branchId: mainBranch.id,
+    quantity: 5,
+    reason: MovementReason.RETURN,
+    performedById: adminId,
+    notes: 'Material no utilizado devuelto a bodega',
   });
 
-  const bajoMinimo = await prismaClient.insumo.count({
-    where: { stock: { lte: prismaClient.insumo.fields.stockMinimo } },
+  const coolant = await prismaClient.inventoryItem.findUniqueOrThrow({
+    where: { sku: 'REF-001' },
+  });
+  await stock.adjustToCount({
+    itemId: coolant.id,
+    branchId: mainBranch.id,
+    countedQuantity: 57,
+    performedById: adminId,
+  });
+
+  // "Bajo mínimo" es por bodega: se compara el saldo de la fila contra SU
+  // umbral, y `minimumQuantity = 0` (no configurado) no cuenta como alerta.
+  const belowMinimum = await prismaClient.stock.count({
+    where: {
+      minimumQuantity: { gt: 0 },
+      quantity: { lte: prismaClient.stock.fields.minimumQuantity },
+    },
   });
 
   logger.log(
-    `Flota + Inventario: ${equipos.length} equipos, ${INSUMOS.length} insumos (${bajoMinimo} bajo mínimo)`,
+    `Flota + Inventario: ${equipos.length} equipos, ${ITEMS.length} ítems (${belowMinimum} bajo mínimo en ${mainBranch.name})`,
   );
 
   return equipos;
@@ -546,8 +582,11 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
  * (`seedUsers` omite los que ya existen).
  */
 async function limpiarDatosDeDominio(): Promise<void> {
-  await prismaClient.movimientoInventario.deleteMany();
-  await prismaClient.insumo.deleteMany();
+  await prismaClient.stockMovement.deleteMany();
+  await prismaClient.stock.deleteMany();
+  await prismaClient.partCompatibility.deleteMany();
+  await prismaClient.inventoryItem.deleteMany();
+  await prismaClient.itemCategory.deleteMany();
   await prismaClient.registroCombustible.deleteMany();
   await prismaClient.registroHorometro.deleteMany();
   await prismaClient.trabajoExtraordinario.deleteMany();

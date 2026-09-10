@@ -10,18 +10,18 @@ import { OnEvent } from '@nestjs/event-emitter';
 import {
   DOMAIN_EVENTS,
   type HallazgoCreatedEvent,
-  type InsumoLowStockEvent,
+  type ItemLowStockEvent,
   type OrdenAssignedEvent,
   type OrdenCompletedEvent,
 } from '../common/events/domain-events';
 import { NotificationsService } from './notifications.service';
 import {
   HALLAZGO_CREATED_ROLES,
-  INSUMO_LOW_STOCK_ROLES,
+  ITEM_LOW_STOCK_ROLES,
   ORDEN_ASSIGNED_ROLES,
   ORDEN_COMPLETED_ROLES,
   buildHallazgoCreatedTemplate,
-  buildInsumoLowStockTemplate,
+  buildItemLowStockTemplate,
   buildOrdenAssignedTemplate,
   buildOrdenCompletedTemplate,
 } from './notifications.constants';
@@ -78,15 +78,16 @@ export class NotificationsListener {
     });
   }
 
-  @OnEvent(DOMAIN_EVENTS.INSUMO_LOW_STOCK)
-  async onInsumoLowStock(event: InsumoLowStockEvent): Promise<void> {
-    const template = buildInsumoLowStockTemplate(event);
-    await this.notifications.createForRoles(INSUMO_LOW_STOCK_ROLES, {
+  @OnEvent(DOMAIN_EVENTS.ITEM_LOW_STOCK)
+  async onItemLowStock(event: ItemLowStockEvent): Promise<void> {
+    const template = buildItemLowStockTemplate(event);
+    await this.notifications.createForRoles(ITEM_LOW_STOCK_ROLES, {
       ...template,
       data: {
-        insumoId: event.insumoId,
-        stock: event.stock,
-        stockMinimo: event.stockMinimo,
+        itemId: event.itemId,
+        branchId: event.branchId,
+        quantity: event.quantity,
+        minimumQuantity: event.minimumQuantity,
       },
     });
   }
