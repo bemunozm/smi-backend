@@ -1,5 +1,12 @@
+import { TipoInsumo } from '@prisma/client';
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 /** `?bajoStock=true` llega como string en la query — se normaliza a boolean. */
 const aBoolean = ({ value }: { value: unknown }): unknown => {
@@ -18,7 +25,12 @@ export class QueryInsumosDto {
   @MaxLength(80)
   q?: string;
 
-  /** Solo los insumos en o por debajo de su stock mínimo. */
+  /** Separar suministros de repuestos. */
+  @IsOptional()
+  @IsEnum(TipoInsumo)
+  tipo?: TipoInsumo;
+
+  /** Solo los insumos en o por debajo de su stock mínimo GLOBAL. */
   @IsOptional()
   @Transform(aBoolean)
   @IsBoolean()

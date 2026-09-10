@@ -1,4 +1,4 @@
-import { UnidadInsumo } from '@prisma/client';
+import { TipoInsumo, UnidadInsumo } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
   IsEnum,
@@ -34,6 +34,11 @@ export class CreateInsumoDto {
   @IsEnum(UnidadInsumo)
   unidad?: UnidadInsumo;
 
+  /** Suministro (consumible) o repuesto (pieza). Por defecto, suministro. */
+  @IsOptional()
+  @IsEnum(TipoInsumo)
+  tipo?: TipoInsumo;
+
   /**
    * Stock inicial. Se acepta acá por comodidad al dar de alta el insumo; a
    * partir de ese momento el stock SOLO se mueve con movimientos de inventario
@@ -44,6 +49,15 @@ export class CreateInsumoDto {
   @IsNumber()
   @Min(0)
   stock?: number;
+
+  /**
+   * Bodega que recibe el stock inicial. Sin ella, entra a la sucursal
+   * principal: dar de alta un insumo sin decir dónde está es el caso común
+   * cuando la empresa opera con una sola bodega.
+   */
+  @IsOptional()
+  @IsString()
+  sucursalId?: string;
 
   @IsOptional()
   @Type(() => Number)

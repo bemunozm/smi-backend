@@ -27,6 +27,15 @@ export class CreateMovimientoDto {
   @IsEnum(OrigenMovimiento)
   origen!: OrigenMovimiento;
 
+  /**
+   * Bodega donde ocurre el movimiento (RFC-11). Opcional: si no viene se usa la
+   * sucursal principal, para no romper a los clientes que ya existían antes de
+   * que el inventario fuera multi-bodega.
+   */
+  @IsOptional()
+  @IsString()
+  sucursalId?: string;
+
   @Type(() => Number)
   @IsNumber()
   @IsPositive()

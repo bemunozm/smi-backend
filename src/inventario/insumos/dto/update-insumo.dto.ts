@@ -1,4 +1,4 @@
-import { UnidadInsumo } from '@prisma/client';
+import { TipoInsumo, UnidadInsumo } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   IsEnum,
@@ -32,6 +32,10 @@ export class UpdateInsumoDto {
   @IsOptional()
   @IsEnum(UnidadInsumo)
   unidad?: UnidadInsumo;
+
+  @IsOptional()
+  @IsEnum(TipoInsumo)
+  tipo?: TipoInsumo;
 
   @IsOptional()
   @Type(() => Number)

@@ -23,6 +23,11 @@ export class QueryMovimientosDto {
   @IsString()
   equipoId?: string;
 
+  /** Kardex de UNA bodega — la trazabilidad que pedía RFC-11 §1. */
+  @IsOptional()
+  @IsString()
+  sucursalId?: string;
+
   @IsOptional()
   @IsEnum(TipoMovimiento)
   tipo?: TipoMovimiento;

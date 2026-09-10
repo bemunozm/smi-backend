@@ -13,6 +13,7 @@ import { EquiposModule } from './equipos/equipos.module';
 import { FichaModule } from './ficha/ficha.module';
 import { InventarioModule } from './inventario/inventario.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { SucursalesModule } from './sucursales/sucursales.module';
 import { TerrenoModule } from './terreno/terreno.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { auth } from './auth/auth';
@@ -35,6 +36,8 @@ import { auth } from './auth/auth';
     // Dominio Flota + Inventario (Amin)
     EquiposModule,
     InventarioModule,
+    // Sucursales (Joaquín, RFC-11): las bodegas sobre las que se reparte el stock
+    SucursalesModule,
     // Dominio Operación en Terreno (Alexander)
     TerrenoModule,
     UploadsModule,

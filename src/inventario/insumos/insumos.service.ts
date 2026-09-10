@@ -58,14 +58,20 @@ export class InsumosService {
     const movimientos = await this.prisma.movimientoInventario.findMany({
       where: { insumoId: id },
       orderBy: { fecha: 'desc' },
-      include: { equipo: { select: { id: true, codigo: true } } },
+      include: {
+        equipo: { select: { id: true, codigo: true } },
+        // Sin la bodega, el kardex de un insumo repartido en varias sucursales
+        // muestra saldos que "saltan" sin explicación: cada renglón lleva el
+        // saldo de SU bodega (RFC-11 §5.1).
+        sucursal: { select: { id: true, codigo: true, nombre: true } },
+      },
     });
 
     return { insumo, movimientos };
   }
 
   async create(dto: CreateInsumoDto, responsableId: string) {
-    const { stock, ...ficha } = dto;
+    const { stock, sucursalId, ...ficha } = dto;
 
     try {
       // El stock inicial entra como movimiento de COMPRA, no como columna
@@ -80,6 +86,7 @@ export class InsumosService {
               insumoId: insumo.id,
               cantidad: stock,
               origen: OrigenMovimiento.COMPRA,
+              sucursalId,
               responsableId,
               observacion: 'Stock inicial al dar de alta el insumo',
             },
@@ -114,6 +121,7 @@ export class InsumosService {
     const movimiento = await this.inventario.ajustarPorConteo({
       insumoId: id,
       stockContado: dto.stockContado,
+      sucursalId: dto.sucursalId,
       responsableId,
       observacion: dto.observacion,
     });
@@ -156,6 +164,8 @@ export class InsumosService {
       ];
     }
 
+    if (filtros.tipo) where.tipo = filtros.tipo;
+
     if (filtros.bajoStock) {
       Object.assign(where, this.whereBajoStock());
     }
@@ -164,7 +174,12 @@ export class InsumosService {
   }
 
   /**
-   * "Bajo stock" compara dos columnas de la misma fila (`stock <= stockMinimo`),
+   * "Bajo stock" GLOBAL: `Insumo.stock` es el total de todas las bodegas. El
+   * equivalente por sucursal vive en `StockService` (RFC-11), que compara contra
+   * `StockSucursal`. Este de acá responde "¿le queda a la empresa?"; aquél,
+   * "¿me queda a mí en la bodega?".
+   *
+   * Compara dos columnas de la misma fila (`stock <= stockMinimo`),
    * no una columna contra un valor. Se resuelve con la referencia a campo de
    * Prisma, que lo traduce a SQL — filtrar en memoria obligaría a traer la
    * tabla completa solo para contar.

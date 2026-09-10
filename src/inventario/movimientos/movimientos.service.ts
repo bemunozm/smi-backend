@@ -20,6 +20,7 @@ export class MovimientosService {
 
     if (filtros.insumoId) where.insumoId = filtros.insumoId;
     if (filtros.equipoId) where.equipoId = filtros.equipoId;
+    if (filtros.sucursalId) where.sucursalId = filtros.sucursalId;
     if (filtros.tipo) where.tipo = filtros.tipo;
     if (filtros.origen) where.origen = filtros.origen;
 
@@ -39,6 +40,7 @@ export class MovimientosService {
           select: { id: true, codigo: true, nombre: true, unidad: true },
         },
         equipo: { select: { id: true, codigo: true } },
+        sucursal: { select: { id: true, codigo: true, nombre: true } },
       },
     });
   }
@@ -55,6 +57,7 @@ export class MovimientosService {
       insumoId: dto.insumoId,
       cantidad: dto.cantidad,
       origen: dto.origen,
+      sucursalId: dto.sucursalId ?? null,
       responsableId,
       equipoId: dto.equipoId ?? null,
       referenciaId: dto.referenciaId ?? null,

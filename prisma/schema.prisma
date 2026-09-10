@@ -3,6 +3,8 @@
 // Orden de las secciones:
 //   1. Better Auth (Benjamín)      — generado por `npm run auth:schema`, no editar a mano.
 //   2. Flota + Inventario (Amin)   — Equipo, Insumo, MovimientoInventario.
+//      + Sucursales (Joaquín, RFC-11) — Sucursal, StockSucursal. El saldo por
+//        bodega es la fuente de verdad; `Insumo.stock` pasa a ser su suma.
 //   3. Operación en Terreno (Alex) — RegistroCombustible, RegistroHorometro,
 //                                    TrabajoExtraordinario, Hallazgo.
 //
@@ -174,27 +176,97 @@ enum UnidadInsumo {
   METRO
 }
 
+/// Suministro (consumible: aceite, grasa, huaipe) vs. repuesto (pieza que se
+/// monta en una máquina). El documento de requerimientos habla de ambos y hasta
+/// ahora el modelo no los distinguía. Solo clasifica: NO restringe operaciones
+/// — un suministro también puede declararse compatible con un equipo (RFC-12).
+enum TipoInsumo {
+  SUMINISTRO
+  REPUESTO
+}
+
 model Insumo {
   id          String       @id @default(cuid())
   codigo      String       @unique
   nombre      String
   descripcion String?
   unidad      UnidadInsumo @default(UNIDAD)
+  tipo        TipoInsumo   @default(SUMINISTRO)
 
-  /// Saldo actual. NUNCA se escribe directo desde otro dominio: se mueve
-  /// exclusivamente vía `InventarioService` (registrarEntrada/registrarSalida/
-  /// ajustarPorConteo), que en la misma transacción deja el `MovimientoInventario`
-  /// correspondiente. Esa es la garantía de que el kardex cuadra con el stock.
+  /// Saldo TOTAL, sumado sobre todas las sucursales (RFC-11 §5.2). El saldo por
+  /// bodega vive en `StockSucursal`; esta columna es el consolidado
+  /// denormalizado que mantienen las mismas transacciones que mueven aquél.
+  ///
+  /// NUNCA se escribe directo desde otro dominio: se mueve exclusivamente vía
+  /// `InventarioService` (registrarEntrada/registrarSalida/ajustarPorConteo),
+  /// que en la misma transacción actualiza `StockSucursal` y deja el
+  /// `MovimientoInventario` correspondiente. Esa es la garantía de que el kardex
+  /// cuadra con el stock y de que se cumple la invariante
+  /// `Insumo.stock == Σ StockSucursal.stock`.
   stock       Float @default(0)
-  /// Umbral que dispara la alerta de stock bajo (requerimientos §5.1).
+  /// Umbral global que dispara la alerta de stock bajo (requerimientos §5.1).
+  /// El umbral POR BODEGA es `StockSucursal.stockMinimo`.
   stockMinimo Float @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   movimientos MovimientoInventario[]
+  stocks      StockSucursal[]
 
   @@index([nombre])
+  @@index([tipo])
+}
+
+/// Bodega física. La operación es multi-faena: el mantenedor necesita saber si
+/// el repuesto está en SU bodega, no en la empresa (RFC-11 §1).
+model Sucursal {
+  id        String  @id @default(cuid())
+  codigo    String  @unique
+  nombre    String
+  direccion String?
+  activa    Boolean @default(true)
+
+  /// Bodega por defecto: la que se usa cuando un dominio que todavía no razona
+  /// sobre sucursales (Mantenimiento, Terreno) registra un movimiento sin
+  /// indicarla. Debe haber EXACTAMENTE una en `true`; lo garantiza
+  /// `SucursalesService` en transacción, no un constraint — Postgres solo
+  /// expresaría "único entre los true" con un índice parcial, que Prisma no
+  /// declara en el schema.
+  esPrincipal Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stocks      StockSucursal[]
+  movimientos MovimientoInventario[]
+
+  @@index([activa])
+}
+
+/// Saldo de un insumo EN una bodega. Es la fuente de verdad del stock; la
+/// columna `Insumo.stock` es su suma (RFC-11 §5.2).
+///
+/// Un insumo sin fila en una sucursal se lee como saldo 0; la fila se crea
+/// (upsert) en el primer movimiento que ocurre en esa bodega.
+model StockSucursal {
+  id         String   @id @default(cuid())
+  insumoId   String
+  insumo     Insumo   @relation(fields: [insumoId], references: [id], onDelete: Cascade)
+  sucursalId String
+  sucursal   Sucursal @relation(fields: [sucursalId], references: [id], onDelete: Cascade)
+
+  stock Float @default(0)
+
+  /// Umbral de reposición propio de esta bodega. Independiente del global de
+  /// `Insumo`: la sucursal que atiende la faena grande necesita más colchón.
+  stockMinimo Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([insumoId, sucursalId])
+  @@index([sucursalId])
 }
 
 /// Dirección del movimiento. El "Ajuste por inventario físico" de los
@@ -223,15 +295,24 @@ model MovimientoInventario {
   insumoId String
   insumo   Insumo @relation(fields: [insumoId], references: [id], onDelete: Cascade)
 
+  /// Bodega donde ocurrió el movimiento. Obligatorio: un movimiento sin
+  /// ubicación no es auditable en una operación multi-bodega (RFC-11 §1).
+  /// `Restrict` y no `Cascade`: borrar una sucursal no puede llevarse su
+  /// historial — `SucursalesService.remove` bloquea la baja si tiene kardex.
+  sucursalId String
+  sucursal   Sucursal @relation(fields: [sucursalId], references: [id], onDelete: Restrict)
+
   tipo   TipoMovimiento
   origen OrigenMovimiento
 
   /// Siempre > 0. El signo lo determina `tipo`.
   cantidad        Float
-  /// Stock del insumo DESPUÉS de aplicar este movimiento, calculado dentro de la
-  /// misma transacción que lo movió. Denormalizado a propósito: hace que el
-  /// kardex sea una lectura ordenada simple y deja evidencia auditable del
-  /// saldo en cada punto (requerimientos §5.1: "con saldo resultante").
+  /// Stock del insumo EN ESTA SUCURSAL después de aplicar el movimiento,
+  /// calculado dentro de la misma transacción que lo movió. Denormalizado a
+  /// propósito: hace que el kardex sea una lectura ordenada simple y deja
+  /// evidencia auditable del saldo en cada punto (requerimientos §5.1: "con
+  /// saldo resultante"). Es el saldo de la bodega, no el total de la empresa:
+  /// el total no es auditable renglón a renglón porque lo mueven otras bodegas.
   saldoResultante Float
 
   /// `user.id` de Better Auth. Sin FK — ver nota de convenciones arriba.
@@ -249,6 +330,7 @@ model MovimientoInventario {
   fecha       DateTime @default(now())
 
   @@index([insumoId, fecha])
+  @@index([sucursalId, fecha])
   @@index([equipoId])
 }
 

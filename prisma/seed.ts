@@ -16,7 +16,8 @@ import {
   Equipo,
   EstadoEquipo,
   OrigenMovimiento,
-  TipoMovimiento,
+  Sucursal,
+  TipoInsumo,
   UnidadInsumo,
 } from '@prisma/client';
 
@@ -24,6 +25,7 @@ import { prismaClient } from '../src/common/prisma/prisma.service';
 import { auth } from '../src/auth/auth';
 import { ROLES } from '../src/auth/roles';
 import { InventarioService } from '../src/inventario/inventario.service';
+import { SucursalesService } from '../src/sucursales/sucursales.service';
 import { seedMantenimiento } from './seeds/mantenimiento.seed';
 
 const logger = new Logger('Seed');
@@ -152,19 +154,51 @@ const EQUIPOS = [
 ];
 
 /**
+ * Bodegas de la demo (RFC-11). La primera es la principal: es la que reciben
+ * los movimientos que llegan sin sucursal explícita.
+ */
+const SUCURSALES = [
+  {
+    codigo: 'CENTRAL',
+    nombre: 'Casa Matriz',
+    direccion: 'Av. Pedro de Valdivia 1200, Antofagasta',
+    esPrincipal: true,
+  },
+  {
+    codigo: 'FAENA',
+    nombre: 'Faena Norte',
+    direccion: 'Ruta 5 Norte km 1420, Calama',
+    esPrincipal: false,
+  },
+] as const;
+
+/**
  * Insumos con su reposición inicial y sus consumos. Los números están elegidos
- * para que 4 de los 10 queden en o bajo su mínimo — la pantalla de Inventario
- * necesita mostrar la alerta de stock bajo con datos reales, no vacía.
+ * para que 4 de los 10 queden en o bajo su mínimo GLOBAL — la pantalla de
+ * Inventario necesita mostrar la alerta de stock bajo con datos reales, no vacía.
+ *
+ * `reparto` distribuye esa misma reposición entre las dos bodegas (en el orden
+ * de `SUCURSALES`: casa matriz y faena), así la pantalla de stock por sucursal
+ * también tiene algo que mostrar: hay repuestos que existen en la empresa pero
+ * NO en la bodega donde está el mantenedor, que es justo el caso que motiva
+ * PROD-11.
  */
 interface SeedInsumo {
   codigo: string;
   nombre: string;
   unidad: UnidadInsumo;
+  tipo: TipoInsumo;
   stockMinimo: number;
-  /** Reposición inicial (entrada por COMPRA). */
-  entrada: number;
-  /** Consumos posteriores: [cantidad, índice del equipo al que se imputa]. */
-  consumos: ReadonlyArray<readonly [number, number]>;
+  /** Reposición inicial por bodega (COMPRA). Suma = reposición total. */
+  reparto: readonly [number, number];
+  /**
+   * Umbral de reposición PROPIO de cada bodega. `0` = esa bodega no fija uno y
+   * por lo tanto no alerta (el mínimo global es de la empresa, no de la
+   * bodega — ver `evaluarMinimoBodega`).
+   */
+  minimos: readonly [number, number];
+  /** Consumos posteriores: [cantidad, índice de equipo, índice de sucursal]. */
+  consumos: ReadonlyArray<readonly [number, number, number]>;
 }
 
 const INSUMOS: readonly SeedInsumo[] = [
@@ -172,90 +206,112 @@ const INSUMOS: readonly SeedInsumo[] = [
     codigo: 'FIL-001',
     nombre: 'Filtro de aceite motor',
     unidad: UnidadInsumo.UNIDAD,
+    tipo: TipoInsumo.REPUESTO,
     stockMinimo: 10,
-    entrada: 40,
+    reparto: [20, 20],
+    minimos: [8, 25],
     consumos: [
-      [6, 0],
-      [4, 2],
+      [6, 0, 0],
+      [4, 2, 0],
     ],
   },
   {
     codigo: 'FIL-002',
     nombre: 'Filtro de aire primario',
     unidad: UnidadInsumo.UNIDAD,
+    tipo: TipoInsumo.REPUESTO,
     stockMinimo: 8,
-    entrada: 24,
-    consumos: [[4, 1]],
+    reparto: [12, 12],
+    minimos: [10, 0],
+    consumos: [[4, 1, 0]],
   },
   {
     codigo: 'ACE-001',
     nombre: 'Aceite motor 15W-40',
     unidad: UnidadInsumo.LITRO,
+    tipo: TipoInsumo.SUMINISTRO,
     stockMinimo: 200,
-    entrada: 400,
+    reparto: [220, 180],
+    minimos: [30, 100],
     consumos: [
-      [120, 2],
-      [60, 0],
+      [120, 2, 0],
+      [60, 0, 0],
     ],
   },
   {
     codigo: 'ACE-002',
     nombre: 'Aceite hidráulico ISO 68',
     unidad: UnidadInsumo.LITRO,
+    tipo: TipoInsumo.SUMINISTRO,
     stockMinimo: 150,
-    entrada: 200,
+    reparto: [150, 50],
+    minimos: [0, 0],
     consumos: [
-      [80, 0],
-      [60, 3],
+      [80, 0, 0],
+      [60, 3, 0],
     ],
   },
   {
     codigo: 'REF-001',
     nombre: 'Refrigerante concentrado',
     unidad: UnidadInsumo.LITRO,
+    tipo: TipoInsumo.SUMINISTRO,
     stockMinimo: 40,
-    entrada: 80,
-    consumos: [[20, 5]],
+    reparto: [50, 30],
+    minimos: [20, 0],
+    consumos: [[20, 5, 0]],
   },
   {
+    // Cero en la casa matriz y con existencia solo en la faena: es el caso que
+    // hace visible el problema que resuelve PROD-11 ("sirve, pero no está acá").
     codigo: 'NEU-001',
     nombre: 'Neumático 29.5R25',
     unidad: UnidadInsumo.UNIDAD,
+    tipo: TipoInsumo.REPUESTO,
     stockMinimo: 4,
-    entrada: 6,
-    consumos: [[4, 1]],
+    reparto: [4, 2],
+    minimos: [1, 1],
+    consumos: [[4, 1, 0]],
   },
   {
     codigo: 'COR-001',
     nombre: 'Correa de alternador',
     unidad: UnidadInsumo.UNIDAD,
+    tipo: TipoInsumo.REPUESTO,
     stockMinimo: 5,
-    entrada: 12,
-    consumos: [[2, 4]],
+    reparto: [6, 6],
+    minimos: [5, 0],
+    consumos: [[2, 4, 0]],
   },
   {
     codigo: 'GRA-001',
     nombre: 'Grasa EP-2',
     unidad: UnidadInsumo.KILOGRAMO,
+    tipo: TipoInsumo.SUMINISTRO,
     stockMinimo: 25,
-    entrada: 50,
-    consumos: [[30, 4]],
+    reparto: [35, 15],
+    minimos: [0, 0],
+    consumos: [[30, 4, 0]],
   },
   {
     codigo: 'MAN-001',
     nombre: 'Manguera hidráulica 1/2"',
     unidad: UnidadInsumo.METRO,
+    tipo: TipoInsumo.REPUESTO,
     stockMinimo: 20,
-    entrada: 60,
-    consumos: [[18, 3]],
+    reparto: [30, 30],
+    minimos: [10, 0],
+    consumos: [[18, 3, 0]],
   },
   {
     codigo: 'BAT-001',
     nombre: 'Batería 12V 180Ah',
     unidad: UnidadInsumo.UNIDAD,
+    tipo: TipoInsumo.REPUESTO,
     stockMinimo: 2,
-    entrada: 3,
-    consumos: [[1, 5]],
+    reparto: [3, 0],
+    minimos: [2, 0],
+    consumos: [[1, 5, 0]],
   },
 ];
 
@@ -273,7 +329,38 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
   // NotificationsListener suscrito), así que los eventos de dominio que
   // dispare InventarioService acá simplemente no tienen listeners — no hace
   // falta el bus real de app.module.ts para que el seed compile ni corra.
-  const inventario = new InventarioService(prismaClient, new EventEmitter2());
+  const sucursalesService = new SucursalesService(prismaClient);
+  const inventario = new InventarioService(
+    prismaClient,
+    new EventEmitter2(),
+    sucursalesService,
+  );
+
+  // Las bodegas se crean ANTES que cualquier insumo: todo movimiento necesita
+  // una sucursal, y sin ninguna registrada el service falla explícitamente.
+  // Va por `upsert` y no por `create` porque la migración
+  // `20260908120000_inventario_por_sucursal` ya deja insertada la sucursal
+  // CENTRAL para respaldar las filas existentes: con `create` el seed reventaba
+  // con P2002 sobre `codigo` en cualquier base recién migrada.
+  const sucursales: Sucursal[] = [];
+  for (const sucursal of SUCURSALES) {
+    sucursales.push(
+      await prismaClient.sucursal.upsert({
+        where: { codigo: sucursal.codigo },
+        update: sucursal,
+        create: sucursal,
+      }),
+    );
+  }
+
+  // Bodegas que ya no figuran en el catálogo de arriba (p. ej. al reducir las
+  // sucursales de la demo): se eliminan para que el seed CONVERJA a
+  // `SUCURSALES` en vez de ir acumulando restos de corridas anteriores. Es
+  // seguro acá porque `limpiarDatosDeDominio()` ya borró los movimientos, que
+  // son los únicos que referencian una sucursal con `onDelete: Restrict`.
+  await prismaClient.sucursal.deleteMany({
+    where: { codigo: { notIn: SUCURSALES.map((s) => s.codigo) } },
+  });
 
   const equipos: Equipo[] = [];
   for (const equipo of EQUIPOS) {
@@ -286,23 +373,51 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
         codigo: item.codigo,
         nombre: item.nombre,
         unidad: item.unidad,
+        tipo: item.tipo,
         stockMinimo: item.stockMinimo,
       },
     });
 
-    await inventario.registrarEntrada({
-      insumoId: insumo.id,
-      cantidad: item.entrada,
-      origen: OrigenMovimiento.COMPRA,
-      responsableId: adminId,
-      observacion: 'Reposición inicial de bodega',
-    });
+    for (const [indice, cantidad] of item.reparto.entries()) {
+      if (cantidad === 0) continue;
+      await inventario.registrarEntrada({
+        insumoId: insumo.id,
+        cantidad,
+        origen: OrigenMovimiento.COMPRA,
+        sucursalId: sucursales[indice].id,
+        responsableId: adminId,
+        observacion: `Reposición inicial de ${sucursales[indice].nombre}`,
+      });
+    }
 
-    for (const [cantidad, equipoIndex] of item.consumos) {
+    // Umbrales por bodega. Van con `upsert` porque configurar el mínimo ANTES
+    // de que llegue el primer repuesto es un caso válido (la fila de saldo
+    // todavía puede no existir).
+    for (const [indice, minimo] of item.minimos.entries()) {
+      if (minimo === 0) continue;
+      await prismaClient.stockSucursal.upsert({
+        where: {
+          insumoId_sucursalId: {
+            insumoId: insumo.id,
+            sucursalId: sucursales[indice].id,
+          },
+        },
+        update: { stockMinimo: minimo },
+        create: {
+          insumoId: insumo.id,
+          sucursalId: sucursales[indice].id,
+          stock: 0,
+          stockMinimo: minimo,
+        },
+      });
+    }
+
+    for (const [cantidad, equipoIndex, sucursalIndex] of item.consumos) {
       await inventario.registrarSalida({
         insumoId: insumo.id,
         cantidad,
         origen: OrigenMovimiento.INTERVENCION,
+        sucursalId: sucursales[sucursalIndex].id,
         responsableId: adminId,
         equipoId: equipos[equipoIndex].id,
         observacion: `Consumo en mantención de ${equipos[equipoIndex].codigo}`,
@@ -319,6 +434,7 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
     insumoId: grasa.id,
     cantidad: 5,
     origen: OrigenMovimiento.DEVOLUCION,
+    sucursalId: sucursales[0].id,
     responsableId: adminId,
     observacion: 'Material no utilizado devuelto a bodega',
   });
@@ -326,9 +442,12 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
   const refrigerante = await prismaClient.insumo.findUniqueOrThrow({
     where: { codigo: 'REF-001' },
   });
+  // El conteo físico es de UNA bodega: se cuenta lo que hay en Casa Matriz
+  // (30 según el sistema), no el total de la empresa.
   await inventario.ajustarPorConteo({
     insumoId: refrigerante.id,
-    stockContado: 57,
+    stockContado: 27,
+    sucursalId: sucursales[0].id,
     responsableId: adminId,
   });
 
@@ -336,8 +455,30 @@ async function seedFlotaEInventario(adminId: string | null): Promise<Equipo[]> {
     where: { stock: { lte: prismaClient.insumo.fields.stockMinimo } },
   });
 
+  // Verificación de la invariante de RFC-11 §5.2 sobre datos reales: si el seed
+  // la rompe, el resto de la demo trabaja sobre números que no cuadran.
+  const totales = await prismaClient.stockSucursal.groupBy({
+    by: ['insumoId'],
+    _sum: { stock: true },
+  });
+  const insumos = await prismaClient.insumo.findMany({
+    select: { id: true, codigo: true, stock: true },
+  });
+  const descuadres = insumos.filter((insumo) => {
+    const suma =
+      totales.find((fila) => fila.insumoId === insumo.id)?._sum.stock ?? 0;
+    return Math.abs(suma - insumo.stock) > 1e-9;
+  });
+  if (descuadres.length > 0) {
+    throw new Error(
+      `El stock total no cuadra con la suma por sucursal en: ${descuadres
+        .map((insumo) => insumo.codigo)
+        .join(', ')}`,
+    );
+  }
+
   logger.log(
-    `Flota + Inventario: ${equipos.length} equipos, ${INSUMOS.length} insumos (${bajoMinimo} bajo mínimo)`,
+    `Flota + Inventario: ${equipos.length} equipos, ${sucursales.length} sucursales, ${INSUMOS.length} insumos (${bajoMinimo} bajo mínimo global)`,
   );
 
   return equipos;

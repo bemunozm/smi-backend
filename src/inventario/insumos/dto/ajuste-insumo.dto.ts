@@ -15,6 +15,14 @@ export class AjusteInsumoDto {
   @Min(0)
   stockContado!: number;
 
+  /**
+   * Bodega que se está inventariando. Sin ella, la principal: el conteo físico
+   * siempre ocurre EN un lugar, nunca sobre el total de la empresa.
+   */
+  @IsOptional()
+  @IsString()
+  sucursalId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(240)
