@@ -62,6 +62,7 @@ export class MovementsService {
       performedById,
       equipmentId: dto.equipmentId ?? null,
       reference: dto.reference ?? null,
+      documentNumber: dto.documentNumber ?? null,
       notes: dto.notes ?? null,
     };
 

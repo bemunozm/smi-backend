@@ -47,10 +47,17 @@ export class CreateMovementDto {
   @IsString()
   equipmentId?: string;
 
-  /** Documento que originó el movimiento (intervención, actividad…). */
+  /** Vínculo interno con lo que originó el movimiento (intervención,
+   *  actividad…). NO es el número de guía: ese va en `documentNumber`. */
   @IsOptional()
   @IsString()
   reference?: string;
+
+  /** Guía de despacho, orden de compra o factura que respalda el movimiento. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  documentNumber?: string;
 
   @IsOptional()
   @IsString()

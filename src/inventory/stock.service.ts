@@ -38,6 +38,8 @@ export interface StockMovementInput {
   equipmentId?: string | null;
   /** Agrupa los dos asientos de un traspaso, o apunta al documento de origen. */
   reference?: string | null;
+  /** Guía de despacho, orden de compra o factura que respalda el movimiento. */
+  documentNumber?: string | null;
   notes?: string | null;
 }
 
@@ -204,6 +206,9 @@ export class StockService {
       sourceBranchId: string;
       destinationBranchId: string;
       quantity: number;
+      /** Guía de despacho del traspaso. Va en los DOS asientos: es el mismo
+       *  papel el que ampara la salida y la entrada. */
+      documentNumber?: string | null;
       notes?: string | null;
     },
     performedById: string,
@@ -237,6 +242,7 @@ export class StockService {
         reason: MovementReason.TRANSFER,
         performedById,
         reference,
+        documentNumber: input.documentNumber ?? null,
         notes: input.notes ?? `Traspaso a ${destination.name}`,
       });
 
@@ -247,6 +253,7 @@ export class StockService {
         reason: MovementReason.TRANSFER,
         performedById,
         reference,
+        documentNumber: input.documentNumber ?? null,
         notes: input.notes ?? `Traspaso desde ${source.name}`,
       });
 
@@ -455,6 +462,7 @@ export class StockService {
         performedById: input.performedById ?? null,
         equipmentId: input.equipmentId ?? null,
         reference: input.reference ?? null,
+        documentNumber: input.documentNumber ?? null,
         notes: input.notes ?? null,
       },
     });

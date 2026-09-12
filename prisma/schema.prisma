@@ -385,6 +385,13 @@ model StockMovement {
   /// una FK polimórfica no se puede expresar en Prisma.
   reference String?
 
+  /// El papel que respalda el movimiento: guía de despacho, orden de compra,
+  /// factura. Lo escribe quien registra, y es distinto de `reference` — ese es
+  /// un vínculo interno del sistema (el folio que aparea los dos asientos de un
+  /// traspaso), y meter ahí el número de guía haría que un traspaso no pudiera
+  /// tener las dos cosas a la vez.
+  documentNumber String? @map("document_number")
+
   /// Contraparte del traspaso, para que cada renglón del kardex se explique
   /// solo ("salida hacia Faena Norte" / "entrada desde Casa Matriz"). Nulos
   /// fuera de un TRANSFER.
