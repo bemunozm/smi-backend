@@ -12,7 +12,7 @@ import { UsersModule } from './users/users.module';
 import { BranchModule } from './branch/branch.module';
 import { EquipmentModule } from './equipment/equipment.module';
 import { FichaModule } from './ficha/ficha.module';
-import { InventarioModule } from './inventario/inventario.module';
+import { InventoryModule } from './inventory/inventory.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { TerrenoModule } from './terreno/terreno.module';
 import { UploadsModule } from './uploads/uploads.module';
@@ -37,8 +37,8 @@ import { auth } from './auth/auth';
     EquipmentModule,
     // Plataforma (Benjamín): sucursales/bodegas base, las referencia Equipment.
     BranchModule,
-    // Dominio Inventario (Joaquín) — español, migración pendiente.
-    InventarioModule,
+    // Dominio Inventario (Joaquín) — RFC-3, modelo en inglés.
+    InventoryModule,
     // Dominio Operación en Terreno (Alexander)
     TerrenoModule,
     UploadsModule,
