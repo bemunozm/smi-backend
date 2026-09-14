@@ -157,6 +157,121 @@ export class StockService {
   }
 
   /**
+   * Fija el umbral de reposición propio de una bodega. `upsert` porque
+   * configurar el mínimo ANTES de que llegue el primer material es el caso
+   * normal, no la excepción: la fila de saldo puede no existir todavía.
+   */
+  async setMinimum(input: {
+    itemId: string;
+    branchId: string;
+    minimumQuantity: number;
+  }): Promise<{ itemId: string; branchId: string; minimumQuantity: number }> {
+    await this.findItem(this.prisma, input.itemId);
+    await this.assertBranchExists(this.prisma, input.branchId);
+
+    const stock = await this.prisma.stock.upsert({
+      where: {
+        itemId_branchId: { itemId: input.itemId, branchId: input.branchId },
+      },
+      create: {
+        itemId: input.itemId,
+        branchId: input.branchId,
+        quantity: 0,
+        minimumQuantity: input.minimumQuantity,
+      },
+      update: { minimumQuantity: input.minimumQuantity },
+    });
+
+    return {
+      itemId: stock.itemId,
+      branchId: stock.branchId,
+      minimumQuantity: stock.minimumQuantity,
+    };
+  }
+
+  /**
+   * Traspaso entre bodegas: **dos asientos en UNA transacción** (salida en el
+   * origen + entrada en el destino) que comparten `reference` y llevan
+   * `reason = TRANSFER` (RFC-3 D4).
+   *
+   * Que sea una sola transacción es lo que impide el peor resultado posible:
+   * que la existencia salga de una bodega y no llegue a la otra. Si el origen
+   * no alcanza, `issue` lanza y no se escribe nada.
+   */
+  async transfer(
+    input: {
+      itemId: string;
+      sourceBranchId: string;
+      destinationBranchId: string;
+      quantity: number;
+      notes?: string | null;
+    },
+    performedById: string,
+  ): Promise<{
+    reference: string;
+    out: StockMovement;
+    in: StockMovement;
+    sourceBranchName: string;
+    destinationBranchName: string;
+  }> {
+    if (input.sourceBranchId === input.destinationBranchId) {
+      throw new ConflictException(
+        'El origen y el destino del traspaso son la misma sucursal.',
+      );
+    }
+
+    const [source, destination] = await Promise.all([
+      this.assertBranchExists(this.prisma, input.sourceBranchId),
+      this.assertBranchExists(this.prisma, input.destinationBranchId),
+    ]);
+
+    // `reference` se genera acá, ANTES de la transacción, para que los dos
+    // asientos lo compartan y el kardex pueda mostrarlos apareados.
+    const reference = `transfer_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+    return this.prisma.$transaction(async (tx) => {
+      const outgoing = await this.applyOutgoing(tx, {
+        itemId: input.itemId,
+        branchId: input.sourceBranchId,
+        quantity: input.quantity,
+        reason: MovementReason.TRANSFER,
+        performedById,
+        reference,
+        notes: input.notes ?? `Traspaso a ${destination.name}`,
+      });
+
+      const incoming = await this.applyIncoming(tx, {
+        itemId: input.itemId,
+        branchId: input.destinationBranchId,
+        quantity: input.quantity,
+        reason: MovementReason.TRANSFER,
+        performedById,
+        reference,
+        notes: input.notes ?? `Traspaso desde ${source.name}`,
+      });
+
+      // Cada asiento guarda su contraparte para que el renglón del kardex se
+      // explique solo ("salida hacia X" / "entrada desde Y").
+      await tx.stockMovement.update({
+        where: { id: outgoing.id },
+        data: { destinationBranchId: input.destinationBranchId },
+      });
+      await tx.stockMovement.update({
+        where: { id: incoming.id },
+        data: { sourceBranchId: input.sourceBranchId },
+      });
+
+      return {
+        reference,
+        out: outgoing,
+        in: incoming,
+        sourceBranchName: source.name,
+        destinationBranchName: destination.name,
+      };
+    });
+  }
+
+  /**
    * Corre `operation` dentro de una transacción. Si el llamador ya abrió una,
    * se reutiliza — así el descuento puede ser atómico junto con la escritura
    * del otro dominio.
@@ -374,19 +489,20 @@ export class StockService {
   private async assertBranchExists(
     client: PrismaClientLike,
     branchId: string,
-  ): Promise<void> {
+  ): Promise<{ id: string; name: string }> {
     const branch = await client.branch.findUnique({
       where: { id: branchId },
-      select: { id: true, isActive: true },
+      select: { id: true, name: true, isActive: true },
     });
     if (!branch) {
       throw new NotFoundException(`Sucursal "${branchId}" no encontrada`);
     }
     if (!branch.isActive) {
       throw new ConflictException(
-        'La sucursal está desactivada y no admite movimientos de existencias.',
+        `La sucursal "${branch.name}" está desactivada y no admite movimientos de existencias.`,
       );
     }
+    return { id: branch.id, name: branch.name };
   }
 
   private assertPositive(quantity: number): void {

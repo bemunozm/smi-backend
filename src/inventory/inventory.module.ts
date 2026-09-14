@@ -4,6 +4,7 @@ import { ItemsController } from './items/items.controller';
 import { ItemsService } from './items/items.service';
 import { MovementsController } from './movements/movements.controller';
 import { MovementsService } from './movements/movements.service';
+import { StockController } from './stock/stock.controller';
 import { StockService } from './stock.service';
 
 /**
@@ -15,7 +16,7 @@ import { StockService } from './stock.service';
  * e inyectar `StockService`; ver el ejemplo con transacción en su JSDoc.
  */
 @Module({
-  controllers: [ItemsController, MovementsController],
+  controllers: [ItemsController, MovementsController, StockController],
   providers: [StockService, ItemsService, MovementsService],
   exports: [StockService],
 })

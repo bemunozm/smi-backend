@@ -20,6 +20,7 @@ describe('StockService', () => {
   const stockFindUnique = jest.fn();
   const stockAggregate = jest.fn();
   const movementCreate = jest.fn();
+  const movementUpdate = jest.fn();
   const emit = jest.fn();
 
   beforeEach(async () => {
@@ -31,12 +32,14 @@ describe('StockService', () => {
       stockFindUnique,
       stockAggregate,
       movementCreate,
+      movementUpdate,
       emit,
     ]) {
       mock.mockReset();
     }
 
     itemFindUnique.mockResolvedValue(ITEM);
+    movementUpdate.mockResolvedValue({});
     branchFindUnique.mockResolvedValue(BRANCH);
     stockAggregate.mockResolvedValue({ _sum: { quantity: 0 } });
     movementCreate.mockImplementation(
@@ -52,7 +55,7 @@ describe('StockService', () => {
         findUnique: stockFindUnique,
         aggregate: stockAggregate,
       },
-      stockMovement: { create: movementCreate },
+      stockMovement: { create: movementCreate, update: movementUpdate },
       // `run` abre una transacción cuando el llamador no pasa `tx`: el mock
       // ejecuta el callback con el mismo cliente, que es lo que hace Prisma de
       // verdad salvo por el aislamiento.
@@ -323,6 +326,125 @@ describe('StockService', () => {
       });
 
       expect(movement).toBeNull();
+      expect(movementCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('setMinimum', () => {
+    it('crea la fila de saldo si la bodega todavía no maneja el ítem', async () => {
+      stockUpsert.mockResolvedValue({
+        itemId: 'item_1',
+        branchId: 'branch_1',
+        minimumQuantity: 5,
+      });
+
+      await service.setMinimum({
+        itemId: 'item_1',
+        branchId: 'branch_1',
+        minimumQuantity: 5,
+      });
+
+      // Configurar el mínimo ANTES de que llegue el primer material es el caso
+      // normal, no la excepción.
+      expect(stockUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: {
+            itemId: 'item_1',
+            branchId: 'branch_1',
+            quantity: 0,
+            minimumQuantity: 5,
+          },
+          update: { minimumQuantity: 5 },
+        }),
+      );
+    });
+  });
+
+  describe('transfer', () => {
+    const DESTINATION = { id: 'branch_2', name: 'Faena', isActive: true };
+
+    function mockTransferOk() {
+      branchFindUnique.mockImplementation(
+        ({ where }: { where: { id: string } }) =>
+          Promise.resolve(where.id === 'branch_2' ? DESTINATION : BRANCH),
+      );
+      stockUpdateMany.mockResolvedValue({ count: 1 });
+      stockFindUnique.mockResolvedValue({ quantity: 40, minimumQuantity: 0 });
+      stockUpsert.mockResolvedValue({ quantity: 10 });
+      movementCreate.mockImplementation(
+        ({ data }: { data: Record<string, unknown> }) =>
+          Promise.resolve({ id: `mov_${String(data.direction)}`, ...data }),
+      );
+    }
+
+    it('registra DOS asientos con el mismo reference y reason TRANSFER', async () => {
+      mockTransferOk();
+
+      const result = await service.transfer(
+        {
+          itemId: 'item_1',
+          sourceBranchId: 'branch_1',
+          destinationBranchId: 'branch_2',
+          quantity: 10,
+        },
+        'user_1',
+      );
+
+      // Es la decisión de RFC-3 D4: el saldo de cada bodega se deriva leyendo
+      // solo sus propios asientos, sin interpretar el signo según de qué lado
+      // se mire.
+      expect(result.out).toMatchObject({
+        branchId: 'branch_1',
+        direction: MovementDirection.OUT,
+        reason: MovementReason.TRANSFER,
+        reference: result.reference,
+      });
+      expect(result.in).toMatchObject({
+        branchId: 'branch_2',
+        direction: MovementDirection.IN,
+        reason: MovementReason.TRANSFER,
+        reference: result.reference,
+      });
+    });
+
+    it('rechaza traspasar a la misma sucursal', async () => {
+      await expect(
+        service.transfer(
+          {
+            itemId: 'item_1',
+            sourceBranchId: 'branch_1',
+            destinationBranchId: 'branch_1',
+            quantity: 10,
+          },
+          'user_1',
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('no escribe nada si el origen no alcanza', async () => {
+      branchFindUnique.mockImplementation(
+        ({ where }: { where: { id: string } }) =>
+          Promise.resolve(where.id === 'branch_2' ? DESTINATION : BRANCH),
+      );
+      stockUpdateMany.mockResolvedValue({ count: 0 });
+      stockFindUnique.mockResolvedValue({ quantity: 2 });
+
+      // El peor resultado posible de un traspaso es que la existencia salga de
+      // una bodega y no llegue a la otra. Los dos asientos van en la misma
+      // transacción justamente para que eso no pueda pasar.
+      await expect(
+        service.transfer(
+          {
+            itemId: 'item_1',
+            sourceBranchId: 'branch_1',
+            destinationBranchId: 'branch_2',
+            quantity: 10,
+          },
+          'user_1',
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(stockUpsert).not.toHaveBeenCalled();
       expect(movementCreate).not.toHaveBeenCalled();
     });
   });
