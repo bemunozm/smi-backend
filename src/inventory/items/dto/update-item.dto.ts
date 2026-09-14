@@ -6,6 +6,7 @@ import {
   IsString,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 /**
@@ -38,9 +39,16 @@ export class UpdateItemDto {
   @IsEnum(ItemType)
   type?: ItemType;
 
+  /**
+   * `null` desvincula el ítem de su categoría; omitirlo la deja como está. Sin
+   * esa distinción no habría forma de sacarle la categoría a un ítem mal
+   * clasificado: un formulario que siempre omite el campo vacío solo puede
+   * reclasificar, nunca limpiar.
+   */
   @IsOptional()
+  @ValidateIf((dto: UpdateItemDto) => dto.categoryId !== null)
   @IsString()
-  categoryId?: string;
+  categoryId?: string | null;
 
   @IsOptional()
   @IsString()
