@@ -98,6 +98,29 @@ const BRANCHES = [
 ];
 
 /**
+ * Categorías base del catálogo (T05 · DEV-29). Son la taxonomía del rubro —
+ * cómo se agrupan los repuestos y consumibles de maquinaria pesada — y no el
+ * catálogo de la empresa, que llega con T17. Por eso se pueden sembrar sin
+ * esperar los datos reales: sirven para que el selector y el filtro de la
+ * pantalla de Inventario nazcan con contenido, y quedan editables desde la app
+ * (`/api/inventory/categories`).
+ */
+const CATEGORIES = [
+  'Filtros',
+  'Lubricantes y fluidos',
+  'Neumáticos y llantas',
+  'Correas y mangueras',
+  'Sistema eléctrico',
+  'Sistema hidráulico',
+  'Frenos y transmisión',
+  'Ferretería y fijaciones',
+  'EPP y seguridad',
+  'Soldadura y consumibles',
+] as const;
+
+type CategoryName = (typeof CATEGORIES)[number];
+
+/**
  * Índice (0-based) dentro de `BRANCHES` que homea a cada equipo, en el mismo
  * orden que `EQUIPOS`. `seedTerreno` sigue referenciando equipos por índice
  * (`equipos[0]`, `equipos[2]`…) — el orden/tamaño del arreglo no cambia.
@@ -232,6 +255,8 @@ interface SeedItem {
   name: string;
   unit: UnitOfMeasure;
   type: ItemType;
+  /** Categoría base a la que pertenece; se resuelve a `categoryId` al sembrar. */
+  category: CategoryName;
   /**
    * Umbral de reposición de la bodega que recibe la existencia inicial. Es POR
    * BODEGA: el umbral de la empresa y el de una sucursal no son la misma
@@ -249,6 +274,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'FIL-001',
     type: ItemType.PART,
     name: 'Filtro de aceite motor',
+    category: 'Filtros',
     unit: UnitOfMeasure.UNIT,
     minimumQuantity: 10,
     initialQuantity: 40,
@@ -261,6 +287,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'FIL-002',
     type: ItemType.PART,
     name: 'Filtro de aire primario',
+    category: 'Filtros',
     unit: UnitOfMeasure.UNIT,
     minimumQuantity: 8,
     initialQuantity: 24,
@@ -270,6 +297,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'ACE-001',
     type: ItemType.SUPPLY,
     name: 'Aceite motor 15W-40',
+    category: 'Lubricantes y fluidos',
     unit: UnitOfMeasure.LITER,
     minimumQuantity: 200,
     initialQuantity: 400,
@@ -282,6 +310,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'ACE-002',
     type: ItemType.SUPPLY,
     name: 'Aceite hidráulico ISO 68',
+    category: 'Lubricantes y fluidos',
     unit: UnitOfMeasure.LITER,
     minimumQuantity: 150,
     initialQuantity: 200,
@@ -294,6 +323,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'REF-001',
     type: ItemType.SUPPLY,
     name: 'Refrigerante concentrado',
+    category: 'Lubricantes y fluidos',
     unit: UnitOfMeasure.LITER,
     minimumQuantity: 40,
     initialQuantity: 80,
@@ -303,6 +333,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'NEU-001',
     type: ItemType.PART,
     name: 'Neumático 29.5R25',
+    category: 'Neumáticos y llantas',
     unit: UnitOfMeasure.UNIT,
     minimumQuantity: 4,
     initialQuantity: 6,
@@ -312,6 +343,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'COR-001',
     type: ItemType.PART,
     name: 'Correa de alternador',
+    category: 'Correas y mangueras',
     unit: UnitOfMeasure.UNIT,
     minimumQuantity: 5,
     initialQuantity: 12,
@@ -321,6 +353,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'GRA-001',
     type: ItemType.SUPPLY,
     name: 'Grasa EP-2',
+    category: 'Lubricantes y fluidos',
     unit: UnitOfMeasure.KILOGRAM,
     minimumQuantity: 25,
     initialQuantity: 50,
@@ -330,6 +363,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'MAN-001',
     type: ItemType.PART,
     name: 'Manguera hidráulica 1/2"',
+    category: 'Sistema hidráulico',
     unit: UnitOfMeasure.METER,
     minimumQuantity: 20,
     initialQuantity: 60,
@@ -339,6 +373,7 @@ const ITEMS: readonly SeedItem[] = [
     sku: 'BAT-001',
     type: ItemType.PART,
     name: 'Batería 12V 180Ah',
+    category: 'Sistema eléctrico',
     unit: UnitOfMeasure.UNIT,
     minimumQuantity: 2,
     initialQuantity: 3,
@@ -357,6 +392,21 @@ async function seedBranches(): Promise<Branch[]> {
 }
 
 /**
+ * Siembra las categorías base del catálogo y devuelve el índice nombre → id,
+ * que es como los ítems las referencian en `ITEMS` (por nombre, legible) sin
+ * tener que conocer el cuid generado.
+ */
+async function seedCategories(): Promise<Map<CategoryName, string>> {
+  const byName = new Map<CategoryName, string>();
+  for (const name of CATEGORIES) {
+    const category = await prismaClient.itemCategory.create({ data: { name } });
+    byName.set(name, category.id);
+  }
+  logger.log(`Inventario: ${byName.size} categorías base`);
+  return byName;
+}
+
+/**
  * Siembra flota e inventario y devuelve los equipos creados para que el seed de
  * Terreno cuelgue sus registros de ellos.
  *
@@ -368,6 +418,7 @@ async function seedBranches(): Promise<Branch[]> {
 async function seedFlotaEInventario(
   adminId: string | null,
   branches: Branch[],
+  categories: Map<CategoryName, string>,
 ): Promise<Equipment[]> {
   // EventEmitter2 standalone: el seed no levanta la app Nest (no hay
   // NotificationsListener suscrito), así que los eventos de dominio que
@@ -407,6 +458,7 @@ async function seedFlotaEInventario(
         name: item.name,
         unit: item.unit,
         type: item.type,
+        categoryId: categories.get(item.category) ?? null,
       },
     });
 
@@ -616,7 +668,12 @@ async function seed(): Promise<void> {
   // Flota depende de Plataforma (homeBranch); Terreno depende de Flota: se
   // crean en ese orden y se pasan los resultados hacia abajo.
   const branches = await seedBranches();
-  const equipos = await seedFlotaEInventario(admin?.id ?? null, branches);
+  const categories = await seedCategories();
+  const equipos = await seedFlotaEInventario(
+    admin?.id ?? null,
+    branches,
+    categories,
+  );
   await seedTerreno(equipos);
 
   // Dominio Mantenimiento (Joaquín): corre al final; resuelve el asignadoAId
