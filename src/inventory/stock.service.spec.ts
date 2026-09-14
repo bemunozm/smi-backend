@@ -407,6 +407,28 @@ describe('StockService', () => {
       });
     });
 
+    it('deja la guía de despacho en los dos asientos, sin pisar el folio', async () => {
+      // Son dos campos distintos a propósito: `reference` es el vínculo interno
+      // que aparea los asientos, y `documentNumber` es el papel que viaja con
+      // el material. Si compartieran campo, un traspaso no podría tener ambos.
+      mockTransferOk();
+
+      const result = await service.transfer(
+        {
+          itemId: 'item_1',
+          sourceBranchId: 'branch_1',
+          destinationBranchId: 'branch_2',
+          quantity: 10,
+          documentNumber: 'GD-4471',
+        },
+        'user_1',
+      );
+
+      expect(result.out).toMatchObject({ documentNumber: 'GD-4471' });
+      expect(result.in).toMatchObject({ documentNumber: 'GD-4471' });
+      expect(result.reference).not.toBe('GD-4471');
+    });
+
     it('rechaza traspasar a la misma sucursal', async () => {
       await expect(
         service.transfer(

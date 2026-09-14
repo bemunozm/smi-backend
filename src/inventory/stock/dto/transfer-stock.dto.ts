@@ -36,6 +36,12 @@ export class TransferStockDto {
   @IsPositive()
   quantity!: number;
 
+  /** Guía de despacho del traspaso; queda en los dos asientos. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  documentNumber?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(240)
