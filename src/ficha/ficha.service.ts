@@ -177,6 +177,7 @@ export class FichaService {
         valorInicial: registro.valorInicial,
         valorFinal: registro.valorFinal,
         nivelCombustible: registro.nivelCombustible,
+        fotoUrl: registro.fotoUrl,
       },
     };
   }

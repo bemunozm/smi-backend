@@ -324,6 +324,7 @@ model RegistroHorometro {
   valorInicial     Float
   valorFinal       Float?
   nivelCombustible Float? // % de combustible
+  fotoUrl          String?
   fecha            DateTime  @default(now())
 }
 

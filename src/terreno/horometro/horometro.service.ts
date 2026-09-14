@@ -15,29 +15,43 @@ export class HorometroService {
     });
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
-    const registro = await this.prisma.registroHorometro.create({
-      data: {
-        equipoId: dto.equipoId,
-        operador: dto.operador,
-        turno: dto.turno,
-        valorInicial: dto.valorInicial,
-        valorFinal: dto.valorFinal ?? null,
-        nivelCombustible: dto.nivelCombustible ?? null,
-      },
-    });
-
-    // El write del valor actual solo aplica si la unidad se controla por
-    // horómetro (RFC T01 §2, MEJORA-3) — si controla por kilometraje, este
-    // registro de terreno no debe pisar `currentHourmeter`.
-    if (dto.valorFinal != null && equipo.controlUnit === ControlUnit.HOURS) {
-      await this.prisma.equipment.update({
-        where: { id: dto.equipoId },
-        data: { currentHourmeter: dto.valorFinal },
+    // El registro de terreno y el write del contador de la ficha van en la
+    // misma transacción: si el update del equipo fallara, no debe quedar un
+    // `RegistroHorometro` huérfano que la ficha muestre sin haber movido el
+    // contador (o viceversa).
+    return this.prisma.$transaction(async (tx) => {
+      const registro = await tx.registroHorometro.create({
+        data: {
+          equipoId: dto.equipoId,
+          operador: dto.operador,
+          turno: dto.turno,
+          valorInicial: dto.valorInicial,
+          valorFinal: dto.valorFinal ?? null,
+          nivelCombustible: dto.nivelCombustible ?? null,
+          fotoUrl: dto.fotoUrl ?? null,
+        },
       });
-      // TODO(motor-preventivo): disparar el umbral de Mantenimiento (Joaquín, guía §5).
-    }
 
-    return registro;
+      // El write del valor actual solo aplica al contador que gobierna la
+      // unidad (RFC T01 §2, MEJORA-3): HOURS pisa `currentHourmeter`, KM pisa
+      // `currentMileage` — nunca los dos a la vez.
+      if (dto.valorFinal != null) {
+        if (equipo.controlUnit === ControlUnit.HOURS) {
+          await tx.equipment.update({
+            where: { id: dto.equipoId },
+            data: { currentHourmeter: dto.valorFinal },
+          });
+          // TODO(motor-preventivo): disparar el umbral de Mantenimiento (Joaquín, guía §5).
+        } else if (equipo.controlUnit === ControlUnit.KM) {
+          await tx.equipment.update({
+            where: { id: dto.equipoId },
+            data: { currentMileage: dto.valorFinal },
+          });
+        }
+      }
+
+      return registro;
+    });
   }
 
   findAll() {
@@ -56,22 +70,33 @@ export class HorometroService {
   }
 
   async update(id: string, dto: UpdateHorometroDto) {
-    const reg = await this.prisma.registroHorometro.update({
-      where: { id },
-      data: dto,
-    });
-    if (dto.valorFinal != null) {
-      const equipo = await this.prisma.equipment.findUnique({
-        where: { id: reg.equipoId },
-        select: { controlUnit: true },
+    // Mismo criterio de atomicidad que `create()`: el registro editado y el
+    // write del contador (si `valorFinal` cambia) van en la misma transacción.
+    return this.prisma.$transaction(async (tx) => {
+      const reg = await tx.registroHorometro.update({
+        where: { id },
+        data: dto,
       });
-      if (equipo?.controlUnit === ControlUnit.HOURS) {
-        await this.prisma.equipment.update({
+
+      if (dto.valorFinal != null) {
+        const equipo = await tx.equipment.findUnique({
           where: { id: reg.equipoId },
-          data: { currentHourmeter: dto.valorFinal },
+          select: { controlUnit: true },
         });
+        if (equipo?.controlUnit === ControlUnit.HOURS) {
+          await tx.equipment.update({
+            where: { id: reg.equipoId },
+            data: { currentHourmeter: dto.valorFinal },
+          });
+        } else if (equipo?.controlUnit === ControlUnit.KM) {
+          await tx.equipment.update({
+            where: { id: reg.equipoId },
+            data: { currentMileage: dto.valorFinal },
+          });
+        }
       }
-    }
-    return reg;
+
+      return reg;
+    });
   }
 }
