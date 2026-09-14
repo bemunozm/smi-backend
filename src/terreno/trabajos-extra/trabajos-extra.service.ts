@@ -8,10 +8,14 @@ export class TrabajosExtraService {
   constructor(private prisma: PrismaService) {}
 
   async create(dto: CreateTrabajoExtraDto) {
-    const equipo = await this.prisma.equipo.findUnique({ where: { id: dto.equipoId } });
+    const equipo = await this.prisma.equipment.findUnique({
+      where: { id: dto.equipoId },
+    });
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
-    const totalHoras = Number(Math.max(0, dto.horometroFinal - dto.horometroInicial).toFixed(2));
+    const totalHoras = Number(
+      Math.max(0, dto.horometroFinal - dto.horometroInicial).toFixed(2),
+    );
     return this.prisma.trabajoExtraordinario.create({
       data: {
         equipoId: dto.equipoId,
@@ -31,17 +35,22 @@ export class TrabajosExtraService {
   findAll() {
     return this.prisma.trabajoExtraordinario.findMany({
       orderBy: { fecha: 'desc' },
-      include: { equipo: { select: { codigo: true } } },
+      include: { equipo: { select: { internalCode: true } } },
     });
   }
 
   async findOne(id: string) {
-    const reg = await this.prisma.trabajoExtraordinario.findUnique({ where: { id } });
+    const reg = await this.prisma.trabajoExtraordinario.findUnique({
+      where: { id },
+    });
     if (!reg) throw new NotFoundException('Registro no encontrado');
     return reg;
   }
 
   update(id: string, dto: UpdateTrabajoExtraDto) {
-    return this.prisma.trabajoExtraordinario.update({ where: { id }, data: dto });
+    return this.prisma.trabajoExtraordinario.update({
+      where: { id },
+      data: dto,
+    });
   }
 }

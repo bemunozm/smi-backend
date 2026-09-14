@@ -6,14 +6,14 @@ import { FichaService } from './ficha.service';
 
 const EQUIPO_MOCK = {
   id: 'eq_1',
-  codigo: 'EX-001',
-  tipo: 'CAMION',
-  marca: 'Volvo',
-  modelo: 'FH',
-  anio: 2020,
-  estado: 'DISPONIBLE',
-  horometroActual: 100,
-  kilometrajeActual: 5000,
+  internalCode: 'EX-001',
+  type: 'CAMION',
+  brand: 'Volvo',
+  model: 'FH',
+  year: 2020,
+  status: 'OPERATIONAL',
+  currentHourmeter: 100,
+  currentMileage: 5000,
 };
 
 const COMBUSTIBLES_MOCK = [
@@ -176,7 +176,7 @@ describe('FichaService', () => {
         {
           provide: PrismaService,
           useValue: {
-            equipo: { findUnique: equipoFindUnique },
+            equipment: { findUnique: equipoFindUnique },
             registroCombustible: {
               findMany: combustibleFindMany,
               count: combustibleCount,

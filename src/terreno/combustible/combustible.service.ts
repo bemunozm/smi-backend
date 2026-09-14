@@ -8,7 +8,9 @@ export class CombustibleService {
   constructor(private prisma: PrismaService) {}
 
   async create(dto: CreateCombustibleDto) {
-    const equipo = await this.prisma.equipo.findUnique({ where: { id: dto.equipoId } });
+    const equipo = await this.prisma.equipment.findUnique({
+      where: { id: dto.equipoId },
+    });
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
     return this.prisma.registroCombustible.create({
@@ -24,12 +26,14 @@ export class CombustibleService {
   findAll() {
     return this.prisma.registroCombustible.findMany({
       orderBy: { fecha: 'desc' },
-      include: { equipo: { select: { codigo: true } } },
+      include: { equipo: { select: { internalCode: true } } },
     });
   }
 
   async findOne(id: string) {
-    const reg = await this.prisma.registroCombustible.findUnique({ where: { id } });
+    const reg = await this.prisma.registroCombustible.findUnique({
+      where: { id },
+    });
     if (!reg) throw new NotFoundException('Registro no encontrado');
     return reg;
   }

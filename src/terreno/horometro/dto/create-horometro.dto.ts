@@ -20,4 +20,8 @@ export class CreateHorometroDto {
   @IsOptional()
   @IsNumber()
   nivelCombustible?: number;
+
+  @IsOptional()
+  @IsString()
+  fotoUrl?: string;
 }

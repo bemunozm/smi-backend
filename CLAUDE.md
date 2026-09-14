@@ -81,6 +81,16 @@ La **metodología completa** (regla de oro, Producto→RFC→Desarrollo, review 
 - Rama por funcionalidad: `feat/<dominio>/<descripcion>` (`fix/…`, `chore/…`, `docs/…`). El cuerpo del PR referencia `PROD·RFC·DEV`.
 - Commits: `tipo(contexto): descripción` en **inglés**, imperativo, ≤100 chars, sin mayúscula inicial ni punto final. **Sin co-autoría de IA.**
 
+## Convenciones de nombres e idioma
+**El código y la base de datos van en INGLÉS** (estándar universal). Español SOLO para textos visibles al usuario final (labels/mensajes de UI) y comentarios. Aplica a: modelos y tablas, columnas, enums, funciones, variables, tipos, DTOs, endpoints REST, nombres de archivo, ramas y commits.
+- Prisma models / tipos / clases / componentes React: `PascalCase` (`Equipment`, `StockMovement`).
+- Campos de model, variables y funciones: `camelCase` (`internalCode`, `currentHourmeter`).
+- Tablas y columnas Postgres: `snake_case` vía `@@map`/`@map` (`equipment`, `internal_code`).
+- Enums: nombre `PascalCase`, valores `UPPER_SNAKE` (`EquipmentStatus { OPERATIONAL }`).
+- Constantes `UPPER_SNAKE`; archivos `kebab-case` (`equipment.service.ts`); endpoints `kebab-case` (`/inventory/items`).
+
+**Migración gradual (el código actual está en español, herencia de la demo):** cada dueño de módulo **renombra su dominio a inglés al tocarlo**; todo lo NUEVO nace en inglés. Se acepta un híbrido temporal hasta completar. Meta: 100% inglés. En la S1, el modelo de datos (RFC T01) ya se diseña en inglés.
+
 ## Deuda técnica y seguridad (ver `SECURITY-NOTES.md`)
 Rate limiting, bind de Postgres a `127.0.0.1`, helmet, cookies seguras, TTL de sesión, auth en `/uploads`, índices `@@index([equipoId])` faltantes. **El proyecto va a producción → ya NO son diferibles**: se saldan en la Fase 0 (RFC de CI/CD + hardening). No introducir código nuevo que dependa de estas deudas.
 

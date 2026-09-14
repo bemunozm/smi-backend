@@ -7,7 +7,7 @@ import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 describe('HallazgosService', () => {
   let service: HallazgosService;
   const prisma = {
-    equipo: { findUnique: jest.fn() },
+    equipment: { findUnique: jest.fn() },
     hallazgo: { create: jest.fn() },
   };
   const eventEmitter = { emit: jest.fn() };
@@ -22,11 +22,13 @@ describe('HallazgosService', () => {
     }).compile();
     service = mod.get(HallazgosService);
     jest.clearAllMocks();
-    prisma.equipo.findUnique.mockResolvedValue({ id: 'e1' });
-    prisma.hallazgo.create.mockImplementation(({ data }: any) => ({
-      id: 'h1',
-      ...data,
-    }));
+    prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+    prisma.hallazgo.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'h1',
+        ...data,
+      }),
+    );
   });
 
   it('crea con estado ABIERTO y guarda la prioridad', async () => {

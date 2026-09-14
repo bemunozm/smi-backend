@@ -2,11 +2,13 @@
 //
 // Orden de las secciones:
 //   1. Better Auth (Benjamín)      — generado por `npm run auth:schema`, no editar a mano.
-//   2. Flota + Inventario (Amin)   — Equipo, Insumo, MovimientoInventario.
-//   3. Operación en Terreno (Alex) — RegistroCombustible, RegistroHorometro,
+//   2. Flota (Benjamín)            — Equipment, Branch (RFC T01, opción A — en inglés).
+//   3. Inventario (Joaquín)        — Insumo, MovimientoInventario (español, migración pendiente).
+//   4. Operación en Terreno (Alex) — RegistroCombustible, RegistroHorometro,
 //                                    TrabajoExtraordinario, Hallazgo.
 //
-// Convenciones de este schema (Amin, responsable de la base — guía §11):
+// Convenciones de este schema (guía §11 — migración gradual por módulo, cada
+// dueño renombra su dominio a inglés al tocarlo):
 //   - IDs: `String @id @default(cuid())` en TODAS las tablas de dominio.
 //   - Enums Prisma para los vocabularios cerrados de Flota/Inventario. Las
 //     columnas de Terreno siguen como `String` (decisión de su dueño); migrarlas
@@ -120,40 +122,79 @@ model Notification {
 }
 
 // ============================================================================
-// Dominio: Flota + Inventario (Amin)
+// Dominio: Flota (Benjamín) — modelo rediseñado en inglés (RFC T01, opción A).
+// `Insumo`/`MovimientoInventario` (Inventario) siguen en español más abajo;
+// solo su relación con la unidad se repunta a `Equipment`.
 // ============================================================================
 
-/// Estado operativo de una unidad. Vocabulario del documento de requerimientos
-/// (§5.1) — es también el que asume el dashboard de Benjamín para contar la
-/// flota disponible. Reemplaza al placeholder OPERATIVO|DETENIDO|MANTENIMIENTO.
-enum EstadoEquipo {
-  DISPONIBLE
-  EN_RUTA
-  EN_MANTENCION
-  DE_BAJA
+/// Clase de la unidad — filtro principal de Flota (RFC T01 §2, R8).
+enum EquipmentClass {
+  LIGHT
+  HEAVY
 }
 
-model Equipo {
-  id     String @id @default(cuid())
-  /// Patente o ID interno de la unidad. Es el identificador que usa la
-  /// operación en terreno, por eso es único y por el que se ordena/busca.
-  codigo String @unique
-  tipo   String
-  marca  String
-  modelo String
-  anio   Int?
+/// Discriminador de la unidad de control de uso de la máquina: kilometraje o
+/// horómetro. Gobierna cuál de `currentMileage`/`currentHourmeter` aplica.
+enum ControlUnit {
+  KM
+  HOURS
+}
 
-  estado EstadoEquipo @default(DISPONIBLE)
+/// Estado operativo de una unidad (reemplaza al `EstadoEquipo` en español).
+enum EquipmentStatus {
+  OPERATIONAL
+  IN_WORKSHOP
+  OUT_OF_SERVICE
+}
 
+/// Sucursal / bodega. Referenciada por `Equipment.homeBranch` (base
+/// operativa) y, a futuro, por `Stock`/`StockMovement` de Inventario.
+model Branch {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  address   String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  homedEquipment Equipment[]
+
+  @@map("branch")
+}
+
+model Equipment {
+  id String @id @default(cuid())
+
+  /// ID interno de la unidad (patente puede no existir en equipos pesados).
+  /// Es el identificador que usa la operación en terreno, por eso es único y
+  /// por el que se ordena/busca.
+  internalCode String  @unique @map("internal_code")
+  /// Patente. Nullable: equipos pesados (excavadoras, perforadoras…) suelen
+  /// no tener.
+  licensePlate String? @unique @map("license_plate")
+
+  equipmentClass EquipmentClass @map("equipment_class")
+  type           String
+  brand          String
+  model          String
+  year           Int?
+
+  controlUnit      ControlUnit @map("control_unit")
   /// Valor ACTUAL de uso de la máquina (guía §4): vive acá como columna, no
   /// como tabla. El historial de lecturas por turno es `RegistroHorometro`.
-  horometroActual   Float @default(0)
-  kilometrajeActual Float @default(0)
+  /// Nullable y gobernado por `controlUnit`: solo uno de los dos aplica.
+  currentHourmeter Float?      @map("current_hourmeter")
+  currentMileage   Float?      @map("current_mileage")
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  status EquipmentStatus @default(OPERATIONAL)
 
-  // Flota / Inventario (Amin)
+  homeBranchId String? @map("home_branch_id")
+  homeBranch   Branch? @relation(fields: [homeBranchId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Inventario (kardex) — dominio en español, se conserva la relación.
   movimientos MovimientoInventario[]
 
   // Operación en Terreno (Alexander)
@@ -162,8 +203,14 @@ model Equipo {
   trabajosExtra TrabajoExtraordinario[]
   hallazgos     Hallazgo[]
 
-  @@index([estado])
+  @@index([equipmentClass])
+  @@index([status])
+  @@map("equipment")
 }
+
+// ============================================================================
+// Dominio: Inventario (Joaquín)
+// ============================================================================
 
 /// Unidad de medida del insumo. Determina cómo se muestra el stock en la UI
 /// (litros y kilos admiten decimales; unidades, en la práctica, no).
@@ -238,8 +285,8 @@ model MovimientoInventario {
   responsableId String?
   /// Unidad a la que se imputa el consumo, si aplica. `SetNull` y no `Cascade`:
   /// borrar un equipo no debe borrar el historial de stock.
-  equipoId      String?
-  equipo        Equipo? @relation(fields: [equipoId], references: [id], onDelete: SetNull)
+  equipoId      String?    @map("equipo_id")
+  equipo        Equipment? @relation(fields: [equipoId], references: [id], onDelete: SetNull)
   /// Id del documento que originó el movimiento (intervencionId, actividadId…).
   /// String suelto a propósito: apunta a tablas de otros dominios que todavía
   /// no existen, y una FK polimórfica no se puede expresar en Prisma.
@@ -254,36 +301,37 @@ model MovimientoInventario {
 
 // ============================================================================
 // Dominio: Operación en Terreno (Alexander)
-// Las relaciones ahora apuntan al `Equipo` real de Flota. Los modelos de abajo
-// no fueron modificados salvo por eso.
+// Las relaciones ahora apuntan al `Equipment` real de Flota. Los modelos de
+// abajo no fueron modificados salvo por eso.
 // ============================================================================
 
 model RegistroCombustible {
-  id       String   @id @default(cuid())
-  equipoId String
-  equipo   Equipo   @relation(fields: [equipoId], references: [id])
+  id       String    @id @default(cuid())
+  equipoId String    @map("equipo_id")
+  equipo   Equipment @relation(fields: [equipoId], references: [id])
   litros   Float
   tipo     String // PETROLEO | BENCINA
   fotoUrl  String?
-  fecha    DateTime @default(now())
+  fecha    DateTime  @default(now())
 }
 
 model RegistroHorometro {
-  id               String   @id @default(cuid())
-  equipoId         String
-  equipo           Equipo   @relation(fields: [equipoId], references: [id])
+  id               String    @id @default(cuid())
+  equipoId         String    @map("equipo_id")
+  equipo           Equipment @relation(fields: [equipoId], references: [id])
   operador         String // nombre y apellido
   turno            String // DIURNO | NOCTURNO
   valorInicial     Float
   valorFinal       Float?
   nivelCombustible Float? // % de combustible
-  fecha            DateTime @default(now())
+  fotoUrl          String?
+  fecha            DateTime  @default(now())
 }
 
 model TrabajoExtraordinario {
-  id               String   @id @default(cuid())
-  equipoId         String
-  equipo           Equipo   @relation(fields: [equipoId], references: [id])
+  id               String    @id @default(cuid())
+  equipoId         String    @map("equipo_id")
+  equipo           Equipment @relation(fields: [equipoId], references: [id])
   operador         String
   faena            String
   turno            String // DIURNO | NOCTURNO
@@ -293,18 +341,18 @@ model TrabajoExtraordinario {
   actividad        String // REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL | LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA
   descripcion      String
   observaciones    String?
-  fecha            DateTime @default(now())
+  fecha            DateTime  @default(now())
 }
 
 model Hallazgo {
-  id          String   @id @default(cuid())
-  equipoId    String
-  equipo      Equipo   @relation(fields: [equipoId], references: [id])
+  id          String    @id @default(cuid())
+  equipoId    String    @map("equipo_id")
+  equipo      Equipment @relation(fields: [equipoId], references: [id])
   descripcion String
   prioridad   String // BAJA | MEDIA | ALTA | CRITICA
-  estado      String   @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO
+  estado      String    @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO
   fotoUrl     String?
-  fecha       DateTime @default(now())
+  fecha       DateTime  @default(now())
 }
 
 // ---------------------------------------------------------------------------

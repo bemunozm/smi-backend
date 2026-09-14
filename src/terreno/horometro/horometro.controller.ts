@@ -23,12 +23,18 @@ export class HorometroController {
   @Post()
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
   async create(@Body() dto: CreateHorometroDto) {
-    return { data: await this.service.create(dto), message: 'Lectura registrada' };
+    return {
+      data: await this.service.create(dto),
+      message: 'Lectura registrada',
+    };
   }
 
   @Patch(':id')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
   async update(@Param('id') id: string, @Body() dto: UpdateHorometroDto) {
-    return { data: await this.service.update(id, dto), message: 'Lectura actualizada' };
+    return {
+      data: await this.service.update(id, dto),
+      message: 'Lectura actualizada',
+    };
   }
 }

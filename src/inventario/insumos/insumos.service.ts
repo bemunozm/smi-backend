@@ -58,7 +58,7 @@ export class InsumosService {
     const movimientos = await this.prisma.movimientoInventario.findMany({
       where: { insumoId: id },
       orderBy: { fecha: 'desc' },
-      include: { equipo: { select: { id: true, codigo: true } } },
+      include: { equipo: { select: { id: true, internalCode: true } } },
     });
 
     return { insumo, movimientos };
