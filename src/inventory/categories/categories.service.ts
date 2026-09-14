@@ -24,11 +24,28 @@ export class CategoriesService {
   constructor(private readonly prisma: PrismaService) {}
 
   findAll(filters: QueryCategoriesDto) {
+    const where: Prisma.ItemCategoryWhereInput = {};
+
+    if (filters.q) where.name = { contains: filters.q, mode: 'insensitive' };
+
+    // Con `type`, la lista se reduce a las categorías que sí tienen ítems de
+    // esa clase — y el conteo pasa a contar solo esos, o diría "4 ítems" de una
+    // categoría que en esta pestaña se ve vacía.
+    if (filters.type) {
+      where.items = { some: { type: filters.type, isActive: true } };
+    }
+
     return this.prisma.itemCategory.findMany({
-      where: filters.q
-        ? { name: { contains: filters.q, mode: 'insensitive' } }
-        : {},
-      include: WITH_ITEM_COUNT,
+      where,
+      include: filters.type
+        ? {
+            _count: {
+              select: {
+                items: { where: { type: filters.type, isActive: true } },
+              },
+            },
+          }
+        : WITH_ITEM_COUNT,
       orderBy: { name: 'asc' },
     });
   }
