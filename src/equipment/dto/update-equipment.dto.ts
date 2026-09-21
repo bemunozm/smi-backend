@@ -1,6 +1,7 @@
 import { ControlUnit, EquipmentClass, EquipmentStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsDateString,
   IsEnum,
   IsInt,
   IsNumber,
@@ -96,6 +97,27 @@ export class UpdateEquipmentDto {
   @IsOptional()
   @IsString()
   homeBranchId?: string | null;
+
+  /** Nullable a propósito (ver comentario de `licensePlate`): permite borrar la foto. */
+  @IsOptional()
+  @IsString()
+  photoUrl?: string | null;
+
+  /**
+   * Vencimiento de la revisión técnica (R1), ISO 8601. Nullable a propósito
+   * (ver comentario de `licensePlate`): permite limpiar la fecha cargada.
+   */
+  @IsOptional()
+  @IsDateString()
+  technicalInspectionExpiry?: string | null;
+
+  /**
+   * Vencimiento del seguro (R2), ISO 8601. Nullable a propósito (ver
+   * comentario de `licensePlate`): permite limpiar la fecha cargada.
+   */
+  @IsOptional()
+  @IsDateString()
+  insuranceExpiry?: string | null;
 }
 
 /**
@@ -107,4 +129,23 @@ export class UpdateEquipmentDto {
 export class UpdateEquipmentStatusDto {
   @IsEnum(EquipmentStatus)
   status!: EquipmentStatus;
+}
+
+/**
+ * Body de `PATCH /api/equipment/:id/assignment`. Asigna/libera la asignación
+ * de uso ACTUAL de la unidad (operador + supervisor a cargo ahora mismo).
+ * Ambos campos son independientes: omitir la propiedad deja esa asignación
+ * intacta; `null` explícito la libera (mismo criterio `@IsOptional()` +
+ * ensanchar el tipo que el resto del DTO — ver comentario de `licensePlate`).
+ * El `EquipmentService` valida que el usuario exista y tenga el rol
+ * correspondiente (OPERADOR / SUPERVISOR) antes de guardar.
+ */
+export class UpdateEquipmentAssignmentDto {
+  @IsOptional()
+  @IsString()
+  operatorId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  supervisorId?: string | null;
 }

@@ -11,9 +11,15 @@ import {
   Prisma,
 } from '@prisma/client';
 
+import { ROLES } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
-import { EquipmentService } from './equipment.service';
+import {
+  buildDocumentExpiryInfo,
+  DOCUMENT_EXPIRY_WARNING_DAYS,
+  EQUIPMENT_USAGE_INCLUDE,
+  EquipmentService,
+} from './equipment.service';
 
 const SIN_REGISTROS = {
   combustibles: 0,
@@ -55,11 +61,26 @@ describe('EquipmentService', () => {
   const create = jest.fn();
   const update = jest.fn();
   const deleteFn = jest.fn();
+  const userFindMany = jest.fn();
+  const userFindUnique = jest.fn();
+  const registroHorometroFindMany = jest.fn();
 
   beforeEach(async () => {
-    [findMany, findUnique, count, groupBy, create, update, deleteFn].forEach(
-      (m) => m.mockReset(),
-    );
+    [
+      findMany,
+      findUnique,
+      count,
+      groupBy,
+      create,
+      update,
+      deleteFn,
+      userFindMany,
+      userFindUnique,
+      registroHorometroFindMany,
+    ].forEach((m) => m.mockReset());
+    userFindMany.mockResolvedValue([]);
+    // Sin turno abierto por defecto — los tests de `openShift` lo sobreescriben.
+    registroHorometroFindMany.mockResolvedValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -75,6 +96,13 @@ describe('EquipmentService', () => {
               create,
               update,
               delete: deleteFn,
+            },
+            user: {
+              findMany: userFindMany,
+              findUnique: userFindUnique,
+            },
+            registroHorometro: {
+              findMany: registroHorometroFindMany,
             },
           },
         },
@@ -93,6 +121,7 @@ describe('EquipmentService', () => {
       expect(findMany).toHaveBeenCalledWith({
         where: { status: EquipmentStatus.OPERATIONAL },
         orderBy: { internalCode: 'asc' },
+        include: EQUIPMENT_USAGE_INCLUDE,
       });
     });
 
@@ -104,6 +133,7 @@ describe('EquipmentService', () => {
       expect(findMany).toHaveBeenCalledWith({
         where: { equipmentClass: EquipmentClass.HEAVY },
         orderBy: { internalCode: 'asc' },
+        include: EQUIPMENT_USAGE_INCLUDE,
       });
     });
 
@@ -115,6 +145,7 @@ describe('EquipmentService', () => {
       expect(findMany).toHaveBeenCalledWith({
         where: { homeBranchId: 'branch_1' },
         orderBy: { internalCode: 'asc' },
+        include: EQUIPMENT_USAGE_INCLUDE,
       });
     });
 
@@ -127,6 +158,194 @@ describe('EquipmentService', () => {
         { where: { OR: unknown[] } },
       ];
       expect(where.OR).toHaveLength(4);
+    });
+  });
+
+  describe('findAll — asignación, inUse y combustible', () => {
+    it('resuelve operator/supervisor con UNA sola consulta batch, deriva inUse y toma el nivel del último horómetro', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: 'user_op',
+          currentSupervisorId: 'user_sup',
+          horometros: [{ nivelCombustible: 62 }],
+        },
+        {
+          id: 'eq_2',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      userFindMany.mockResolvedValue([
+        { id: 'user_op', name: 'Juan Operador' },
+        { id: 'user_sup', name: 'Marcela Supervisora' },
+      ]);
+
+      const [enUso, disponible] = await service.findAll({});
+
+      expect(userFindMany).toHaveBeenCalledTimes(1);
+      expect(userFindMany).toHaveBeenCalledWith({
+        where: { id: { in: ['user_op', 'user_sup'] } },
+        select: { id: true, name: true },
+      });
+      expect(enUso).toMatchObject({
+        operator: { id: 'user_op', name: 'Juan Operador' },
+        supervisor: { id: 'user_sup', name: 'Marcela Supervisora' },
+        inUse: true,
+        currentFuelLevel: 62,
+      });
+      expect(enUso).not.toHaveProperty('horometros');
+      expect(disponible).toMatchObject({
+        operator: null,
+        supervisor: null,
+        inUse: false,
+        currentFuelLevel: null,
+      });
+    });
+
+    it('no consulta usuarios si ningún equipo tiene asignación (evita una query vacía)', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+
+      await service.findAll({});
+
+      expect(userFindMany).not.toHaveBeenCalled();
+    });
+
+    it('un id asignado sin usuario correspondiente (dato huérfano) se resuelve como null', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: 'user_borrado',
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      userFindMany.mockResolvedValue([]);
+
+      const [equipo] = await service.findAll({});
+
+      expect(equipo).toMatchObject({ operator: null, inUse: true });
+    });
+  });
+
+  describe('EQUIPMENT_USAGE_INCLUDE — currentFuelLevel', () => {
+    it('filtra los horómetros SIN nivel de combustible en el propio include, para que "el último" sea el último CON nivel', () => {
+      // No hay BD real en estos tests (jest unit, sin Docker/Postgres): lo
+      // que se puede asertar acá es que el `include` que se manda a Prisma
+      // excluye `nivelCombustible: null` en el `where` — así, aunque la
+      // lectura de horómetro más reciente del equipo no tenga combustible
+      // cargado, Prisma trae la anterior que sí lo tiene (take:1 sobre el
+      // resultado YA filtrado, no sobre el crudo).
+      expect(EQUIPMENT_USAGE_INCLUDE.horometros).toEqual({
+        where: { nivelCombustible: { not: null } },
+        orderBy: { fecha: 'desc' },
+        take: 1,
+        select: { nivelCombustible: true },
+      });
+    });
+
+    it('shapeUsage toma currentFuelLevel del único horómetro que devuelve Prisma (ya filtrado por el include de arriba)', async () => {
+      // Simula lo que Prisma devolvería con el `where` de EQUIPMENT_USAGE_INCLUDE:
+      // la lectura más reciente sin nivel quedó descartada por la BD, así que
+      // el service solo ve la anterior, que sí tiene nivel 62.
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [{ nivelCombustible: 62 }],
+        },
+      ]);
+
+      const [equipo] = await service.findAll({});
+
+      expect(equipo).toMatchObject({ currentFuelLevel: 62 });
+    });
+  });
+
+  describe('findAll/findOne — openShift', () => {
+    it('resuelve openShift con UNA sola consulta batch, usando distinct por equipoId', async () => {
+      const fecha = new Date('2026-09-15T08:00:00.000Z');
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+        {
+          id: 'eq_2',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      registroHorometroFindMany.mockResolvedValue([
+        {
+          id: 'r1',
+          equipoId: 'eq_1',
+          valorInicial: 100,
+          operador: 'Juan Rojas',
+          turno: 'DIURNO',
+          fecha,
+        },
+      ]);
+
+      const [conTurno, sinTurno] = await service.findAll({});
+
+      expect(registroHorometroFindMany).toHaveBeenCalledTimes(1);
+      expect(registroHorometroFindMany).toHaveBeenCalledWith({
+        where: { equipoId: { in: ['eq_1', 'eq_2'] }, valorFinal: null },
+        orderBy: { fecha: 'desc' },
+        distinct: ['equipoId'],
+        select: {
+          id: true,
+          equipoId: true,
+          valorInicial: true,
+          operador: true,
+          turno: true,
+          fecha: true,
+        },
+      });
+      expect(conTurno).toMatchObject({
+        openShift: {
+          id: 'r1',
+          valorInicial: 100,
+          operador: 'Juan Rojas',
+          turno: 'DIURNO',
+          fecha,
+        },
+      });
+      expect(sinTurno).toMatchObject({ openShift: null });
+    });
+
+    it('no consulta turnos abiertos si no hay equipos', async () => {
+      findMany.mockResolvedValue([]);
+
+      await service.findAll({});
+
+      expect(registroHorometroFindMany).not.toHaveBeenCalled();
+    });
+
+    it('findOne expone openShift null cuando el equipo no tiene turno en curso', async () => {
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      const result = await service.findOne('eq_1');
+
+      expect(result).toMatchObject({ openShift: null });
     });
   });
 
@@ -154,12 +373,41 @@ describe('EquipmentService', () => {
 
   describe('create', () => {
     it('crea el equipo en el caso feliz', async () => {
-      create.mockResolvedValue({ id: 'eq_1', ...DTO_BASE });
+      create.mockResolvedValue({
+        id: 'eq_1',
+        ...DTO_BASE,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
 
       const result = await service.create(DTO_BASE);
 
-      expect(create).toHaveBeenCalledWith({ data: DTO_BASE });
-      expect(result).toEqual({ id: 'eq_1', ...DTO_BASE });
+      expect(create).toHaveBeenCalledWith({
+        data: DTO_BASE,
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+      expect(result).toMatchObject({ id: 'eq_1', ...DTO_BASE });
+    });
+
+    it('la ficha creada viene shapeada con operator/supervisor/inUse/currentFuelLevel (contrato que exige EquipmentResponseSchema en el front)', async () => {
+      create.mockResolvedValue({
+        id: 'eq_1',
+        ...DTO_BASE,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      const result = await service.create(DTO_BASE);
+
+      expect(result).toMatchObject({
+        operator: null,
+        supervisor: null,
+        inUse: false,
+        currentFuelLevel: null,
+      });
+      expect(result).not.toHaveProperty('horometros');
     });
 
     it('mapea el P2002 de internal_code a ConflictException con el código', async () => {
@@ -214,61 +462,164 @@ describe('EquipmentService', () => {
 
       await expect(service.create(DTO_BASE)).rejects.toBe(otro);
     });
+
+    it('persiste photoUrl', async () => {
+      const dto = {
+        ...DTO_BASE,
+        photoUrl: 'https://picsum.photos/seed/EX-001/400/300',
+      };
+      create.mockResolvedValue({
+        id: 'eq_1',
+        ...dto,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      await service.create(dto);
+
+      expect(create).toHaveBeenCalledWith({
+        data: dto,
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+    });
+
+    it('persiste technicalInspectionExpiry e insuranceExpiry (R1/R2)', async () => {
+      const dto = {
+        ...DTO_BASE,
+        technicalInspectionExpiry: '2026-12-01',
+        insuranceExpiry: '2026-11-15',
+      };
+      create.mockResolvedValue({
+        id: 'eq_1',
+        ...dto,
+        technicalInspectionExpiry: new Date('2026-12-01'),
+        insuranceExpiry: new Date('2026-11-15'),
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      await service.create(dto);
+
+      expect(create).toHaveBeenCalledWith({
+        data: dto,
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+    });
   });
 
   describe('update', () => {
     it('actualiza el equipo en el caso feliz', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({ id: 'eq_1', brand: 'Komatsu' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        brand: 'Komatsu',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
 
       const result = await service.update('eq_1', { brand: 'Komatsu' });
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
         data: { brand: 'Komatsu' },
+        include: EQUIPMENT_USAGE_INCLUDE,
       });
-      expect(result).toEqual({ id: 'eq_1', brand: 'Komatsu' });
+      expect(result).toMatchObject({ id: 'eq_1', brand: 'Komatsu' });
+    });
+
+    it('la ficha actualizada viene shapeada con operator/supervisor/inUse/currentFuelLevel (contrato que exige EquipmentResponseSchema en el front)', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        brand: 'Komatsu',
+        currentOperatorId: 'user_op',
+        currentSupervisorId: null,
+        horometros: [{ nivelCombustible: 45 }],
+      });
+      userFindMany.mockResolvedValue([
+        { id: 'user_op', name: 'Juan Operador' },
+      ]);
+
+      const result = await service.update('eq_1', { brand: 'Komatsu' });
+
+      expect(result).toMatchObject({
+        operator: { id: 'user_op', name: 'Juan Operador' },
+        supervisor: null,
+        inUse: true,
+        currentFuelLevel: 45,
+      });
+      expect(result).not.toHaveProperty('horometros');
     });
 
     it('limpia licensePlate cuando se envía null explícito', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({ id: 'eq_1', licensePlate: null });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        licensePlate: null,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
 
       await service.update('eq_1', { licensePlate: null });
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
         data: { licensePlate: null },
+        include: EQUIPMENT_USAGE_INCLUDE,
       });
     });
 
     it('limpia year cuando se envía null explícito', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({ id: 'eq_1', year: null });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        year: null,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
 
       await service.update('eq_1', { year: null });
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
         data: { year: null },
+        include: EQUIPMENT_USAGE_INCLUDE,
       });
     });
 
     it('limpia homeBranchId cuando se envía null explícito', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({ id: 'eq_1', homeBranchId: null });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        homeBranchId: null,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
 
       await service.update('eq_1', { homeBranchId: null });
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
         data: { homeBranchId: null },
+        include: EQUIPMENT_USAGE_INCLUDE,
       });
     });
 
     it('un update parcial que no incluye licensePlate/year/homeBranchId las deja intactas', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({ id: 'eq_1', brand: 'Komatsu' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        brand: 'Komatsu',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
 
       await service.update('eq_1', { brand: 'Komatsu' });
 
@@ -308,6 +659,109 @@ describe('EquipmentService', () => {
         service.update('eq_1', { homeBranchId: 'missing' }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it('persiste photoUrl', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        photoUrl: 'https://picsum.photos/seed/EX-001/400/300',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      await service.update('eq_1', {
+        photoUrl: 'https://picsum.photos/seed/EX-001/400/300',
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'eq_1' },
+        data: { photoUrl: 'https://picsum.photos/seed/EX-001/400/300' },
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+    });
+
+    it('limpia photoUrl cuando se envía null explícito', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        photoUrl: null,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      await service.update('eq_1', { photoUrl: null });
+
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'eq_1' },
+        data: { photoUrl: null },
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+    });
+
+    it('persiste technicalInspectionExpiry e insuranceExpiry (R1/R2)', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        technicalInspectionExpiry: new Date('2026-12-01'),
+        insuranceExpiry: new Date('2026-11-15'),
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      await service.update('eq_1', {
+        technicalInspectionExpiry: '2026-12-01',
+        insuranceExpiry: '2026-11-15',
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'eq_1' },
+        data: {
+          technicalInspectionExpiry: '2026-12-01',
+          insuranceExpiry: '2026-11-15',
+        },
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+    });
+
+    it('limpia technicalInspectionExpiry e insuranceExpiry cuando se envía null explícito', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        technicalInspectionExpiry: null,
+        insuranceExpiry: null,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      const result = await service.update('eq_1', {
+        technicalInspectionExpiry: null,
+        insuranceExpiry: null,
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'eq_1' },
+        data: { technicalInspectionExpiry: null, insuranceExpiry: null },
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+      expect(result).toMatchObject({
+        documents: {
+          technicalInspection: {
+            expiry: null,
+            status: 'SIN_DATO',
+            daysToExpiry: null,
+          },
+          insurance: {
+            expiry: null,
+            status: 'SIN_DATO',
+            daysToExpiry: null,
+          },
+        },
+      });
+    });
   });
 
   describe('updateStatus', () => {
@@ -316,6 +770,9 @@ describe('EquipmentService', () => {
       update.mockResolvedValue({
         id: 'eq_1',
         status: EquipmentStatus.IN_WORKSHOP,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
       });
 
       const result = await service.updateStatus('eq_1', {
@@ -325,11 +782,38 @@ describe('EquipmentService', () => {
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
         data: { status: EquipmentStatus.IN_WORKSHOP },
+        include: EQUIPMENT_USAGE_INCLUDE,
       });
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         id: 'eq_1',
         status: EquipmentStatus.IN_WORKSHOP,
       });
+    });
+
+    it('la ficha con el estado actualizado viene shapeada con operator/supervisor/inUse/currentFuelLevel (contrato que exige EquipmentResponseSchema en el front)', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        status: EquipmentStatus.IN_WORKSHOP,
+        currentOperatorId: null,
+        currentSupervisorId: 'user_sup',
+        horometros: [],
+      });
+      userFindMany.mockResolvedValue([
+        { id: 'user_sup', name: 'Marcela Supervisora' },
+      ]);
+
+      const result = await service.updateStatus('eq_1', {
+        status: EquipmentStatus.IN_WORKSHOP,
+      });
+
+      expect(result).toMatchObject({
+        operator: null,
+        supervisor: { id: 'user_sup', name: 'Marcela Supervisora' },
+        inUse: false,
+        currentFuelLevel: null,
+      });
+      expect(result).not.toHaveProperty('horometros');
     });
 
     it('lanza NotFoundException si el equipo no existe', async () => {
@@ -344,14 +828,179 @@ describe('EquipmentService', () => {
     });
   });
 
+  describe('updateAssignment', () => {
+    it('asigna operador y supervisor cuando ambos tienen el rol correcto', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' }); // assertExiste
+      userFindUnique
+        .mockResolvedValueOnce({ id: 'user_op', role: ROLES.OPERADOR })
+        .mockResolvedValueOnce({ id: 'user_sup', role: ROLES.SUPERVISOR });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: 'user_op',
+        currentSupervisorId: 'user_sup',
+        horometros: [],
+      });
+      userFindMany.mockResolvedValue([
+        { id: 'user_op', name: 'Juan Operador' },
+        { id: 'user_sup', name: 'Marcela Supervisora' },
+      ]);
+
+      const result = await service.updateAssignment('eq_1', {
+        operatorId: 'user_op',
+        supervisorId: 'user_sup',
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'eq_1' },
+        data: { currentOperatorId: 'user_op', currentSupervisorId: 'user_sup' },
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+      expect(result).toMatchObject({
+        operator: { id: 'user_op', name: 'Juan Operador' },
+        supervisor: { id: 'user_sup', name: 'Marcela Supervisora' },
+        inUse: true,
+      });
+    });
+
+    it('libera operador y supervisor con null explícito', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      const result = await service.updateAssignment('eq_1', {
+        operatorId: null,
+        supervisorId: null,
+      });
+
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'eq_1' },
+        data: { currentOperatorId: null, currentSupervisorId: null },
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+      expect(result).toMatchObject({
+        operator: null,
+        supervisor: null,
+        inUse: false,
+      });
+      expect(userFindUnique).not.toHaveBeenCalled();
+    });
+
+    it('un campo omitido deja esa asignación intacta', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      userFindUnique.mockResolvedValue({ id: 'user_op', role: ROLES.OPERADOR });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: 'user_op',
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      await service.updateAssignment('eq_1', { operatorId: 'user_op' });
+
+      const [{ data }] = update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).not.toHaveProperty('currentSupervisorId');
+    });
+
+    it('rechaza un operatorId de un usuario con otro rol', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      userFindUnique.mockResolvedValue({
+        id: 'user_x',
+        role: ROLES.MANTENEDOR,
+      });
+
+      await expect(
+        service.updateAssignment('eq_1', { operatorId: 'user_x' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un operatorId inexistente', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      userFindUnique.mockResolvedValue(null);
+
+      await expect(
+        service.updateAssignment('eq_1', { operatorId: 'missing' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rechaza un supervisorId con rol distinto de SUPERVISOR', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      userFindUnique.mockResolvedValue({ id: 'user_x', role: ROLES.ADMIN });
+
+      await expect(
+        service.updateAssignment('eq_1', { supervisorId: 'user_x' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rechaza un operatorId baneado aunque tenga el rol OPERADOR correcto', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      userFindUnique.mockResolvedValue({
+        id: 'user_baneado',
+        role: ROLES.OPERADOR,
+        banned: true,
+      });
+
+      await expect(
+        service.updateAssignment('eq_1', { operatorId: 'user_baneado' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un supervisorId baneado aunque tenga el rol SUPERVISOR correcto', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1' });
+      userFindUnique.mockResolvedValue({
+        id: 'user_baneado',
+        role: ROLES.SUPERVISOR,
+        banned: true,
+      });
+
+      await expect(
+        service.updateAssignment('eq_1', { supervisorId: 'user_baneado' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('lanza NotFoundException si el equipo no existe', async () => {
+      findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.updateAssignment('missing', { operatorId: 'user_op' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('findOne', () => {
-    it('devuelve la ficha del equipo cuando existe', async () => {
-      const ficha = { id: 'eq_1', internalCode: 'EX-001' };
+    it('devuelve la ficha del equipo enriquecida con operator/supervisor/inUse/currentFuelLevel', async () => {
+      const ficha = {
+        id: 'eq_1',
+        internalCode: 'EX-001',
+        currentOperatorId: 'user_op',
+        currentSupervisorId: null,
+        horometros: [{ nivelCombustible: 90 }],
+      };
       findUnique.mockResolvedValue(ficha);
+      userFindMany.mockResolvedValue([
+        { id: 'user_op', name: 'Juan Operador' },
+      ]);
 
       const result = await service.findOne('eq_1');
 
-      expect(result).toEqual(ficha);
+      expect(result).toMatchObject({
+        id: 'eq_1',
+        internalCode: 'EX-001',
+        operator: { id: 'user_op', name: 'Juan Operador' },
+        supervisor: null,
+        inUse: true,
+        currentFuelLevel: 90,
+      });
+      expect(result).not.toHaveProperty('horometros');
     });
 
     it('lanza NotFoundException si el equipo no existe', async () => {
@@ -395,6 +1044,131 @@ describe('EquipmentService', () => {
       await expect(service.remove('missing')).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  describe('documents — vigencia R1/R2 (buildDocumentExpiryInfo)', () => {
+    // Reloj fijo con hora "rara" (12:00 del mediodía) a propósito: si el
+    // cálculo restara timestamps completos en vez de comparar a granularidad
+    // de fecha, cualquier desfase de horas entre `now` y `expiry` correría el
+    // resultado en ±1 día.
+    const NOW = new Date('2026-01-01T12:00:00.000Z');
+
+    it('SIN_DATO cuando no hay fecha cargada', () => {
+      expect(buildDocumentExpiryInfo(null, NOW)).toEqual({
+        expiry: null,
+        status: 'SIN_DATO',
+        daysToExpiry: null,
+      });
+    });
+
+    it('VENCIDO cuando el vencimiento ya pasó', () => {
+      const expiry = new Date('2025-12-31T00:00:00.000Z'); // 1 día antes de NOW
+      expect(buildDocumentExpiryInfo(expiry, NOW)).toEqual({
+        expiry: expiry.toISOString(),
+        status: 'VENCIDO',
+        daysToExpiry: -1,
+      });
+    });
+
+    it('POR_VENCER en el límite inferior (vence hoy mismo, daysToExpiry = 0)', () => {
+      // Mismo día calendario que NOW pero con hora distinta — confirma que la
+      // comparación ignora la hora (no da -0.5 ni -1 por el desfase).
+      const expiry = new Date('2026-01-01T00:00:00.000Z');
+      expect(buildDocumentExpiryInfo(expiry, NOW)).toMatchObject({
+        status: 'POR_VENCER',
+        daysToExpiry: 0,
+      });
+    });
+
+    it(`POR_VENCER en el límite superior del umbral (daysToExpiry = ${DOCUMENT_EXPIRY_WARNING_DAYS})`, () => {
+      const expiry = new Date('2026-01-31T00:00:00.000Z'); // 30 días después
+      expect(buildDocumentExpiryInfo(expiry, NOW)).toMatchObject({
+        status: 'POR_VENCER',
+        daysToExpiry: DOCUMENT_EXPIRY_WARNING_DAYS,
+      });
+    });
+
+    it(`VIGENTE apenas se cruza el umbral (daysToExpiry = ${DOCUMENT_EXPIRY_WARNING_DAYS + 1})`, () => {
+      const expiry = new Date('2026-02-01T00:00:00.000Z'); // 31 días después
+      expect(buildDocumentExpiryInfo(expiry, NOW)).toMatchObject({
+        status: 'VIGENTE',
+        daysToExpiry: DOCUMENT_EXPIRY_WARNING_DAYS + 1,
+      });
+    });
+
+    it('la comparación es a granularidad de fecha: 2h de diferencia cruzando medianoche cuenta como 1 día, no como fracción', () => {
+      const now = new Date('2026-01-01T23:00:00.000Z');
+      const expiry = new Date('2026-01-02T01:00:00.000Z'); // +2h reales, +1 día calendario
+      expect(buildDocumentExpiryInfo(expiry, now)).toMatchObject({
+        daysToExpiry: 1,
+      });
+    });
+
+    it('usa new Date() por defecto cuando no se pasa `now` explícito', () => {
+      const expiry = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
+      const info = buildDocumentExpiryInfo(expiry);
+      expect(info.status).toBe('POR_VENCER');
+      expect(info.daysToExpiry).toBeGreaterThanOrEqual(4);
+      expect(info.daysToExpiry).toBeLessThanOrEqual(5);
+    });
+  });
+
+  describe('documents — wiring en findOne/create (columnas → documents.technicalInspection/insurance)', () => {
+    it('findOne mapea technicalInspectionExpiry/insuranceExpiry al campo documents', async () => {
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        internalCode: 'EX-001',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        technicalInspectionExpiry: new Date('2000-01-01T00:00:00.000Z'), // muy vencida
+        insuranceExpiry: null,
+        horometros: [],
+      });
+
+      const result = await service.findOne('eq_1');
+
+      expect(result).toMatchObject({
+        documents: {
+          technicalInspection: {
+            expiry: '2000-01-01T00:00:00.000Z',
+            status: 'VENCIDO',
+          },
+          insurance: { expiry: null, status: 'SIN_DATO', daysToExpiry: null },
+        },
+      });
+    });
+
+    it('create expone documents como hermano de operator/supervisor/inUse/currentFuelLevel/openShift', async () => {
+      const dto = {
+        ...DTO_BASE,
+        technicalInspectionExpiry: '2000-01-01',
+        insuranceExpiry: '2000-01-01',
+      };
+      create.mockResolvedValue({
+        id: 'eq_1',
+        ...dto,
+        technicalInspectionExpiry: new Date('2000-01-01T00:00:00.000Z'),
+        insuranceExpiry: new Date('2000-01-01T00:00:00.000Z'),
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      const result = await service.create(dto);
+
+      expect(result).toHaveProperty('documents');
+      expect(result).toMatchObject({
+        operator: null,
+        supervisor: null,
+        inUse: false,
+        currentFuelLevel: null,
+        openShift: null,
+        documents: {
+          technicalInspection: { status: 'VENCIDO' },
+          insurance: { status: 'VENCIDO' },
+        },
+      });
     });
   });
 });

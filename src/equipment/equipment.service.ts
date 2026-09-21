@@ -6,10 +6,13 @@ import {
 } from '@nestjs/common';
 import { EquipmentStatus, Prisma } from '@prisma/client';
 
+import { ROLES } from '../auth/roles';
+import type { Role } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { QueryEquipmentDto } from './dto/query-equipment.dto';
 import {
+  UpdateEquipmentAssignmentDto,
   UpdateEquipmentDto,
   UpdateEquipmentStatusDto,
 } from './dto/update-equipment.dto';
@@ -23,6 +26,128 @@ export interface ResumenFlota {
 }
 
 const ESTADOS: readonly EquipmentStatus[] = Object.values(EquipmentStatus);
+
+/**
+ * `include` compartido por `findAll`/`findOne`/`create`/`update`/`updateStatus`/
+ * `updateAssignment` para poder derivar `currentFuelLevel`: el último
+ * `RegistroHorometro` del equipo CON `nivelCombustible` no nulo (`where` +
+ * ordenado por fecha desc) — si la lectura más reciente vino sin combustible
+ * cargado, no queremos perder el último nivel real conocido. `currentOperatorId`/
+ * `currentSupervisorId` son columnas propias de `Equipment` (soft refs a
+ * `user.id`, ver `schema.prisma`) — no necesitan `include`, se resuelven
+ * aparte con `resolveAssignedUsers` porque NO son una relación Prisma.
+ */
+export const EQUIPMENT_USAGE_INCLUDE = {
+  horometros: {
+    where: { nivelCombustible: { not: null } },
+    orderBy: { fecha: 'desc' as const },
+    take: 1,
+    select: { nivelCombustible: true },
+  },
+} satisfies Prisma.EquipmentInclude;
+
+export type EquipmentWithUsageRelations = Prisma.EquipmentGetPayload<{
+  include: typeof EQUIPMENT_USAGE_INCLUDE;
+}>;
+
+/** Forma pública de un operador/supervisor asignado en la respuesta de Flota. */
+export interface AssignedUserSummary {
+  id: string;
+  name: string;
+}
+
+/**
+ * Turno abierto (flujo ENTRADA/SALIDA de dos pasos, Flota): el
+ * `RegistroHorometro` más reciente del equipo con `valorFinal == null`. Le
+ * dice al front si debe ofrecer "Registrar entrada" (`openShift == null`) o
+ * "Registrar salida" (mostrando el contexto de la entrada).
+ */
+export interface OpenShiftSummary {
+  id: string;
+  valorInicial: number;
+  operador: string;
+  turno: string;
+  fecha: Date;
+}
+
+/** Campos que `findAll`/`findOne`/`updateAssignment` agregan a la ficha cruda de Prisma. */
+export interface EquipmentUsageFields {
+  operator: AssignedUserSummary | null;
+  supervisor: AssignedUserSummary | null;
+  /** Derivado — NO es columna: `!!currentOperatorId`. */
+  inUse: boolean;
+  /** `nivelCombustible` del último `RegistroHorometro` del equipo, o `null` si no tiene lecturas. */
+  currentFuelLevel: number | null;
+  /** Turno de horómetro abierto del equipo, o `null` si no tiene uno en curso. */
+  openShift: OpenShiftSummary | null;
+  /** Estado de vigencia de R1/R2, derivado on-read de las columnas `*Expiry`. */
+  documents: EquipmentDocumentsInfo;
+}
+
+/**
+ * Umbral (en días) para pasar de `VIGENTE` a `POR_VENCER` en R1/R2.
+ * Centralizado acá — nunca hardcodear el 30 inline — para que cualquier otro
+ * consumidor futuro (ej. un cron de notificaciones) lea el mismo número.
+ */
+export const DOCUMENT_EXPIRY_WARNING_DAYS = 30;
+
+export type DocumentStatus = 'VIGENTE' | 'POR_VENCER' | 'VENCIDO' | 'SIN_DATO';
+
+/** Estado de vigencia de un documento individual (revisión técnica o seguro). */
+export interface DocumentExpiryInfo {
+  /** Fecha de vencimiento en ISO 8601, o `null` si no hay dato cargado. */
+  expiry: string | null;
+  status: DocumentStatus;
+  /** Días de calendario hasta el vencimiento (negativo si ya venció), o `null` sin dato. */
+  daysToExpiry: number | null;
+}
+
+/** Forma del campo `documents` en la respuesta de Flota (R1/R2). */
+export interface EquipmentDocumentsInfo {
+  technicalInspection: DocumentExpiryInfo;
+  insurance: DocumentExpiryInfo;
+}
+
+/**
+ * Días de calendario entre `now` y `expiry`, a granularidad de FECHA
+ * (ignorando la hora) para evitar el off-by-one de restar dos timestamps
+ * completos — sin esto, dos fechas del mismo día calendario pero con horas
+ * distintas podrían dar un `daysToExpiry` fraccionario o corrido en ±1.
+ * Ambas fechas se normalizan a medianoche UTC antes de restar.
+ */
+function daysBetweenDateOnly(now: Date, expiry: Date): number {
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const nowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const expiryUtc = Date.UTC(
+    expiry.getUTCFullYear(),
+    expiry.getUTCMonth(),
+    expiry.getUTCDate(),
+  );
+  return Math.round((expiryUtc - nowUtc) / MS_PER_DAY);
+}
+
+/**
+ * Deriva `status`/`daysToExpiry` de un documento (R1/R2) on-read — no se
+ * persiste, se recalcula en cada lectura contra el reloj actual. `now` es un
+ * parámetro explícito (default `new Date()`) en vez de leer `Date.now()`
+ * adentro, para que los tests puedan fijarlo sin mockear el reloj global.
+ */
+export function buildDocumentExpiryInfo(
+  expiry: Date | null,
+  now: Date = new Date(),
+): DocumentExpiryInfo {
+  if (!expiry) {
+    return { expiry: null, status: 'SIN_DATO', daysToExpiry: null };
+  }
+  const daysToExpiry = daysBetweenDateOnly(now, expiry);
+  const status: DocumentStatus =
+    daysToExpiry < 0
+      ? 'VENCIDO'
+      : daysToExpiry <= DOCUMENT_EXPIRY_WARNING_DAYS
+        ? 'POR_VENCER'
+        : 'VIGENTE';
+  return { expiry: expiry.toISOString(), status, daysToExpiry };
+}
 
 /**
  * Subset de campos que necesita el mapeo de errores de Prisma para construir
@@ -39,7 +164,7 @@ type UniqueFieldsDto = {
 export class EquipmentService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(filtros: QueryEquipmentDto) {
+  async findAll(filtros: QueryEquipmentDto) {
     const where: Prisma.EquipmentWhereInput = {};
 
     if (filtros.status) where.status = filtros.status;
@@ -58,10 +183,13 @@ export class EquipmentService {
       ];
     }
 
-    return this.prisma.equipment.findMany({
+    const equipos = await this.prisma.equipment.findMany({
       where,
       orderBy: { internalCode: 'asc' },
+      include: EQUIPMENT_USAGE_INCLUDE,
     });
+
+    return this.withUsageFields(equipos);
   }
 
   /**
@@ -119,38 +247,106 @@ export class EquipmentService {
             item: { select: { sku: true, name: true, unit: true } },
           },
         },
+        ...EQUIPMENT_USAGE_INCLUDE,
       },
     });
 
     if (!equipment) {
       throw new NotFoundException(`Equipo "${id}" no encontrado`);
     }
-    return equipment;
+    const [shaped] = await this.withUsageFields([equipment]);
+    return shaped;
   }
 
+  /**
+   * Devuelve la ficha recién creada ya enriquecida con `operator`/`supervisor`/
+   * `inUse`/`currentFuelLevel` — mismo shaping que `findAll`/`findOne` (via
+   * `EQUIPMENT_USAGE_INCLUDE` + `withUsageFields`). Sin esto el front, que
+   * valida la respuesta contra `EquipmentResponseSchema` (esos 4 campos son
+   * obligatorios), la rechaza con un ZodError aunque el equipo se haya creado
+   * bien en la BD.
+   */
   async create(dto: CreateEquipmentDto) {
     try {
-      return await this.prisma.equipment.create({ data: dto });
+      const equipment = await this.prisma.equipment.create({
+        data: dto,
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+      const [shaped] = await this.withUsageFields([equipment]);
+      return shaped;
     } catch (error: unknown) {
       throw this.mapPrismaError(error, dto);
     }
   }
 
+  /** Mismo shaping que `create` — ver docstring de arriba. */
   async update(id: string, dto: UpdateEquipmentDto) {
     await this.assertExiste(id);
     try {
-      return await this.prisma.equipment.update({ where: { id }, data: dto });
+      const equipment = await this.prisma.equipment.update({
+        where: { id },
+        data: dto,
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+      const [shaped] = await this.withUsageFields([equipment]);
+      return shaped;
     } catch (error: unknown) {
       throw this.mapPrismaError(error, dto);
     }
   }
 
+  /** Mismo shaping que `create` — ver docstring de arriba. */
   async updateStatus(id: string, dto: UpdateEquipmentStatusDto) {
     await this.assertExiste(id);
-    return this.prisma.equipment.update({
+    const equipment = await this.prisma.equipment.update({
       where: { id },
       data: { status: dto.status },
+      include: EQUIPMENT_USAGE_INCLUDE,
     });
+    const [shaped] = await this.withUsageFields([equipment]);
+    return shaped;
+  }
+
+  /**
+   * Asigna/libera la asignación de uso ACTUAL del equipo (operador +
+   * supervisor a cargo ahora mismo — NO historial de sesiones). Cada campo es
+   * independiente: `undefined` (propiedad omitida) deja esa asignación
+   * intacta, `null` explícito la libera, un id la reemplaza — previa
+   * validación de que el usuario existe y tiene el rol correspondiente, para
+   * que el listado ("en uso por…") nunca muestre a alguien con el rol
+   * equivocado.
+   */
+  async updateAssignment(id: string, dto: UpdateEquipmentAssignmentDto) {
+    await this.assertExiste(id);
+
+    const data: Prisma.EquipmentUpdateInput = {};
+
+    if (dto.operatorId !== undefined) {
+      if (dto.operatorId === null) {
+        data.currentOperatorId = null;
+      } else {
+        await this.assertUserWithRole(dto.operatorId, ROLES.OPERADOR);
+        data.currentOperatorId = dto.operatorId;
+      }
+    }
+
+    if (dto.supervisorId !== undefined) {
+      if (dto.supervisorId === null) {
+        data.currentSupervisorId = null;
+      } else {
+        await this.assertUserWithRole(dto.supervisorId, ROLES.SUPERVISOR);
+        data.currentSupervisorId = dto.supervisorId;
+      }
+    }
+
+    const equipment = await this.prisma.equipment.update({
+      where: { id },
+      data,
+      include: EQUIPMENT_USAGE_INCLUDE,
+    });
+
+    const [shaped] = await this.withUsageFields([equipment]);
+    return shaped;
   }
 
   /**
@@ -202,6 +398,169 @@ export class EquipmentService {
       select: { id: true },
     });
     if (!existe) throw new NotFoundException(`Equipo "${id}" no encontrado`);
+  }
+
+  /**
+   * Agrega `operator`/`supervisor`/`inUse`/`currentFuelLevel`/`openShift` a
+   * cada fila cruda de Prisma. Resuelve los usuarios asignados y los turnos
+   * abiertos con UNA consulta batch cada uno (no N+1): junta los ids de toda
+   * la lista y arma el mapa de vuelta — mismo patrón que `resolveAssignedUsers`.
+   */
+  private async withUsageFields<
+    T extends {
+      id: string;
+      currentOperatorId: string | null;
+      currentSupervisorId: string | null;
+      technicalInspectionExpiry: Date | null;
+      insuranceExpiry: Date | null;
+      horometros: ReadonlyArray<{ nivelCombustible: number | null }>;
+    },
+  >(
+    equipos: readonly T[],
+  ): Promise<Array<Omit<T, 'horometros'> & EquipmentUsageFields>> {
+    const [usuariosPorId, turnosAbiertosPorEquipo] = await Promise.all([
+      this.resolveAssignedUsers(
+        equipos.flatMap((e) => [e.currentOperatorId, e.currentSupervisorId]),
+      ),
+      this.resolveOpenShifts(equipos.map((e) => e.id)),
+    ]);
+    return equipos.map((equipo) =>
+      this.shapeUsage(equipo, usuariosPorId, turnosAbiertosPorEquipo),
+    );
+  }
+
+  private shapeUsage<
+    T extends {
+      id: string;
+      currentOperatorId: string | null;
+      currentSupervisorId: string | null;
+      technicalInspectionExpiry: Date | null;
+      insuranceExpiry: Date | null;
+      horometros: ReadonlyArray<{ nivelCombustible: number | null }>;
+    },
+  >(
+    equipo: T,
+    usuariosPorId: ReadonlyMap<string, AssignedUserSummary>,
+    turnosAbiertosPorEquipo: ReadonlyMap<string, OpenShiftSummary>,
+  ): Omit<T, 'horometros'> & EquipmentUsageFields {
+    const { horometros, currentOperatorId, currentSupervisorId, ...resto } =
+      equipo;
+    return {
+      ...resto,
+      currentOperatorId,
+      currentSupervisorId,
+      operator: currentOperatorId
+        ? (usuariosPorId.get(currentOperatorId) ?? null)
+        : null,
+      supervisor: currentSupervisorId
+        ? (usuariosPorId.get(currentSupervisorId) ?? null)
+        : null,
+      inUse: currentOperatorId != null,
+      currentFuelLevel: horometros[0]?.nivelCombustible ?? null,
+      openShift: turnosAbiertosPorEquipo.get(equipo.id) ?? null,
+      documents: {
+        technicalInspection: buildDocumentExpiryInfo(
+          equipo.technicalInspectionExpiry,
+        ),
+        insurance: buildDocumentExpiryInfo(equipo.insuranceExpiry),
+      },
+    } as Omit<T, 'horometros'> & EquipmentUsageFields;
+  }
+
+  /**
+   * `{id,name}` de los usuarios asignados, en UNA consulta batch. Devuelve
+   * mapa vacío sin consultar si no hay ningún id (caso común: ningún equipo
+   * "en uso" en la página). `currentOperatorId`/`currentSupervisorId` son
+   * soft refs sin FK (ver `schema.prisma`) — un id sin fila en `user` (dato
+   * huérfano) simplemente no aparece en el mapa y `shapeUsage` lo trata como
+   * `null`, en vez de reventar la respuesta completa.
+   */
+  private async resolveAssignedUsers(
+    ids: ReadonlyArray<string | null>,
+  ): Promise<ReadonlyMap<string, AssignedUserSummary>> {
+    const idsUnicos = Array.from(
+      new Set(ids.filter((id): id is string => id != null)),
+    );
+    if (idsUnicos.length === 0) return new Map();
+
+    const usuarios = await this.prisma.user.findMany({
+      where: { id: { in: idsUnicos } },
+      select: { id: true, name: true },
+    });
+    return new Map(usuarios.map((u) => [u.id, u]));
+  }
+
+  /**
+   * `openShift` de cada equipo, en UNA consulta batch (no N+1). No se puede
+   * resolver vía `EQUIPMENT_USAGE_INCLUDE` porque Prisma no permite incluir
+   * la misma relación (`horometros`) dos veces con `where` distintos en un
+   * mismo `include` — por eso va como consulta aparte, igual que
+   * `resolveAssignedUsers`. `distinct: ['equipoId']` + `orderBy: { fecha:
+   * 'desc' }` hace que Postgres devuelva, por cada equipo, solo su
+   * `RegistroHorometro` abierto MÁS RECIENTE (equivalente a `DISTINCT ON`).
+   */
+  private async resolveOpenShifts(
+    equipoIds: readonly string[],
+  ): Promise<ReadonlyMap<string, OpenShiftSummary>> {
+    const idsUnicos = Array.from(new Set(equipoIds));
+    if (idsUnicos.length === 0) return new Map();
+
+    const turnos = await this.prisma.registroHorometro.findMany({
+      where: { equipoId: { in: idsUnicos }, valorFinal: null },
+      orderBy: { fecha: 'desc' },
+      distinct: ['equipoId'],
+      select: {
+        id: true,
+        equipoId: true,
+        valorInicial: true,
+        operador: true,
+        turno: true,
+        fecha: true,
+      },
+    });
+
+    return new Map(
+      turnos.map((turno) => [
+        turno.equipoId,
+        {
+          id: turno.id,
+          valorInicial: turno.valorInicial,
+          operador: turno.operador,
+          turno: turno.turno,
+          fecha: turno.fecha,
+        },
+      ]),
+    );
+  }
+
+  /**
+   * Valida, para `updateAssignment`, que el usuario exista y tenga
+   * exactamente el rol esperado (OPERADOR para `operatorId`, SUPERVISOR para
+   * `supervisorId`) — sin esto, el listado "en uso por" podría mostrar a un
+   * ADMIN o MANTENEDOR como si estuviera operando la máquina. Tampoco admite
+   * un usuario BANEADO (mismo criterio `banned: { not: true }` que
+   * `UsersService.findByRole`, que alimenta el picker): sin este chequeo,
+   * un `PATCH :id/assignment` que mande el id directo (sin pasar por el
+   * picker) podía asignar a alguien baneado igual.
+   */
+  private async assertUserWithRole(userId: string, role: Role): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true, banned: true },
+    });
+    if (!user) {
+      throw new BadRequestException(`El usuario "${userId}" no existe`);
+    }
+    if (user.role !== role) {
+      throw new BadRequestException(
+        `El usuario "${userId}" no tiene el rol ${role}`,
+      );
+    }
+    if (user.banned) {
+      throw new BadRequestException(
+        `El usuario "${userId}" está baneado y no puede ser asignado`,
+      );
+    }
   }
 
   /**
