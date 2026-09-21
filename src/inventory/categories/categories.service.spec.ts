@@ -126,6 +126,25 @@ describe('CategoriesService', () => {
   });
 
   describe('findAll', () => {
+    it('con `type` deja solo las categorías que tienen ítems de esa clase', async () => {
+      // Ofrecer «Neumáticos y llantas» mientras se miran los suministros lleva
+      // a un listado vacío y a pensar que se perdió el stock.
+      findMany.mockResolvedValue([]);
+
+      await service.findAll({ type: 'PART' });
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { items: { some: { type: 'PART', isActive: true } } },
+          include: {
+            _count: {
+              select: { items: { where: { type: 'PART', isActive: true } } },
+            },
+          },
+        }),
+      );
+    });
+
     it('busca por nombre sin distinguir mayúsculas', async () => {
       findMany.mockResolvedValue([]);
 
