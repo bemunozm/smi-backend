@@ -446,6 +446,10 @@ async function seedFlotaEInventario(
           currentHourmeter: equipo.horometroActual,
           currentMileage: equipo.kilometrajeActual,
           homeBranchId: branches[HOME_BRANCH_INDEX[index]].id,
+          // Placeholder estable y reproducible (mismo código → misma imagen
+          // en cada re-seed) para que el listado/ficha de Flota tengan foto
+          // real en la demo, sin depender de un upload manual.
+          photoUrl: `https://picsum.photos/seed/${equipo.codigo}/400/300`,
         },
       }),
     );
@@ -563,6 +567,25 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
         valorFinal: 800,
         nivelCombustible: 40,
       },
+      // Estos dos quedan además "en uso" (ver `seedAsignacionesFlota`): les
+      // suma una lectura de horómetro con combustible para que el listado
+      // muestre el dato real, no vacío, en las unidades asignadas.
+      {
+        equipoId: equipos[5].id,
+        operador: 'Pedro Soto',
+        turno: 'NOCTURNO',
+        valorInicial: 96480,
+        valorFinal: 96500,
+        nivelCombustible: 58,
+      },
+      {
+        equipoId: equipos[6].id,
+        operador: 'Ana Muñoz',
+        turno: 'DIURNO',
+        valorInicial: 14985,
+        valorFinal: 15000,
+        nivelCombustible: 85,
+      },
     ],
   });
 
@@ -623,6 +646,46 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
   );
 }
 
+// ============================================================================
+// Flota (Benjamín) — asignación de uso ACTUAL
+// ============================================================================
+
+/** Índices en `EQUIPOS` que quedan "en uso" en la demo: 4 unidades OPERATIONAL. */
+const EN_USO_INDEX = [0, 1, 5, 6] as const;
+
+/**
+ * Asigna operador + supervisor ACTUALES a algunas unidades operativas, para
+ * que el listado se vea "en uso" con datos reales (fidelidad 1:1 con el
+ * artefacto de referencia de Flota). En dev solo existe UN usuario seed por
+ * rol (`operador@smi.local`/`supervisor@smi.local`), así que se repiten entre
+ * las 4 unidades — aceptable para demo; en producción cada operador tiene su
+ * propia cuenta.
+ */
+async function seedAsignacionesFlota(
+  equipos: Equipment[],
+  operatorId: string | null,
+  supervisorId: string | null,
+): Promise<void> {
+  if (!operatorId || !supervisorId) {
+    logger.warn(
+      'No se encontró el operador/supervisor seed: se omite la asignación "en uso" de Flota',
+    );
+    return;
+  }
+
+  for (const index of EN_USO_INDEX) {
+    await prismaClient.equipment.update({
+      where: { id: equipos[index].id },
+      data: {
+        currentOperatorId: operatorId,
+        currentSupervisorId: supervisorId,
+      },
+    });
+  }
+
+  logger.log(`Flota: ${EN_USO_INDEX.length} equipos marcados "en uso"`);
+}
+
 /**
  * Borra los datos de dominio en orden de dependencia (hijos antes que padres):
  * todo cuelga de `Equipment`, y `Equipment` a su vez cuelga de `Branch`
@@ -659,11 +722,23 @@ async function seed(): Promise<void> {
   await limpiarDatosDeDominio();
 
   // Los movimientos de inventario quedan imputados al admin del seed, para que
-  // la columna "responsable" del kardex no salga vacía en la demo.
-  const admin = await prismaClient.user.findUnique({
-    where: { email: 'admin@smi.local' },
-    select: { id: true },
-  });
+  // la columna "responsable" del kardex no salga vacía en la demo. Se
+  // resuelven acá también el operador y supervisor seed: los usa la
+  // asignación de uso de Flota (`seedAsignacionesFlota`) al final.
+  const [admin, supervisor, operador] = await Promise.all([
+    prismaClient.user.findUnique({
+      where: { email: 'admin@smi.local' },
+      select: { id: true },
+    }),
+    prismaClient.user.findUnique({
+      where: { email: 'supervisor@smi.local' },
+      select: { id: true },
+    }),
+    prismaClient.user.findUnique({
+      where: { email: 'operador@smi.local' },
+      select: { id: true },
+    }),
+  ]);
 
   // Flota depende de Plataforma (homeBranch); Terreno depende de Flota: se
   // crean en ese orden y se pasan los resultados hacia abajo.
@@ -675,6 +750,11 @@ async function seed(): Promise<void> {
     categories,
   );
   await seedTerreno(equipos);
+  await seedAsignacionesFlota(
+    equipos,
+    operador?.id ?? null,
+    supervisor?.id ?? null,
+  );
 
   // Dominio Mantenimiento (Joaquín): corre al final; resuelve el asignadoAId
   // buscando al mantenedor seed por email. No depende de Flota/Terreno (soft refs).

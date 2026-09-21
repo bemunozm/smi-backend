@@ -15,6 +15,7 @@ import { ROLES } from '../auth/roles';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { QueryEquipmentDto } from './dto/query-equipment.dto';
 import {
+  UpdateEquipmentAssignmentDto,
   UpdateEquipmentDto,
   UpdateEquipmentStatusDto,
 } from './dto/update-equipment.dto';
@@ -80,6 +81,25 @@ export class EquipmentController {
     return {
       data: await this.service.updateStatus(id, dto),
       message: 'Estado actualizado',
+    };
+  }
+
+  /**
+   * Asigna/libera la asignación de uso ACTUAL de la unidad (operador +
+   * supervisor a cargo). Mismo gate que `updateStatus`: ADMIN/SUPERVISOR
+   * (requerimientos §5.2, "Control de Flota" — el supervisor coordina a su
+   * cuadrilla desde terreno, no solo el estado de la máquina).
+   */
+  @Patch(':id/assignment')
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
+  async updateAssignment(
+    @Param('id') id: string,
+    @Body() dto: UpdateEquipmentAssignmentDto,
+  ) {
+    assertNonEmptyId(id);
+    return {
+      data: await this.service.updateAssignment(id, dto),
+      message: 'Asignación actualizada',
     };
   }
 

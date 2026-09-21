@@ -4,6 +4,7 @@ import { Roles } from '@thallesp/nestjs-better-auth';
 import { ROLES } from '../../auth/roles';
 import { HorometroService } from './horometro.service';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
+import { SalidaHorometroDto } from './dto/salida-horometro.dto';
 import { UpdateHorometroDto } from './dto/update-horometro.dto';
 
 @Controller('horometro')
@@ -35,6 +36,15 @@ export class HorometroController {
     return {
       data: await this.service.update(id, dto),
       message: 'Lectura actualizada',
+    };
+  }
+
+  @Patch(':id/salida')
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  async salida(@Param('id') id: string, @Body() dto: SalidaHorometroDto) {
+    return {
+      data: await this.service.salida(id, dto),
+      message: 'Turno cerrado',
     };
   }
 }

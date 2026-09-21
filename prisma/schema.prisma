@@ -200,6 +200,30 @@ model Equipment {
   homeBranchId String? @map("home_branch_id")
   homeBranch   Branch? @relation(fields: [homeBranchId], references: [id], onDelete: SetNull)
 
+  /// Foto de la unidad (fidelidad 1:1 con el artefacto de Flota). Se sube por
+  /// el `/api/uploads` existente; acá solo se guarda la URL resultante.
+  photoUrl String? @map("photo_url")
+
+  /// Vencimiento de la revisión técnica / seguro (R1/R2). Columnas planas,
+  /// mismo patrón que `currentHourmeter`/`currentMileage`: sin tabla aparte
+  /// porque son un dato ACTUAL de la ficha, no historial. El estado de
+  /// vigencia (VIGENTE/POR_VENCER/VENCIDO/SIN_DATO) se deriva on-read en
+  /// `EquipmentService`, no se persiste.
+  technicalInspectionExpiry DateTime? @map("technical_inspection_expiry")
+  insuranceExpiry           DateTime? @map("insurance_expiry")
+
+  /// Asignación de uso ACTUAL de la unidad (operador + supervisor a cargo
+  /// ahora mismo) — NO es historial de sesiones, eso queda como follow-up.
+  /// `inUse` no es columna: se deriva en el service como `!!currentOperatorId`.
+  ///
+  /// Soft refs a `user.id` (String, SIN `@relation`) — mismo criterio que el
+  /// resto del schema (ver comentario de cabecera): la tabla `user` la
+  /// regenera `npm run auth:schema` y una relación real exigiría un campo
+  /// inverso (`Equipment[]`) en `User` que ese generador no toca a mano.
+  /// `EquipmentService` resuelve id → {id,name} con un `user.findMany` propio.
+  currentOperatorId   String? @map("current_operator_id")
+  currentSupervisorId String? @map("current_supervisor_id")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -215,6 +239,8 @@ model Equipment {
 
   @@index([equipmentClass])
   @@index([status])
+  @@index([currentOperatorId])
+  @@index([currentSupervisorId])
   @@map("equipment")
 }
 
@@ -472,8 +498,15 @@ model RegistroHorometro {
   valorInicial     Float
   valorFinal       Float?
   nivelCombustible Float? // % de combustible
-  fotoUrl          String?
-  fecha            DateTime  @default(now())
+  fotoUrl          String? // foto de ENTRADA (horómetro/odómetro al iniciar)
+  fecha            DateTime  @default(now()) // hora de ENTRADA
+
+  /// Flujo ENTRADA/SALIDA en dos pasos (Flota): "turno abierto" = `valorFinal
+  /// == null`. Al cerrar (`PATCH /horometro/:id/salida`) se completan estos
+  /// dos campos junto con `valorFinal` — quedan `null` mientras el turno está
+  /// abierto.
+  fechaSalida    DateTime? // hora de SALIDA
+  fotoUrlSalida  String? // foto de SALIDA (horómetro/odómetro al terminar)
 }
 
 model TrabajoExtraordinario {
