@@ -204,14 +204,6 @@ model Equipment {
   /// el `/api/uploads` existente; acá solo se guarda la URL resultante.
   photoUrl String? @map("photo_url")
 
-  /// Vencimiento de la revisión técnica / seguro (R1/R2). Columnas planas,
-  /// mismo patrón que `currentHourmeter`/`currentMileage`: sin tabla aparte
-  /// porque son un dato ACTUAL de la ficha, no historial. El estado de
-  /// vigencia (VIGENTE/POR_VENCER/VENCIDO/SIN_DATO) se deriva on-read en
-  /// `EquipmentService`, no se persiste.
-  technicalInspectionExpiry DateTime? @map("technical_inspection_expiry")
-  insuranceExpiry           DateTime? @map("insurance_expiry")
-
   /// Asignación de uso ACTUAL de la unidad (operador + supervisor a cargo
   /// ahora mismo) — NO es historial de sesiones, eso queda como follow-up.
   /// `inUse` no es columna: se deriva en el service como `!!currentOperatorId`.
@@ -237,11 +229,58 @@ model Equipment {
   trabajosExtra TrabajoExtraordinario[]
   hallazgos     Hallazgo[]
 
+  /// Documentos del equipo (revisión técnica, seguro, permiso de circulación,
+  /// certificaciones, otros) con archivo adjunto y CRUD propio — reemplaza
+  /// las columnas planas `technicalInspectionExpiry`/`insuranceExpiry` (R1/R2)
+  /// de la primera versión de Flota. Ver `EquipmentDocument`.
+  documents EquipmentDocument[]
+
   @@index([equipmentClass])
   @@index([status])
   @@index([currentOperatorId])
   @@index([currentSupervisorId])
   @@map("equipment")
+}
+
+/// Tipo de documento de un `EquipmentDocument`. `TECHNICAL_INSPECTION`/
+/// `INSURANCE` reemplazan a las columnas planas R1/R2 de la versión anterior;
+/// `CIRCULATION_PERMIT`/`CERTIFICATION`/`OTHER` cubren los documentos que ya
+/// se venían pidiendo pero no tenían dónde vivir.
+enum EquipmentDocumentType {
+  TECHNICAL_INSPECTION
+  INSURANCE
+  CIRCULATION_PERMIT
+  CERTIFICATION
+  OTHER
+}
+
+/// Documento de un equipo, con archivo adjunto (sube por el `/api/uploads`
+/// existente, acá solo se guarda la URL) y vigencia opcional. A diferencia de
+/// `currentHourmeter`/`photoUrl` (dato ACTUAL de la ficha, columna plana), un
+/// equipo puede tener VARIOS documentos del mismo tipo (ej. dos
+/// certificaciones distintas) — de ahí la tabla propia con CRUD dedicado en
+/// vez de columnas en `Equipment`. El estado de vigencia
+/// (VIGENTE/POR_VENCER/VENCIDO/SIN_DATO) se deriva on-read en
+/// `EquipmentDocumentService` (mismo `buildDocumentExpiryInfo` que antes vivía
+/// en `EquipmentService`, ahora en `src/equipment/document-expiry.ts`), no se
+/// persiste.
+model EquipmentDocument {
+  id String @id @default(cuid())
+
+  equipmentId String    @map("equipment_id")
+  equipment   Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+
+  type       EquipmentDocumentType
+  title      String?
+  expiryDate DateTime? @map("expiry_date")
+  fileUrl    String?   @map("file_url")
+  notes      String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([equipmentId])
+  @@map("equipment_document")
 }
 
 // ============================================================================

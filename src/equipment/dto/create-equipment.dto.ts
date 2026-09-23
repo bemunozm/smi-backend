@@ -1,7 +1,6 @@
 import { ControlUnit, EquipmentClass, EquipmentStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsDateString,
   IsEnum,
   IsInt,
   IsNumber,
@@ -90,14 +89,4 @@ export class CreateEquipmentDto {
   @IsOptional()
   @IsString()
   photoUrl?: string;
-
-  /** Vencimiento de la revisión técnica (R1). ISO 8601. */
-  @IsOptional()
-  @IsDateString()
-  technicalInspectionExpiry?: string;
-
-  /** Vencimiento del seguro (R2). ISO 8601. */
-  @IsOptional()
-  @IsDateString()
-  insuranceExpiry?: string;
 }
