@@ -9,6 +9,7 @@ import { EquipmentStatus, Prisma } from '@prisma/client';
 import { ROLES } from '../auth/roles';
 import type { Role } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { buildDocumentExpiryInfo } from './document-expiry';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { QueryEquipmentDto } from './dto/query-equipment.dto';
 import {
@@ -80,74 +81,18 @@ export interface EquipmentUsageFields {
   currentFuelLevel: number | null;
   /** Turno de horómetro abierto del equipo, o `null` si no tiene uno en curso. */
   openShift: OpenShiftSummary | null;
-  /** Estado de vigencia de R1/R2, derivado on-read de las columnas `*Expiry`. */
-  documents: EquipmentDocumentsInfo;
+  /**
+   * Estado MÁS URGENTE entre los `EquipmentDocument` del equipo que tienen
+   * `expiryDate` cargado (VENCIDO gana sobre POR_VENCER); `null` si ninguno
+   * está vencido o por vencer (incluye el caso sin documentos). Alimenta el
+   * badge del listado — el detalle completo de documentos se sirve por
+   * `GET /api/equipment/:equipmentId/documents` (`EquipmentDocumentController`),
+   * no acá, para no inflar la respuesta de la lista de equipos.
+   */
+  documentsAlert: DocumentsAlert;
 }
 
-/**
- * Umbral (en días) para pasar de `VIGENTE` a `POR_VENCER` en R1/R2.
- * Centralizado acá — nunca hardcodear el 30 inline — para que cualquier otro
- * consumidor futuro (ej. un cron de notificaciones) lea el mismo número.
- */
-export const DOCUMENT_EXPIRY_WARNING_DAYS = 30;
-
-export type DocumentStatus = 'VIGENTE' | 'POR_VENCER' | 'VENCIDO' | 'SIN_DATO';
-
-/** Estado de vigencia de un documento individual (revisión técnica o seguro). */
-export interface DocumentExpiryInfo {
-  /** Fecha de vencimiento en ISO 8601, o `null` si no hay dato cargado. */
-  expiry: string | null;
-  status: DocumentStatus;
-  /** Días de calendario hasta el vencimiento (negativo si ya venció), o `null` sin dato. */
-  daysToExpiry: number | null;
-}
-
-/** Forma del campo `documents` en la respuesta de Flota (R1/R2). */
-export interface EquipmentDocumentsInfo {
-  technicalInspection: DocumentExpiryInfo;
-  insurance: DocumentExpiryInfo;
-}
-
-/**
- * Días de calendario entre `now` y `expiry`, a granularidad de FECHA
- * (ignorando la hora) para evitar el off-by-one de restar dos timestamps
- * completos — sin esto, dos fechas del mismo día calendario pero con horas
- * distintas podrían dar un `daysToExpiry` fraccionario o corrido en ±1.
- * Ambas fechas se normalizan a medianoche UTC antes de restar.
- */
-function daysBetweenDateOnly(now: Date, expiry: Date): number {
-  const MS_PER_DAY = 24 * 60 * 60 * 1000;
-  const nowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const expiryUtc = Date.UTC(
-    expiry.getUTCFullYear(),
-    expiry.getUTCMonth(),
-    expiry.getUTCDate(),
-  );
-  return Math.round((expiryUtc - nowUtc) / MS_PER_DAY);
-}
-
-/**
- * Deriva `status`/`daysToExpiry` de un documento (R1/R2) on-read — no se
- * persiste, se recalcula en cada lectura contra el reloj actual. `now` es un
- * parámetro explícito (default `new Date()`) en vez de leer `Date.now()`
- * adentro, para que los tests puedan fijarlo sin mockear el reloj global.
- */
-export function buildDocumentExpiryInfo(
-  expiry: Date | null,
-  now: Date = new Date(),
-): DocumentExpiryInfo {
-  if (!expiry) {
-    return { expiry: null, status: 'SIN_DATO', daysToExpiry: null };
-  }
-  const daysToExpiry = daysBetweenDateOnly(now, expiry);
-  const status: DocumentStatus =
-    daysToExpiry < 0
-      ? 'VENCIDO'
-      : daysToExpiry <= DOCUMENT_EXPIRY_WARNING_DAYS
-        ? 'POR_VENCER'
-        : 'VIGENTE';
-  return { expiry: expiry.toISOString(), status, daysToExpiry };
-}
+export type DocumentsAlert = 'VENCIDO' | 'POR_VENCER' | null;
 
 /**
  * Subset de campos que necesita el mapeo de errores de Prisma para construir
@@ -351,9 +296,11 @@ export class EquipmentService {
 
   /**
    * Baja física. Solo se permite si la unidad no tiene historial: un equipo con
-   * registros de terreno o movimientos de inventario es parte de la
-   * trazabilidad del sistema y se retira con `status = OUT_OF_SERVICE`, no
-   * borrándolo.
+   * registros de terreno, movimientos de inventario o documentos (RT, seguro,
+   * permisos, certificaciones) es parte de la trazabilidad del sistema y se
+   * retira con `status = OUT_OF_SERVICE`, no borrándolo. `documents` cuenta acá
+   * porque su FK tiene `onDelete: Cascade`: sin este guard, un equipo con solo
+   * documentos se borraría en silencio junto con sus archivos adjuntos.
    */
   async remove(id: string): Promise<void> {
     const equipment = await this.prisma.equipment.findUnique({
@@ -366,6 +313,7 @@ export class EquipmentService {
             trabajosExtra: true,
             hallazgos: true,
             stockMovements: true,
+            documents: true,
           },
         },
       },
@@ -380,7 +328,8 @@ export class EquipmentService {
       equipment._count.horometros +
       equipment._count.trabajosExtra +
       equipment._count.hallazgos +
-      equipment._count.stockMovements;
+      equipment._count.stockMovements +
+      equipment._count.documents;
 
     if (registros > 0) {
       throw new ConflictException(
@@ -401,31 +350,37 @@ export class EquipmentService {
   }
 
   /**
-   * Agrega `operator`/`supervisor`/`inUse`/`currentFuelLevel`/`openShift` a
-   * cada fila cruda de Prisma. Resuelve los usuarios asignados y los turnos
-   * abiertos con UNA consulta batch cada uno (no N+1): junta los ids de toda
-   * la lista y arma el mapa de vuelta — mismo patrón que `resolveAssignedUsers`.
+   * Agrega `operator`/`supervisor`/`inUse`/`currentFuelLevel`/`openShift`/
+   * `documentsAlert` a cada fila cruda de Prisma. Resuelve los usuarios
+   * asignados, los turnos abiertos y la alerta de documentos con UNA consulta
+   * batch cada uno (no N+1): junta los ids de toda la lista y arma el mapa de
+   * vuelta — mismo patrón que `resolveAssignedUsers`.
    */
   private async withUsageFields<
     T extends {
       id: string;
       currentOperatorId: string | null;
       currentSupervisorId: string | null;
-      technicalInspectionExpiry: Date | null;
-      insuranceExpiry: Date | null;
       horometros: ReadonlyArray<{ nivelCombustible: number | null }>;
     },
   >(
     equipos: readonly T[],
   ): Promise<Array<Omit<T, 'horometros'> & EquipmentUsageFields>> {
-    const [usuariosPorId, turnosAbiertosPorEquipo] = await Promise.all([
-      this.resolveAssignedUsers(
-        equipos.flatMap((e) => [e.currentOperatorId, e.currentSupervisorId]),
-      ),
-      this.resolveOpenShifts(equipos.map((e) => e.id)),
-    ]);
+    const [usuariosPorId, turnosAbiertosPorEquipo, alertasPorEquipo] =
+      await Promise.all([
+        this.resolveAssignedUsers(
+          equipos.flatMap((e) => [e.currentOperatorId, e.currentSupervisorId]),
+        ),
+        this.resolveOpenShifts(equipos.map((e) => e.id)),
+        this.resolveDocumentsAlerts(equipos.map((e) => e.id)),
+      ]);
     return equipos.map((equipo) =>
-      this.shapeUsage(equipo, usuariosPorId, turnosAbiertosPorEquipo),
+      this.shapeUsage(
+        equipo,
+        usuariosPorId,
+        turnosAbiertosPorEquipo,
+        alertasPorEquipo,
+      ),
     );
   }
 
@@ -434,14 +389,13 @@ export class EquipmentService {
       id: string;
       currentOperatorId: string | null;
       currentSupervisorId: string | null;
-      technicalInspectionExpiry: Date | null;
-      insuranceExpiry: Date | null;
       horometros: ReadonlyArray<{ nivelCombustible: number | null }>;
     },
   >(
     equipo: T,
     usuariosPorId: ReadonlyMap<string, AssignedUserSummary>,
     turnosAbiertosPorEquipo: ReadonlyMap<string, OpenShiftSummary>,
+    alertasPorEquipo: ReadonlyMap<string, DocumentsAlert>,
   ): Omit<T, 'horometros'> & EquipmentUsageFields {
     const { horometros, currentOperatorId, currentSupervisorId, ...resto } =
       equipo;
@@ -458,12 +412,7 @@ export class EquipmentService {
       inUse: currentOperatorId != null,
       currentFuelLevel: horometros[0]?.nivelCombustible ?? null,
       openShift: turnosAbiertosPorEquipo.get(equipo.id) ?? null,
-      documents: {
-        technicalInspection: buildDocumentExpiryInfo(
-          equipo.technicalInspectionExpiry,
-        ),
-        insurance: buildDocumentExpiryInfo(equipo.insuranceExpiry),
-      },
+      documentsAlert: alertasPorEquipo.get(equipo.id) ?? null,
     } as Omit<T, 'horometros'> & EquipmentUsageFields;
   }
 
@@ -531,6 +480,40 @@ export class EquipmentService {
         },
       ]),
     );
+  }
+
+  /**
+   * `documentsAlert` de cada equipo, en UNA consulta batch (no N+1) — mismo
+   * patrón que `resolveOpenShifts`. Trae solo `equipmentId`/`expiryDate` de
+   * los `EquipmentDocument` CON `expiryDate` cargado (el resto no puede
+   * generar alerta) y se queda, por equipo, con el estado más urgente
+   * (VENCIDO > POR_VENCER); un equipo sin documentos vencidos/por vencer
+   * simplemente no entra en el mapa y `shapeUsage` lo trata como `null`.
+   */
+  private async resolveDocumentsAlerts(
+    equipoIds: readonly string[],
+  ): Promise<ReadonlyMap<string, DocumentsAlert>> {
+    const idsUnicos = Array.from(new Set(equipoIds));
+    if (idsUnicos.length === 0) return new Map();
+
+    const documentos = await this.prisma.equipmentDocument.findMany({
+      where: { equipmentId: { in: idsUnicos }, expiryDate: { not: null } },
+      select: { equipmentId: true, expiryDate: true },
+    });
+
+    const alertas = new Map<string, DocumentsAlert>();
+    for (const documento of documentos) {
+      const { status } = buildDocumentExpiryInfo(documento.expiryDate);
+      if (status !== 'VENCIDO' && status !== 'POR_VENCER') continue;
+
+      // VENCIDO ya es la urgencia máxima: si el equipo ya tiene una alerta
+      // VENCIDO registrada, ningún otro documento puede subirla más.
+      if (alertas.get(documento.equipmentId) === 'VENCIDO') continue;
+
+      alertas.set(documento.equipmentId, status);
+    }
+
+    return alertas;
   }
 
   /**

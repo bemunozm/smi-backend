@@ -14,12 +14,7 @@ import {
 import { ROLES } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
-import {
-  buildDocumentExpiryInfo,
-  DOCUMENT_EXPIRY_WARNING_DAYS,
-  EQUIPMENT_USAGE_INCLUDE,
-  EquipmentService,
-} from './equipment.service';
+import { EQUIPMENT_USAGE_INCLUDE, EquipmentService } from './equipment.service';
 
 const SIN_REGISTROS = {
   combustibles: 0,
@@ -27,6 +22,7 @@ const SIN_REGISTROS = {
   trabajosExtra: 0,
   hallazgos: 0,
   stockMovements: 0,
+  documents: 0,
 };
 
 /** Construye un error de Prisma real (no un duck-type) para que el `instanceof`
@@ -64,6 +60,7 @@ describe('EquipmentService', () => {
   const userFindMany = jest.fn();
   const userFindUnique = jest.fn();
   const registroHorometroFindMany = jest.fn();
+  const equipmentDocumentFindMany = jest.fn();
 
   beforeEach(async () => {
     [
@@ -77,10 +74,14 @@ describe('EquipmentService', () => {
       userFindMany,
       userFindUnique,
       registroHorometroFindMany,
+      equipmentDocumentFindMany,
     ].forEach((m) => m.mockReset());
     userFindMany.mockResolvedValue([]);
     // Sin turno abierto por defecto — los tests de `openShift` lo sobreescriben.
     registroHorometroFindMany.mockResolvedValue([]);
+    // Sin documentos vencidos/por vencer por defecto — los tests de
+    // `documentsAlert` lo sobreescriben.
+    equipmentDocumentFindMany.mockResolvedValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -103,6 +104,9 @@ describe('EquipmentService', () => {
             },
             registroHorometro: {
               findMany: registroHorometroFindMany,
+            },
+            equipmentDocument: {
+              findMany: equipmentDocumentFindMany,
             },
           },
         },
@@ -483,30 +487,6 @@ describe('EquipmentService', () => {
         include: EQUIPMENT_USAGE_INCLUDE,
       });
     });
-
-    it('persiste technicalInspectionExpiry e insuranceExpiry (R1/R2)', async () => {
-      const dto = {
-        ...DTO_BASE,
-        technicalInspectionExpiry: '2026-12-01',
-        insuranceExpiry: '2026-11-15',
-      };
-      create.mockResolvedValue({
-        id: 'eq_1',
-        ...dto,
-        technicalInspectionExpiry: new Date('2026-12-01'),
-        insuranceExpiry: new Date('2026-11-15'),
-        currentOperatorId: null,
-        currentSupervisorId: null,
-        horometros: [],
-      });
-
-      await service.create(dto);
-
-      expect(create).toHaveBeenCalledWith({
-        data: dto,
-        include: EQUIPMENT_USAGE_INCLUDE,
-      });
-    });
   });
 
   describe('update', () => {
@@ -697,69 +677,6 @@ describe('EquipmentService', () => {
         where: { id: 'eq_1' },
         data: { photoUrl: null },
         include: EQUIPMENT_USAGE_INCLUDE,
-      });
-    });
-
-    it('persiste technicalInspectionExpiry e insuranceExpiry (R1/R2)', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({
-        id: 'eq_1',
-        technicalInspectionExpiry: new Date('2026-12-01'),
-        insuranceExpiry: new Date('2026-11-15'),
-        currentOperatorId: null,
-        currentSupervisorId: null,
-        horometros: [],
-      });
-
-      await service.update('eq_1', {
-        technicalInspectionExpiry: '2026-12-01',
-        insuranceExpiry: '2026-11-15',
-      });
-
-      expect(update).toHaveBeenCalledWith({
-        where: { id: 'eq_1' },
-        data: {
-          technicalInspectionExpiry: '2026-12-01',
-          insuranceExpiry: '2026-11-15',
-        },
-        include: EQUIPMENT_USAGE_INCLUDE,
-      });
-    });
-
-    it('limpia technicalInspectionExpiry e insuranceExpiry cuando se envía null explícito', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({
-        id: 'eq_1',
-        technicalInspectionExpiry: null,
-        insuranceExpiry: null,
-        currentOperatorId: null,
-        currentSupervisorId: null,
-        horometros: [],
-      });
-
-      const result = await service.update('eq_1', {
-        technicalInspectionExpiry: null,
-        insuranceExpiry: null,
-      });
-
-      expect(update).toHaveBeenCalledWith({
-        where: { id: 'eq_1' },
-        data: { technicalInspectionExpiry: null, insuranceExpiry: null },
-        include: EQUIPMENT_USAGE_INCLUDE,
-      });
-      expect(result).toMatchObject({
-        documents: {
-          technicalInspection: {
-            expiry: null,
-            status: 'SIN_DATO',
-            daysToExpiry: null,
-          },
-          insurance: {
-            expiry: null,
-            status: 'SIN_DATO',
-            daysToExpiry: null,
-          },
-        },
       });
     });
   });
@@ -1038,6 +955,19 @@ describe('EquipmentService', () => {
       expect(deleteFn).not.toHaveBeenCalled();
     });
 
+    it('bloquea el borrado si el equipo solo tiene documentos asociados', async () => {
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        internalCode: 'EX-001',
+        _count: { ...SIN_REGISTROS, documents: 1 },
+      });
+
+      await expect(service.remove('eq_1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(deleteFn).not.toHaveBeenCalled();
+    });
+
     it('lanza NotFoundException si el equipo no existe', async () => {
       findUnique.mockResolvedValue(null);
 
@@ -1047,128 +977,150 @@ describe('EquipmentService', () => {
     });
   });
 
-  describe('documents — vigencia R1/R2 (buildDocumentExpiryInfo)', () => {
-    // Reloj fijo con hora "rara" (12:00 del mediodía) a propósito: si el
-    // cálculo restara timestamps completos en vez de comparar a granularidad
-    // de fecha, cualquier desfase de horas entre `now` y `expiry` correría el
-    // resultado en ±1 día.
-    const NOW = new Date('2026-01-01T12:00:00.000Z');
+  describe('findAll/findOne — documentsAlert', () => {
+    it('resuelve documentsAlert con UNA sola consulta batch, trayendo solo documentos con expiryDate', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+        {
+          id: 'eq_2',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
 
-    it('SIN_DATO cuando no hay fecha cargada', () => {
-      expect(buildDocumentExpiryInfo(null, NOW)).toEqual({
-        expiry: null,
-        status: 'SIN_DATO',
-        daysToExpiry: null,
+      await service.findAll({});
+
+      expect(equipmentDocumentFindMany).toHaveBeenCalledTimes(1);
+      expect(equipmentDocumentFindMany).toHaveBeenCalledWith({
+        where: {
+          equipmentId: { in: ['eq_1', 'eq_2'] },
+          expiryDate: { not: null },
+        },
+        select: { equipmentId: true, expiryDate: true },
       });
     });
 
-    it('VENCIDO cuando el vencimiento ya pasó', () => {
-      const expiry = new Date('2025-12-31T00:00:00.000Z'); // 1 día antes de NOW
-      expect(buildDocumentExpiryInfo(expiry, NOW)).toEqual({
-        expiry: expiry.toISOString(),
-        status: 'VENCIDO',
-        daysToExpiry: -1,
-      });
+    it('no consulta documentos si no hay equipos', async () => {
+      findMany.mockResolvedValue([]);
+
+      await service.findAll({});
+
+      expect(equipmentDocumentFindMany).not.toHaveBeenCalled();
     });
 
-    it('POR_VENCER en el límite inferior (vence hoy mismo, daysToExpiry = 0)', () => {
-      // Mismo día calendario que NOW pero con hora distinta — confirma que la
-      // comparación ignora la hora (no da -0.5 ni -1 por el desfase).
-      const expiry = new Date('2026-01-01T00:00:00.000Z');
-      expect(buildDocumentExpiryInfo(expiry, NOW)).toMatchObject({
-        status: 'POR_VENCER',
-        daysToExpiry: 0,
-      });
+    it('documentsAlert es null cuando el equipo no tiene documentos', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      equipmentDocumentFindMany.mockResolvedValue([]);
+
+      const [equipo] = await service.findAll({});
+
+      expect(equipo).toMatchObject({ documentsAlert: null });
     });
 
-    it(`POR_VENCER en el límite superior del umbral (daysToExpiry = ${DOCUMENT_EXPIRY_WARNING_DAYS})`, () => {
-      const expiry = new Date('2026-01-31T00:00:00.000Z'); // 30 días después
-      expect(buildDocumentExpiryInfo(expiry, NOW)).toMatchObject({
-        status: 'POR_VENCER',
-        daysToExpiry: DOCUMENT_EXPIRY_WARNING_DAYS,
-      });
+    it('documentsAlert es POR_VENCER cuando el documento más urgente vence dentro del umbral', async () => {
+      const enDiez = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      equipmentDocumentFindMany.mockResolvedValue([
+        { equipmentId: 'eq_1', expiryDate: enDiez },
+      ]);
+
+      const [equipo] = await service.findAll({});
+
+      expect(equipo).toMatchObject({ documentsAlert: 'POR_VENCER' });
     });
 
-    it(`VIGENTE apenas se cruza el umbral (daysToExpiry = ${DOCUMENT_EXPIRY_WARNING_DAYS + 1})`, () => {
-      const expiry = new Date('2026-02-01T00:00:00.000Z'); // 31 días después
-      expect(buildDocumentExpiryInfo(expiry, NOW)).toMatchObject({
-        status: 'VIGENTE',
-        daysToExpiry: DOCUMENT_EXPIRY_WARNING_DAYS + 1,
-      });
+    it('documentsAlert es VENCIDO cuando el documento más urgente ya venció', async () => {
+      const ayer = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      equipmentDocumentFindMany.mockResolvedValue([
+        { equipmentId: 'eq_1', expiryDate: ayer },
+      ]);
+
+      const [equipo] = await service.findAll({});
+
+      expect(equipo).toMatchObject({ documentsAlert: 'VENCIDO' });
     });
 
-    it('la comparación es a granularidad de fecha: 2h de diferencia cruzando medianoche cuenta como 1 día, no como fracción', () => {
-      const now = new Date('2026-01-01T23:00:00.000Z');
-      const expiry = new Date('2026-01-02T01:00:00.000Z'); // +2h reales, +1 día calendario
-      expect(buildDocumentExpiryInfo(expiry, now)).toMatchObject({
-        daysToExpiry: 1,
-      });
+    it('VENCIDO gana sobre POR_VENCER cuando el equipo tiene varios documentos con expiryDate', async () => {
+      const ayer = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const enDiez = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      // Orden POR_VENCER primero, VENCIDO después — confirma que el segundo
+      // "sube" la alerta en vez de que la primera iteración la deje fija.
+      equipmentDocumentFindMany.mockResolvedValue([
+        { equipmentId: 'eq_1', expiryDate: enDiez },
+        { equipmentId: 'eq_1', expiryDate: ayer },
+      ]);
+
+      const [equipo] = await service.findAll({});
+
+      expect(equipo).toMatchObject({ documentsAlert: 'VENCIDO' });
     });
 
-    it('usa new Date() por defecto cuando no se pasa `now` explícito', () => {
-      const expiry = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
-      const info = buildDocumentExpiryInfo(expiry);
-      expect(info.status).toBe('POR_VENCER');
-      expect(info.daysToExpiry).toBeGreaterThanOrEqual(4);
-      expect(info.daysToExpiry).toBeLessThanOrEqual(5);
-    });
-  });
+    it('un documento VIGENTE (fuera del umbral) no dispara documentsAlert', async () => {
+      const enCien = new Date(Date.now() + 100 * 24 * 60 * 60 * 1000);
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      equipmentDocumentFindMany.mockResolvedValue([
+        { equipmentId: 'eq_1', expiryDate: enCien },
+      ]);
 
-  describe('documents — wiring en findOne/create (columnas → documents.technicalInspection/insurance)', () => {
-    it('findOne mapea technicalInspectionExpiry/insuranceExpiry al campo documents', async () => {
+      const [equipo] = await service.findAll({});
+
+      expect(equipo).toMatchObject({ documentsAlert: null });
+    });
+
+    it('findOne expone documentsAlert null cuando el equipo no tiene documentos urgentes', async () => {
       findUnique.mockResolvedValue({
         id: 'eq_1',
-        internalCode: 'EX-001',
         currentOperatorId: null,
         currentSupervisorId: null,
-        technicalInspectionExpiry: new Date('2000-01-01T00:00:00.000Z'), // muy vencida
-        insuranceExpiry: null,
         horometros: [],
       });
 
       const result = await service.findOne('eq_1');
 
-      expect(result).toMatchObject({
-        documents: {
-          technicalInspection: {
-            expiry: '2000-01-01T00:00:00.000Z',
-            status: 'VENCIDO',
-          },
-          insurance: { expiry: null, status: 'SIN_DATO', daysToExpiry: null },
-        },
-      });
-    });
-
-    it('create expone documents como hermano de operator/supervisor/inUse/currentFuelLevel/openShift', async () => {
-      const dto = {
-        ...DTO_BASE,
-        technicalInspectionExpiry: '2000-01-01',
-        insuranceExpiry: '2000-01-01',
-      };
-      create.mockResolvedValue({
-        id: 'eq_1',
-        ...dto,
-        technicalInspectionExpiry: new Date('2000-01-01T00:00:00.000Z'),
-        insuranceExpiry: new Date('2000-01-01T00:00:00.000Z'),
-        currentOperatorId: null,
-        currentSupervisorId: null,
-        horometros: [],
-      });
-
-      const result = await service.create(dto);
-
-      expect(result).toHaveProperty('documents');
-      expect(result).toMatchObject({
-        operator: null,
-        supervisor: null,
-        inUse: false,
-        currentFuelLevel: null,
-        openShift: null,
-        documents: {
-          technicalInspection: { status: 'VENCIDO' },
-          insurance: { status: 'VENCIDO' },
-        },
-      });
+      expect(result).toMatchObject({ documentsAlert: null });
     });
   });
 });

@@ -1,7 +1,6 @@
 import { ControlUnit, EquipmentClass, EquipmentStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsDateString,
   IsEnum,
   IsInt,
   IsNumber,
@@ -102,22 +101,6 @@ export class UpdateEquipmentDto {
   @IsOptional()
   @IsString()
   photoUrl?: string | null;
-
-  /**
-   * Vencimiento de la revisión técnica (R1), ISO 8601. Nullable a propósito
-   * (ver comentario de `licensePlate`): permite limpiar la fecha cargada.
-   */
-  @IsOptional()
-  @IsDateString()
-  technicalInspectionExpiry?: string | null;
-
-  /**
-   * Vencimiento del seguro (R2), ISO 8601. Nullable a propósito (ver
-   * comentario de `licensePlate`): permite limpiar la fecha cargada.
-   */
-  @IsOptional()
-  @IsDateString()
-  insuranceExpiry?: string | null;
 }
 
 /**
