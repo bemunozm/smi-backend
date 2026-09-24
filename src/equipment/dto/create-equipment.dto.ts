@@ -6,11 +6,14 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
+
+import { TMP_KEY_REGEX } from '../../storage/storage-keys';
 
 /**
  * Normaliza el código interno: es la clave de negocio (patente / ID interno)
@@ -85,8 +88,17 @@ export class CreateEquipmentDto {
   @IsString()
   homeBranchId?: string;
 
-  /** URL de la foto de la unidad (se sube por el `/api/uploads` existente). */
+  /**
+   * Key `tmp/<userId>/<uuid>.<ext>` de una foto recién subida por
+   * `POST /api/files` (ver Diseño del RFC R2-storage, "Contrato de la API").
+   * El DTO valida solo la FORMA (regex + largo) — `EquipmentService` valida
+   * en capas que el segmento userId sea `session.user.id` y que la
+   * extensión sea válida para "equipment-photo" (`StorageService.claimTmp`
+   * vía `assertOwnedTmpKey`).
+   */
   @IsOptional()
   @IsString()
-  photoUrl?: string;
+  @MaxLength(160)
+  @Matches(TMP_KEY_REGEX)
+  photoKey?: string;
 }

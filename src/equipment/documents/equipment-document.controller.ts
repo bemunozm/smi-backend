@@ -4,11 +4,15 @@ import {
   Controller,
   Delete,
   Get,
+  HttpStatus,
+  NotFoundException,
   Param,
   Patch,
   Post,
+  Redirect,
 } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
 import { CreateEquipmentDocumentDto } from './dto/create-equipment-document.dto';
@@ -53,10 +57,11 @@ export class EquipmentDocumentController {
   async create(
     @Param('equipmentId') equipmentId: string,
     @Body() dto: CreateEquipmentDocumentDto,
+    @Session() session: UserSession,
   ) {
     assertNonEmptyId(equipmentId, 'equipmentId');
     return {
-      data: await this.service.create(equipmentId, dto),
+      data: await this.service.create(equipmentId, dto, session.user.id),
       message: 'Documento creado',
     };
   }
@@ -66,10 +71,11 @@ export class EquipmentDocumentController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentDocumentDto,
+    @Session() session: UserSession,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto),
+      data: await this.service.update(id, dto, session.user.id),
       message: 'Documento actualizado',
     };
   }
@@ -80,5 +86,27 @@ export class EquipmentDocumentController {
     assertNonEmptyId(id);
     await this.service.remove(id);
     return { data: { id }, message: 'Documento eliminado' };
+  }
+
+  /**
+   * "Ver/descargar" del archivo adjunto: 302 a una URL RECIÉN firmada (no la
+   * que viaja en el listado, que puede haber quedado vieja si la pestaña
+   * lleva horas abierta) — ver Diseño del RFC R2-storage, "Contrato de la
+   * API". Mismo acceso de lectura que `findByEquipment` (cualquier sesión
+   * autenticada, sin `@Roles` propio). Los errores (404 sin archivo) siguen
+   * el `{data,message}` del filtro global: `@Redirect()` solo intercepta el
+   * `return`, no las excepciones.
+   */
+  @Get('documents/:id/file')
+  @Redirect()
+  async getFile(
+    @Param('id') id: string,
+  ): Promise<{ url: string; statusCode: number }> {
+    assertNonEmptyId(id);
+    const url = await this.service.getSignedFileUrl(id);
+    if (!url) {
+      throw new NotFoundException('El documento no tiene archivo adjunto');
+    }
+    return { url, statusCode: HttpStatus.FOUND };
   }
 }

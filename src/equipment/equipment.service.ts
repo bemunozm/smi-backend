@@ -9,6 +9,7 @@ import { EquipmentStatus, Prisma } from '@prisma/client';
 import { ROLES } from '../auth/roles';
 import type { Role } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { buildDocumentExpiryInfo } from './document-expiry';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { QueryEquipmentDto } from './dto/query-equipment.dto';
@@ -81,6 +82,10 @@ export interface EquipmentUsageFields {
   currentFuelLevel: number | null;
   /** Turno de horómetro abierto del equipo, o `null` si no tiene uno en curso. */
   openShift: OpenShiftSummary | null;
+  /** URL firmada de `photoKey`, resuelta on-read — nunca se persiste (ver
+   * Diseño del RFC R2-storage, "Contrato de la API"). `null` si el equipo no
+   * tiene foto. */
+  photoUrl: string | null;
   /**
    * Estado MÁS URGENTE entre los `EquipmentDocument` del equipo que tienen
    * `expiryDate` cargado (VENCIDO gana sobre POR_VENCER); `null` si ninguno
@@ -107,7 +112,10 @@ type UniqueFieldsDto = {
 
 @Injectable()
 export class EquipmentService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
   async findAll(filtros: QueryEquipmentDto) {
     const where: Prisma.EquipmentWhereInput = {};
@@ -211,33 +219,92 @@ export class EquipmentService {
    * obligatorios), la rechaza con un ZodError aunque el equipo se haya creado
    * bien en la BD.
    */
-  async create(dto: CreateEquipmentDto) {
+  async create(dto: CreateEquipmentDto, userId: string) {
+    const { photoKey, ...rest } = dto;
+    // Reclama ANTES del `create` (fuera del try): si el claim falla (key
+    // ajena, expirada o de extensión inválida), no hay nada que revertir en
+    // la BD ni en storage — ver Diseño del RFC R2-storage, "Claim en los
+    // servicios de dominio".
+    const finalKey = photoKey
+      ? await this.storage.claimTmp(photoKey, userId, 'equipment-photo')
+      : undefined;
+
+    // El `try/catch` cubre SOLO la escritura en Prisma (hallazgo BAJO B1 de
+    // la revisión de seguridad): `withUsageFields` (shaping, que incluye
+    // `StorageService.sign`) queda AFUERA a propósito — si el `create` ya
+    // confirmó en BD y el shaping falla después, `finalKey` YA está
+    // persistido en la fila, así que descartarlo dejaría el equipo
+    // apuntando a un objeto borrado. Un error acá simplemente se propaga sin
+    // rollback (la fila y su `photoKey` quedan intactos y consistentes).
+    let equipment: EquipmentWithUsageRelations;
     try {
-      const equipment = await this.prisma.equipment.create({
-        data: dto,
+      equipment = await this.prisma.equipment.create({
+        data: { ...rest, photoKey: finalKey },
         include: EQUIPMENT_USAGE_INCLUDE,
       });
-      const [shaped] = await this.withUsageFields([equipment]);
-      return shaped;
     } catch (error: unknown) {
+      // La copia final ya existe en el bucket pero la fila nunca se creó —
+      // se descarta best-effort para no dejar un objeto huérfano.
+      if (finalKey) {
+        await this.storage.discard(finalKey);
+      }
       throw this.mapPrismaError(error, dto);
     }
+
+    const [shaped] = await this.withUsageFields([equipment]);
+    return shaped;
   }
 
-  /** Mismo shaping que `create` — ver docstring de arriba. */
-  async update(id: string, dto: UpdateEquipmentDto) {
-    await this.assertExiste(id);
+  /**
+   * Mismo shaping que `create` — ver docstring de arriba. `photoKey` es
+   * tri-state (chequeado con `=== undefined`, NUNCA `in`/hasOwnProperty por
+   * `useDefineForClassFields` — ver Diseño del RFC R2-storage, "Contrato de
+   * la API"): omitido deja la foto intacta, `null` la borra, un string
+   * reclama una key `tmp/` nueva. El objeto viejo (reemplazado o borrado) se
+   * elimina best-effort DESPUÉS de que la escritura en la BD ya se confirmó
+   * — nunca antes, para no perder el archivo si el `update` falla.
+   */
+  async update(id: string, dto: UpdateEquipmentDto, userId: string) {
+    const { photoKey, ...rest } = dto;
+    const existente = await this.assertExisteConPhotoKey(id);
+
+    let finalKey: string | null | undefined;
+    if (photoKey === undefined) {
+      finalKey = undefined;
+    } else if (photoKey === null) {
+      finalKey = null;
+    } else {
+      finalKey = await this.storage.claimTmp(
+        photoKey,
+        userId,
+        'equipment-photo',
+      );
+    }
+
+    // Mismo criterio que `create` (hallazgo BAJO B1): el `try/catch` cubre
+    // SOLO la escritura en Prisma. El borrado de la foto vieja y el shaping
+    // van DESPUÉS, fuera del try — si fallan, la escritura en BD ya está
+    // confirmada y no hay nada que descartar de `finalKey`.
+    let equipment: EquipmentWithUsageRelations;
     try {
-      const equipment = await this.prisma.equipment.update({
+      equipment = await this.prisma.equipment.update({
         where: { id },
-        data: dto,
+        data: finalKey !== undefined ? { ...rest, photoKey: finalKey } : rest,
         include: EQUIPMENT_USAGE_INCLUDE,
       });
-      const [shaped] = await this.withUsageFields([equipment]);
-      return shaped;
     } catch (error: unknown) {
+      if (typeof finalKey === 'string') {
+        await this.storage.discard(finalKey);
+      }
       throw this.mapPrismaError(error, dto);
     }
+
+    if (finalKey !== undefined && existente.photoKey) {
+      await this.storage.deleteBestEffort(existente.photoKey);
+    }
+
+    const [shaped] = await this.withUsageFields([equipment]);
+    return shaped;
   }
 
   /** Mismo shaping que `create` — ver docstring de arriba. */
@@ -339,6 +406,9 @@ export class EquipmentService {
     }
 
     await this.prisma.equipment.delete({ where: { id } });
+    if (equipment.photoKey) {
+      await this.storage.deleteBestEffort(equipment.photoKey);
+    }
   }
 
   private async assertExiste(id: string): Promise<void> {
@@ -347,6 +417,20 @@ export class EquipmentService {
       select: { id: true },
     });
     if (!existe) throw new NotFoundException(`Equipo "${id}" no encontrado`);
+  }
+
+  /** Mismo chequeo que `assertExiste`, pero además devuelve el `photoKey`
+   * ACTUAL — lo necesita `update` para poder borrar la foto vieja después de
+   * un reemplazo/borrado exitoso (ver Diseño del RFC R2-storage). */
+  private async assertExisteConPhotoKey(
+    id: string,
+  ): Promise<{ photoKey: string | null }> {
+    const existe = await this.prisma.equipment.findUnique({
+      where: { id },
+      select: { photoKey: true },
+    });
+    if (!existe) throw new NotFoundException(`Equipo "${id}" no encontrado`);
+    return existe;
   }
 
   /**
@@ -361,25 +445,32 @@ export class EquipmentService {
       id: string;
       currentOperatorId: string | null;
       currentSupervisorId: string | null;
+      photoKey: string | null;
       horometros: ReadonlyArray<{ nivelCombustible: number | null }>;
     },
   >(
     equipos: readonly T[],
-  ): Promise<Array<Omit<T, 'horometros'> & EquipmentUsageFields>> {
-    const [usuariosPorId, turnosAbiertosPorEquipo, alertasPorEquipo] =
-      await Promise.all([
-        this.resolveAssignedUsers(
-          equipos.flatMap((e) => [e.currentOperatorId, e.currentSupervisorId]),
-        ),
-        this.resolveOpenShifts(equipos.map((e) => e.id)),
-        this.resolveDocumentsAlerts(equipos.map((e) => e.id)),
-      ]);
+  ): Promise<Array<Omit<T, 'horometros' | 'photoKey'> & EquipmentUsageFields>> {
+    const [
+      usuariosPorId,
+      turnosAbiertosPorEquipo,
+      alertasPorEquipo,
+      photoUrlsPorEquipo,
+    ] = await Promise.all([
+      this.resolveAssignedUsers(
+        equipos.flatMap((e) => [e.currentOperatorId, e.currentSupervisorId]),
+      ),
+      this.resolveOpenShifts(equipos.map((e) => e.id)),
+      this.resolveDocumentsAlerts(equipos.map((e) => e.id)),
+      this.resolvePhotoUrls(equipos),
+    ]);
     return equipos.map((equipo) =>
       this.shapeUsage(
         equipo,
         usuariosPorId,
         turnosAbiertosPorEquipo,
         alertasPorEquipo,
+        photoUrlsPorEquipo,
       ),
     );
   }
@@ -389,6 +480,7 @@ export class EquipmentService {
       id: string;
       currentOperatorId: string | null;
       currentSupervisorId: string | null;
+      photoKey: string | null;
       horometros: ReadonlyArray<{ nivelCombustible: number | null }>;
     },
   >(
@@ -396,9 +488,15 @@ export class EquipmentService {
     usuariosPorId: ReadonlyMap<string, AssignedUserSummary>,
     turnosAbiertosPorEquipo: ReadonlyMap<string, OpenShiftSummary>,
     alertasPorEquipo: ReadonlyMap<string, DocumentsAlert>,
-  ): Omit<T, 'horometros'> & EquipmentUsageFields {
-    const { horometros, currentOperatorId, currentSupervisorId, ...resto } =
-      equipo;
+    photoUrlsPorEquipo: ReadonlyMap<string, string | null>,
+  ): Omit<T, 'horometros' | 'photoKey'> & EquipmentUsageFields {
+    const {
+      horometros,
+      currentOperatorId,
+      currentSupervisorId,
+      photoKey,
+      ...resto
+    } = equipo;
     return {
       ...resto,
       currentOperatorId,
@@ -413,7 +511,31 @@ export class EquipmentService {
       currentFuelLevel: horometros[0]?.nivelCombustible ?? null,
       openShift: turnosAbiertosPorEquipo.get(equipo.id) ?? null,
       documentsAlert: alertasPorEquipo.get(equipo.id) ?? null,
-    } as Omit<T, 'horometros'> & EquipmentUsageFields;
+      photoUrl: photoKey ? (photoUrlsPorEquipo.get(equipo.id) ?? null) : null,
+    } as Omit<T, 'horometros' | 'photoKey'> & EquipmentUsageFields;
+  }
+
+  /**
+   * `photoUrl` firmada de cada equipo CON `photoKey`, en UNA tanda
+   * `Promise.all` (no secuencial) — mismo patrón batch que
+   * `resolveAssignedUsers`/`resolveOpenShifts`/`resolveDocumentsAlerts`,
+   * salvo que acá cada resolución es una llamada a `StorageService.sign`
+   * (no una query a Prisma). Equipos sin foto no entran al `Promise.all`.
+   */
+  private async resolvePhotoUrls(
+    equipos: readonly { id: string; photoKey: string | null }[],
+  ): Promise<ReadonlyMap<string, string | null>> {
+    const conFoto = equipos.filter(
+      (e): e is { id: string; photoKey: string } => !!e.photoKey,
+    );
+    if (conFoto.length === 0) return new Map();
+
+    const entradas = await Promise.all(
+      conFoto.map(
+        async (e) => [e.id, await this.storage.sign(e.photoKey)] as const,
+      ),
+    );
+    return new Map(entradas);
   }
 
   /**

@@ -50,6 +50,28 @@ Contiene las tablas de Better Auth (`user`, `session`, `account`, `verification`
 7. Registra tu módulo en `app.module.ts`.
 8. Sesión del request: decorador `@Session()` (`UserSession`) de la librería.
 
+## Storage de archivos (Flota) — RFC R2-storage
+Foto de equipo, documento de equipo y foto de carga de combustible se guardan en un
+bucket S3-compatible **privado** (MinIO en local, Cloudflare R2 en producción),
+servido **siempre con URL firmada al leer** — nunca hay una key ni una url pública.
+- `src/storage/`: `StorageService` (cliente S3 perezoso, `putTmp`/`claimTmp`/
+  `discard`/`deleteBestEffort`/`sign`), `storage-keys.ts` (convenciones de key +
+  validación de ownership `tmp/<userId>/…`), `file-signature.ts` (detección de
+  tipo por magic bytes — JPEG/PNG/WebP/PDF, nunca por extensión ni mimetype del
+  cliente) y `content-disposition.ts`. `StorageModule` **no es `@Global`**: cada
+  dominio que lo necesite lo importa explícito.
+- `src/files/`: `POST /api/files` (SUPERVISOR/ADMIN) sube un archivo crudo a
+  `tmp/<userId>/<uuid>.<ext>` y devuelve `{key, url}`. Los servicios de dominio
+  (Equipment, EquipmentDocument, Combustible, Ficha — Fase 2 de este RFC) son los
+  que "reclaman" esa key (`claimTmp`) al guardar el registro real.
+- Config: `STORAGE_*` en `env.ts` — fuera de producción cae a los defaults del
+  MinIO de `docker-compose.yml` (no rompe el boot sin `.env`); con
+  `NODE_ENV=production` son obligatorias. Ver `.env.example`.
+- Local: `docker compose up -d minio minio-init` (nunca un `docker compose up`
+  a secas — ver comentario en `docker-compose.yml`).
+- El legacy `UploadsModule`/`/uploads` (disco local, sin auth) sigue intacto
+  para Terreno (horómetro/hallazgos) — fuera de alcance de este RFC.
+
 ## Autenticación (ya montada, no reinventar)
 - Handler de Better Auth en `/api/auth/*` (login/logout/sesión). En el front se consume con `useSession()` del cliente — **el backend no emite JWT manuales**.
 - `AuthGuard` global **deny-by-default**: toda ruta exige sesión salvo `@AllowAnonymous()`.

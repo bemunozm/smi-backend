@@ -446,10 +446,10 @@ async function seedFlotaEInventario(
           currentHourmeter: equipo.horometroActual,
           currentMileage: equipo.kilometrajeActual,
           homeBranchId: branches[HOME_BRANCH_INDEX[index]].id,
-          // Placeholder estable y reproducible (mismo código → misma imagen
-          // en cada re-seed) para que el listado/ficha de Flota tengan foto
-          // real en la demo, sin depender de un upload manual.
-          photoUrl: `https://picsum.photos/seed/${equipo.codigo}/400/300`,
+          // Sin foto en el seed: `photoKey` ahora es la key de un objeto real
+          // en el bucket de storage (R2/MinIO) — un placeholder picsum.photos
+          // ya no sirve (no es una key `equipment-photos/...` válida, ver RFC
+          // R2-storage). Subir una foto real queda a mano, vía la UI.
         },
       }),
     );

@@ -200,9 +200,11 @@ model Equipment {
   homeBranchId String? @map("home_branch_id")
   homeBranch   Branch? @relation(fields: [homeBranchId], references: [id], onDelete: SetNull)
 
-  /// Foto de la unidad (fidelidad 1:1 con el artefacto de Flota). Se sube por
-  /// el `/api/uploads` existente; acá solo se guarda la URL resultante.
-  photoUrl String? @map("photo_url")
+  /// Foto de la unidad (fidelidad 1:1 con el artefacto de Flota). Guarda la
+  /// KEY del objeto en el bucket de storage (R2/MinIO, ver `StorageService`),
+  /// NUNCA una URL — la URL firmada se resuelve on-read (`sign()`), nunca se
+  /// persiste (ver Diseño del RFC R2-storage, "Contrato de la API").
+  photoKey String? @map("photo_key")
 
   /// Asignación de uso ACTUAL de la unidad (operador + supervisor a cargo
   /// ahora mismo) — NO es historial de sesiones, eso queda como follow-up.
@@ -254,12 +256,13 @@ enum EquipmentDocumentType {
   OTHER
 }
 
-/// Documento de un equipo, con archivo adjunto (sube por el `/api/uploads`
-/// existente, acá solo se guarda la URL) y vigencia opcional. A diferencia de
-/// `currentHourmeter`/`photoUrl` (dato ACTUAL de la ficha, columna plana), un
-/// equipo puede tener VARIOS documentos del mismo tipo (ej. dos
-/// certificaciones distintas) — de ahí la tabla propia con CRUD dedicado en
-/// vez de columnas en `Equipment`. El estado de vigencia
+/// Documento de un equipo, con archivo adjunto (sube por `POST /api/files` +
+/// claim en `EquipmentDocumentService`, ver Diseño del RFC R2-storage; acá
+/// solo se guarda la KEY del objeto, nunca una URL) y vigencia opcional. A
+/// diferencia de `currentHourmeter`/`photoKey` (dato ACTUAL de la ficha,
+/// columna plana), un equipo puede tener VARIOS documentos del mismo tipo
+/// (ej. dos certificaciones distintas) — de ahí la tabla propia con CRUD
+/// dedicado en vez de columnas en `Equipment`. El estado de vigencia
 /// (VIGENTE/POR_VENCER/VENCIDO/SIN_DATO) se deriva on-read en
 /// `EquipmentDocumentService` (mismo `buildDocumentExpiryInfo` que antes vivía
 /// en `EquipmentService`, ahora en `src/equipment/document-expiry.ts`), no se
@@ -273,7 +276,12 @@ model EquipmentDocument {
   type       EquipmentDocumentType
   title      String?
   expiryDate DateTime? @map("expiry_date")
-  fileUrl    String?   @map("file_url")
+  fileKey    String?   @map("file_key")
+  /// Nombre "humano" del archivo (el que subió el usuario, ej. "Póliza
+  /// Seguro.pdf") — se usa para el `Content-Disposition` al servir el
+  /// archivo (`GET /api/equipment/documents/:id/file`), porque `fileKey` es
+  /// un uuid sin significado para el usuario.
+  fileName   String?   @map("file_name")
   notes      String?
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -524,7 +532,13 @@ model RegistroCombustible {
   equipo   Equipment @relation(fields: [equipoId], references: [id])
   litros   Float
   tipo     String // PETROLEO | BENCINA
-  fotoUrl  String?
+  fotoUrl  String? // legacy: URL servida por /api/uploads (Terreno, sigue viva)
+  /// Key del objeto en el bucket de storage (R2/MinIO), aditiva sobre
+  /// `fotoUrl` legacy — ver Diseño del RFC R2-storage, "Combustible". Sin
+  /// `@map` a propósito: este modelo, igual que el resto de Terreno, no sigue
+  /// la convención snake_case del resto del schema (ver comentario de
+  /// cabecera de esta sección).
+  fotoKey  String?
   fecha    DateTime  @default(now())
 }
 
