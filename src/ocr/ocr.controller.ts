@@ -55,7 +55,17 @@ export class OcrController {
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
-      limits: { fileSize: 8 * 1024 * 1024 },
+      // Ver hallazgo MEDIO M2 de la revisión de seguridad: `fields:0`/
+      // `parts:1` asumen que `fuelReadingOcr` del front manda ÚNICAMENTE la
+      // parte `file` (confirmado).
+      limits: {
+        fileSize: 8 * 1024 * 1024,
+        files: 1,
+        fields: 0,
+        parts: 1,
+        fieldNameSize: 50,
+        headerPairs: 20,
+      },
       fileFilter: fuelReadingImageFilter,
     }),
   )
