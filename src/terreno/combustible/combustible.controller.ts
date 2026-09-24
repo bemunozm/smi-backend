@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
 import { CombustibleService } from './combustible.service';
@@ -22,13 +23,22 @@ export class CombustibleController {
 
   @Post()
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async create(@Body() dto: CreateCombustibleDto) {
-    return { data: await this.service.create(dto), message: 'Carga registrada' };
+  async create(
+    @Body() dto: CreateCombustibleDto,
+    @Session() session: UserSession,
+  ) {
+    return {
+      data: await this.service.create(dto, session.user.id),
+      message: 'Carga registrada',
+    };
   }
 
   @Patch(':id')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
   async update(@Param('id') id: string, @Body() dto: UpdateCombustibleDto) {
-    return { data: await this.service.update(id, dto), message: 'Carga actualizada' };
+    return {
+      data: await this.service.update(id, dto),
+      message: 'Carga actualizada',
+    };
   }
 }
