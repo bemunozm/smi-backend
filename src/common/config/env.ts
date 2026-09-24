@@ -14,6 +14,7 @@
  * el único punto que garantiza que `.env` ya está cargado.
  */
 import 'dotenv/config';
+import { join } from 'node:path';
 
 export interface AppEnv {
   databaseUrl: string;
@@ -27,11 +28,15 @@ export interface AppEnv {
   smtpPass: string | undefined;
   smtpFrom: string | undefined;
   smtpSecure: boolean;
+  pythonBin: string;
+  ocrModelsDir: string;
+  ocrThreads: number;
 }
 
 const MIN_SECRET_LENGTH = 32;
 const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 const DEFAULT_PORT = 3000;
+const DEFAULT_OCR_THREADS = 2;
 
 function required(name: string): string {
   const value = process.env[name];
@@ -84,6 +89,18 @@ function parseBoolean(rawValue: string | undefined): boolean {
   return rawValue?.trim().toLowerCase() === 'true';
 }
 
+/** Igual que `parsePort` pero sin tope de 65535 (es un contador de hilos, no un puerto). */
+function parseOcrThreads(rawValue: string | undefined): number {
+  if (rawValue === undefined || rawValue.trim().length === 0) {
+    return DEFAULT_OCR_THREADS;
+  }
+  const parsed = Number(rawValue);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid OCR_THREADS env var: "${rawValue}"`);
+  }
+  return parsed;
+}
+
 export const env: AppEnv = {
   databaseUrl: required('DATABASE_URL'),
   betterAuthSecret: validateSecret(required('BETTER_AUTH_SECRET')),
@@ -99,4 +116,19 @@ export const env: AppEnv = {
   smtpPass: optional('SMTP_PASS'),
   smtpFrom: optional('SMTP_FROM'),
   smtpSecure: parseBoolean(process.env.SMTP_SECURE),
+  // Binario de python usado por OcrService para lanzar el worker persistente
+  // (ver ocr-python/worker.py). Default 'python3' (así queda en el VPS tras
+  // `apt install python3`); en Windows local hace falta apuntarlo al
+  // python 3.12 que tiene las deps de ocr-python/requirements.txt
+  // instaladas (ver ocr-python/README.md), ej.
+  // "C:/Users/<user>/AppData/Local/Programs/Python/Python312/python.exe".
+  pythonBin: optional('PYTHON_BIN') ?? 'python3',
+  // Carpeta con los 6 archivos de modelo (fuera de git, ver
+  // ocr-python/README.md y ocr-python/models.manifest.json). Default:
+  // ocr-python/models relativo al cwd del proceso Nest.
+  ocrModelsDir:
+    optional('OCR_MODELS_DIR') ?? join(process.cwd(), 'ocr-python', 'models'),
+  // Hilos para las sesiones ONNX de Florence + el pool global de cv2 dentro
+  // del worker (el CRNN queda fijo en 1 hilo, ver ocr-python/worker.py).
+  ocrThreads: parseOcrThreads(process.env.OCR_THREADS),
 };

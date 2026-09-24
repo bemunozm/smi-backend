@@ -19,6 +19,9 @@ export class CombustibleService {
         litros: dto.litros,
         tipo: dto.tipo,
         fotoUrl: dto.fotoUrl ?? null,
+        // Sin `fecha` en el DTO, se omite la key y Prisma aplica el
+        // `@default(now())` del schema — comportamiento previo intacto.
+        ...(dto.fecha ? { fecha: new Date(dto.fecha) } : {}),
       },
     });
   }

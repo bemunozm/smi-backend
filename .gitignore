@@ -55,3 +55,11 @@ uploads/*
 
 # CodeGraph index (local)
 .codegraph/
+
+# OCR: modelos ONNX (Florence-2 fine-tuned + CRNN) fuera de git — repo público
+# + archivos >100MB. Se versiona `ocr-python/models.manifest.json` (sha256 de
+# cada archivo esperado) y se copian a mano / por scp, ver ocr-python/README.md.
+ocr-python/models/
+__pycache__/
+*.pyc
+.pytest_cache/

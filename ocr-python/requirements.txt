@@ -1,0 +1,10 @@
+# Pinned versions — matched to what's already validated locally (Python 3.12,
+# see README.md "Setup local"). A single OpenCV package (headless: no GUI
+# bindings needed, this runs as a backend worker) — do NOT also install
+# opencv-python or opencv-contrib-python alongside this one, they all install
+# into the same `cv2` import and the last one installed wins silently.
+numpy==2.3.5
+onnxruntime==1.30.0
+opencv-python-headless==4.10.0.84
+pillow==12.3.0
+tokenizers==0.23.2

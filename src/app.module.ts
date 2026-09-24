@@ -14,6 +14,7 @@ import { EquipmentModule } from './equipment/equipment.module';
 import { FichaModule } from './ficha/ficha.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { OcrModule } from './ocr/ocr.module';
 import { TerrenoModule } from './terreno/terreno.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { auth } from './auth/auth';
@@ -42,6 +43,8 @@ import { auth } from './auth/auth';
     // Dominio Operación en Terreno (Alexander)
     TerrenoModule,
     UploadsModule,
+    // Núcleo (Benjamín): OCR server-side de litros desde foto de surtidor.
+    OcrModule,
     // Núcleo (Benjamín): ficha consolidada de un equipo, cruza los 4 dominios
     FichaModule,
     // Núcleo (Benjamín): notificaciones in-app + correo, alimentadas por el

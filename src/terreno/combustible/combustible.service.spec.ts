@@ -40,4 +40,25 @@ describe('CombustibleService', () => {
       service.create({ equipoId: 'x', litros: 10, tipo: 'BENCINA' }),
     ).rejects.toThrow();
   });
+
+  it('persiste la fecha provista (ej. EXIF de la foto) en vez del default', async () => {
+    prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+    const res = await service.create({
+      equipoId: 'e1',
+      litros: 50,
+      tipo: 'PETROLEO',
+      fecha: '2026-01-15T10:30:00.000Z',
+    });
+    expect(res.fecha).toEqual(new Date('2026-01-15T10:30:00.000Z'));
+  });
+
+  it('sin fecha, no manda la key `fecha` a Prisma y cae al @default(now())', async () => {
+    prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+    const res = await service.create({
+      equipoId: 'e1',
+      litros: 50,
+      tipo: 'PETROLEO',
+    });
+    expect('fecha' in res).toBe(false);
+  });
 });
