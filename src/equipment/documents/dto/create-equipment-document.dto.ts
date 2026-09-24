@@ -8,6 +8,8 @@ import {
   MaxLength,
 } from 'class-validator';
 
+import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
+
 export class CreateEquipmentDocumentDto {
   @IsEnum(EquipmentDocumentType)
   type!: EquipmentDocumentType;
@@ -23,14 +25,28 @@ export class CreateEquipmentDocumentDto {
   expiryDate?: string;
 
   /**
-   * URL del archivo adjunto (se sube por el `/api/uploads` existente). Solo
-   * acepta rutas internas de uploads — nunca un dominio externo arbitrario,
-   * que abriría el link "Ver/descargar" como superficie de phishing.
+   * Key `tmp/<userId>/<uuid>.<ext>` de un archivo recién subido por
+   * `POST /api/files` (ver Diseño del RFC R2-storage, "Contrato de la API").
+   * El DTO valida solo la FORMA (regex + largo) — `EquipmentDocumentService`
+   * valida en capas que el segmento userId sea `session.user.id` y que la
+   * extensión sea válida para "equipment-document" (imagen o PDF) vía
+   * `StorageService.claimTmp`.
    */
   @IsOptional()
   @IsString()
-  @Matches(/^\/uploads\//)
-  fileUrl?: string;
+  @MaxLength(160)
+  @Matches(TMP_KEY_REGEX)
+  fileKey?: string;
+
+  /**
+   * Nombre "humano" del archivo (el que subió el usuario, ej. "Póliza
+   * Seguro.pdf") — se usa para el `Content-Disposition` al servir el
+   * archivo, porque `fileKey` es un uuid sin significado.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  fileName?: string;
 
   @IsOptional()
   @IsString()

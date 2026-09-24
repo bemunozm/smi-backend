@@ -6,11 +6,14 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
+
+import { TMP_KEY_REGEX } from '../../storage/storage-keys';
 
 const normalizeCode = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toUpperCase() : value;
@@ -97,10 +100,18 @@ export class UpdateEquipmentDto {
   @IsString()
   homeBranchId?: string | null;
 
-  /** Nullable a propósito (ver comentario de `licensePlate`): permite borrar la foto. */
+  /**
+   * Tri-state (ver Diseño del RFC R2-storage, "Contrato de la API"):
+   * `undefined` (propiedad omitida) deja la foto intacta, `null` explícito la
+   * borra, un string es la key `tmp/<userId>/<uuid>.<ext>` de una foto nueva
+   * subida por `POST /api/files` — el DTO valida solo la FORMA, igual que en
+   * `CreateEquipmentDto.photoKey`.
+   */
   @IsOptional()
   @IsString()
-  photoUrl?: string | null;
+  @MaxLength(160)
+  @Matches(TMP_KEY_REGEX)
+  photoKey?: string | null;
 }
 
 /**

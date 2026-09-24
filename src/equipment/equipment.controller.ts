@@ -9,7 +9,8 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
@@ -57,16 +58,26 @@ export class EquipmentController {
 
   @Post()
   @Roles([ROLES.ADMIN])
-  async create(@Body() dto: CreateEquipmentDto) {
-    return { data: await this.service.create(dto), message: 'Equipo creado' };
+  async create(
+    @Body() dto: CreateEquipmentDto,
+    @Session() session: UserSession,
+  ) {
+    return {
+      data: await this.service.create(dto, session.user.id),
+      message: 'Equipo creado',
+    };
   }
 
   @Patch(':id')
   @Roles([ROLES.ADMIN])
-  async update(@Param('id') id: string, @Body() dto: UpdateEquipmentDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateEquipmentDto,
+    @Session() session: UserSession,
+  ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto),
+      data: await this.service.update(id, dto, session.user.id),
       message: 'Equipo actualizado',
     };
   }

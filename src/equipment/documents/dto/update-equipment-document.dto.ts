@@ -8,6 +8,8 @@ import {
   MaxLength,
 } from 'class-validator';
 
+import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
+
 /**
  * Edición de un documento. `type` no es nullable (es un campo requerido del
  * modelo) — solo se puede cambiar a otro valor del enum, no limpiar. El resto
@@ -31,14 +33,22 @@ export class UpdateEquipmentDocumentDto {
   expiryDate?: string | null;
 
   /**
-   * Solo acepta rutas internas de uploads — nunca un dominio externo
-   * arbitrario, que abriría el link "Ver/descargar" como superficie de
-   * phishing. `@IsOptional()` deja pasar `null`/omitido sin correr `@Matches`.
+   * Tri-state (ver Diseño del RFC R2-storage, "Contrato de la API"):
+   * `undefined` deja el archivo intacto, `null` lo borra, un string es la
+   * key `tmp/<userId>/<uuid>.<ext>` de un archivo nuevo — mismo criterio que
+   * `CreateEquipmentDocumentDto.fileKey`.
    */
   @IsOptional()
   @IsString()
-  @Matches(/^\/uploads\//)
-  fileUrl?: string | null;
+  @MaxLength(160)
+  @Matches(TMP_KEY_REGEX)
+  fileKey?: string | null;
+
+  /** Nullable a propósito (ver comentario de `fileKey`). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  fileName?: string | null;
 
   @IsOptional()
   @IsString()

@@ -13,8 +13,11 @@ import {
 
 import { ROLES } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { EQUIPMENT_USAGE_INCLUDE, EquipmentService } from './equipment.service';
+
+const USER_ID = 'user_1234567890123456789';
 
 const SIN_REGISTROS = {
   combustibles: 0,
@@ -61,6 +64,10 @@ describe('EquipmentService', () => {
   const userFindUnique = jest.fn();
   const registroHorometroFindMany = jest.fn();
   const equipmentDocumentFindMany = jest.fn();
+  const claimTmp = jest.fn();
+  const discard = jest.fn();
+  const deleteBestEffort = jest.fn();
+  const sign = jest.fn();
 
   beforeEach(async () => {
     [
@@ -75,6 +82,10 @@ describe('EquipmentService', () => {
       userFindUnique,
       registroHorometroFindMany,
       equipmentDocumentFindMany,
+      claimTmp,
+      discard,
+      deleteBestEffort,
+      sign,
     ].forEach((m) => m.mockReset());
     userFindMany.mockResolvedValue([]);
     // Sin turno abierto por defecto — los tests de `openShift` lo sobreescriben.
@@ -109,6 +120,10 @@ describe('EquipmentService', () => {
               findMany: equipmentDocumentFindMany,
             },
           },
+        },
+        {
+          provide: StorageService,
+          useValue: { claimTmp, discard, deleteBestEffort, sign },
         },
       ],
     }).compile();
@@ -385,7 +400,7 @@ describe('EquipmentService', () => {
         horometros: [],
       });
 
-      const result = await service.create(DTO_BASE);
+      const result = await service.create(DTO_BASE, USER_ID);
 
       expect(create).toHaveBeenCalledWith({
         data: DTO_BASE,
@@ -403,7 +418,7 @@ describe('EquipmentService', () => {
         horometros: [],
       });
 
-      const result = await service.create(DTO_BASE);
+      const result = await service.create(DTO_BASE, USER_ID);
 
       expect(result).toMatchObject({
         operator: null,
@@ -419,10 +434,10 @@ describe('EquipmentService', () => {
         prismaError('P2002', { target: ['internal_code'] }),
       );
 
-      await expect(service.create(DTO_BASE)).rejects.toBeInstanceOf(
+      await expect(service.create(DTO_BASE, USER_ID)).rejects.toBeInstanceOf(
         ConflictException,
       );
-      await expect(service.create(DTO_BASE)).rejects.toThrow(
+      await expect(service.create(DTO_BASE, USER_ID)).rejects.toThrow(
         'Ya existe un equipo con el código "EX-001"',
       );
     });
@@ -433,10 +448,10 @@ describe('EquipmentService', () => {
         prismaError('P2002', { target: ['license_plate'] }),
       );
 
-      await expect(service.create(dto)).rejects.toBeInstanceOf(
+      await expect(service.create(dto, USER_ID)).rejects.toBeInstanceOf(
         ConflictException,
       );
-      await expect(service.create(dto)).rejects.toThrow(
+      await expect(service.create(dto, USER_ID)).rejects.toThrow(
         'Ya existe un equipo con la patente "ABCD12"',
       );
     });
@@ -444,7 +459,7 @@ describe('EquipmentService', () => {
     it('mapea un P2002 sin target reconocido a un ConflictException genérico', async () => {
       create.mockRejectedValue(prismaError('P2002', { target: ['otra_col'] }));
 
-      await expect(service.create(DTO_BASE)).rejects.toThrow(
+      await expect(service.create(DTO_BASE, USER_ID)).rejects.toThrow(
         'Ya existe un equipo con esos datos únicos (código o patente)',
       );
     });
@@ -453,10 +468,10 @@ describe('EquipmentService', () => {
       create.mockRejectedValue(prismaError('P2003'));
 
       await expect(
-        service.create({ ...DTO_BASE, homeBranchId: 'missing' }),
+        service.create({ ...DTO_BASE, homeBranchId: 'missing' }, USER_ID),
       ).rejects.toBeInstanceOf(BadRequestException);
       await expect(
-        service.create({ ...DTO_BASE, homeBranchId: 'missing' }),
+        service.create({ ...DTO_BASE, homeBranchId: 'missing' }, USER_ID),
       ).rejects.toThrow('La sucursal indicada no existe');
     });
 
@@ -464,34 +479,119 @@ describe('EquipmentService', () => {
       const otro = prismaError('P2025');
       create.mockRejectedValue(otro);
 
-      await expect(service.create(DTO_BASE)).rejects.toBe(otro);
+      await expect(service.create(DTO_BASE, USER_ID)).rejects.toBe(otro);
     });
 
-    it('persiste photoUrl', async () => {
+    it('sin photoKey no llama a storage y no manda esa key a Prisma', async () => {
+      create.mockResolvedValue({
+        id: 'eq_1',
+        ...DTO_BASE,
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        photoKey: null,
+        horometros: [],
+      });
+
+      await service.create(DTO_BASE, USER_ID);
+
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(create).toHaveBeenCalledWith({
+        data: DTO_BASE,
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+    });
+
+    it('con photoKey reclama la key tmp y crea con la key final firmada como photoUrl', async () => {
+      claimTmp.mockResolvedValue('equipment-photos/final.jpg');
+      sign.mockResolvedValue('https://minio.local/signed/final.jpg');
       const dto = {
         ...DTO_BASE,
-        photoUrl: 'https://picsum.photos/seed/EX-001/400/300',
+        photoKey: 'tmp/user1234567890123456/raw.jpg',
       };
       create.mockResolvedValue({
         id: 'eq_1',
-        ...dto,
+        ...DTO_BASE,
+        photoKey: 'equipment-photos/final.jpg',
         currentOperatorId: null,
         currentSupervisorId: null,
         horometros: [],
       });
 
-      await service.create(dto);
+      const result = await service.create(dto, USER_ID);
 
+      expect(claimTmp).toHaveBeenCalledWith(
+        'tmp/user1234567890123456/raw.jpg',
+        USER_ID,
+        'equipment-photo',
+      );
       expect(create).toHaveBeenCalledWith({
-        data: dto,
+        data: { ...DTO_BASE, photoKey: 'equipment-photos/final.jpg' },
         include: EQUIPMENT_USAGE_INCLUDE,
       });
+      expect(result).toMatchObject({
+        photoUrl: 'https://minio.local/signed/final.jpg',
+      });
+      expect(result).not.toHaveProperty('photoKey');
+    });
+
+    it('si el create en BD falla después de reclamar, descarta la copia nueva (rollback)', async () => {
+      claimTmp.mockResolvedValue('equipment-photos/final.jpg');
+      create.mockRejectedValue(new Error('boom'));
+
+      await expect(
+        service.create(
+          { ...DTO_BASE, photoKey: 'tmp/user1234567890123456/raw.jpg' },
+          USER_ID,
+        ),
+      ).rejects.toThrow('boom');
+
+      expect(discard).toHaveBeenCalledWith('equipment-photos/final.jpg');
+    });
+
+    it('un tmp ajeno (error de ownership) se propaga y nunca llega a crear', async () => {
+      claimTmp.mockRejectedValue(
+        new BadRequestException(
+          'No puedes usar un archivo temporal de otro usuario',
+        ),
+      );
+
+      await expect(
+        service.create(
+          { ...DTO_BASE, photoKey: 'tmp/otro00000000000000000/raw.jpg' },
+          USER_ID,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida (hallazgo BAJO B1)', async () => {
+      claimTmp.mockResolvedValue('equipment-photos/final.jpg');
+      create.mockResolvedValue({
+        id: 'eq_1',
+        ...DTO_BASE,
+        photoKey: 'equipment-photos/final.jpg',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+      // El shaping (`withUsageFields` → `resolvePhotoUrls`) llama a `sign`
+      // DESPUÉS de que el `create` en BD ya se confirmó.
+      sign.mockRejectedValue(new Error('sign boom'));
+
+      await expect(
+        service.create(
+          { ...DTO_BASE, photoKey: 'tmp/user1234567890123456/raw.jpg' },
+          USER_ID,
+        ),
+      ).rejects.toThrow('sign boom');
+
+      expect(discard).not.toHaveBeenCalled();
     });
   });
 
   describe('update', () => {
     it('actualiza el equipo en el caso feliz', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
+      findUnique.mockResolvedValue({ photoKey: null });
       update.mockResolvedValue({
         id: 'eq_1',
         brand: 'Komatsu',
@@ -500,7 +600,11 @@ describe('EquipmentService', () => {
         horometros: [],
       });
 
-      const result = await service.update('eq_1', { brand: 'Komatsu' });
+      const result = await service.update(
+        'eq_1',
+        { brand: 'Komatsu' },
+        USER_ID,
+      );
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
@@ -511,7 +615,7 @@ describe('EquipmentService', () => {
     });
 
     it('la ficha actualizada viene shapeada con operator/supervisor/inUse/currentFuelLevel (contrato que exige EquipmentResponseSchema en el front)', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
+      findUnique.mockResolvedValue({ photoKey: null });
       update.mockResolvedValue({
         id: 'eq_1',
         brand: 'Komatsu',
@@ -523,7 +627,11 @@ describe('EquipmentService', () => {
         { id: 'user_op', name: 'Juan Operador' },
       ]);
 
-      const result = await service.update('eq_1', { brand: 'Komatsu' });
+      const result = await service.update(
+        'eq_1',
+        { brand: 'Komatsu' },
+        USER_ID,
+      );
 
       expect(result).toMatchObject({
         operator: { id: 'user_op', name: 'Juan Operador' },
@@ -535,7 +643,7 @@ describe('EquipmentService', () => {
     });
 
     it('limpia licensePlate cuando se envía null explícito', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
+      findUnique.mockResolvedValue({ photoKey: null });
       update.mockResolvedValue({
         id: 'eq_1',
         licensePlate: null,
@@ -544,7 +652,7 @@ describe('EquipmentService', () => {
         horometros: [],
       });
 
-      await service.update('eq_1', { licensePlate: null });
+      await service.update('eq_1', { licensePlate: null }, USER_ID);
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
@@ -554,7 +662,7 @@ describe('EquipmentService', () => {
     });
 
     it('limpia year cuando se envía null explícito', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
+      findUnique.mockResolvedValue({ photoKey: null });
       update.mockResolvedValue({
         id: 'eq_1',
         year: null,
@@ -563,7 +671,7 @@ describe('EquipmentService', () => {
         horometros: [],
       });
 
-      await service.update('eq_1', { year: null });
+      await service.update('eq_1', { year: null }, USER_ID);
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
@@ -573,7 +681,7 @@ describe('EquipmentService', () => {
     });
 
     it('limpia homeBranchId cuando se envía null explícito', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
+      findUnique.mockResolvedValue({ photoKey: null });
       update.mockResolvedValue({
         id: 'eq_1',
         homeBranchId: null,
@@ -582,7 +690,7 @@ describe('EquipmentService', () => {
         horometros: [],
       });
 
-      await service.update('eq_1', { homeBranchId: null });
+      await service.update('eq_1', { homeBranchId: null }, USER_ID);
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
@@ -591,8 +699,8 @@ describe('EquipmentService', () => {
       });
     });
 
-    it('un update parcial que no incluye licensePlate/year/homeBranchId las deja intactas', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
+    it('un update parcial que no incluye licensePlate/year/homeBranchId/photoKey las deja intactas', async () => {
+      findUnique.mockResolvedValue({ photoKey: null });
       update.mockResolvedValue({
         id: 'eq_1',
         brand: 'Komatsu',
@@ -601,7 +709,7 @@ describe('EquipmentService', () => {
         horometros: [],
       });
 
-      await service.update('eq_1', { brand: 'Komatsu' });
+      await service.update('eq_1', { brand: 'Komatsu' }, USER_ID);
 
       const [{ data }] = update.mock.calls[0] as [
         { data: Record<string, unknown> },
@@ -609,74 +717,208 @@ describe('EquipmentService', () => {
       expect(data).not.toHaveProperty('licensePlate');
       expect(data).not.toHaveProperty('year');
       expect(data).not.toHaveProperty('homeBranchId');
+      expect(data).not.toHaveProperty('photoKey');
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(deleteBestEffort).not.toHaveBeenCalled();
     });
 
     it('lanza NotFoundException si el equipo no existe', async () => {
       findUnique.mockResolvedValue(null);
 
       await expect(
-        service.update('missing', { brand: 'Komatsu' }),
+        service.update('missing', { brand: 'Komatsu' }, USER_ID),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(update).not.toHaveBeenCalled();
     });
 
     it('mapea el P2002 a ConflictException', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
+      findUnique.mockResolvedValue({ photoKey: null });
       update.mockRejectedValue(
         prismaError('P2002', { target: ['internal_code'] }),
       );
 
       await expect(
-        service.update('eq_1', { brand: 'Komatsu' }),
+        service.update('eq_1', { brand: 'Komatsu' }, USER_ID),
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
     it('mapea el P2003 (homeBranchId inexistente) a BadRequestException', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
+      findUnique.mockResolvedValue({ photoKey: null });
       update.mockRejectedValue(prismaError('P2003'));
 
       await expect(
-        service.update('eq_1', { homeBranchId: 'missing' }),
+        service.update('eq_1', { homeBranchId: 'missing' }, USER_ID),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('persiste photoUrl', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({
-        id: 'eq_1',
-        photoUrl: 'https://picsum.photos/seed/EX-001/400/300',
-        currentOperatorId: null,
-        currentSupervisorId: null,
-        horometros: [],
+    describe('photoKey — tri-state', () => {
+      it('undefined (omitido) no toca la foto ni llama a storage', async () => {
+        findUnique.mockResolvedValue({ photoKey: 'equipment-photos/old.jpg' });
+        update.mockResolvedValue({
+          id: 'eq_1',
+          brand: 'Komatsu',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          photoKey: 'equipment-photos/old.jpg',
+          horometros: [],
+        });
+
+        await service.update('eq_1', { brand: 'Komatsu' }, USER_ID);
+
+        expect(claimTmp).not.toHaveBeenCalled();
+        expect(deleteBestEffort).not.toHaveBeenCalled();
+        const [{ data }] = update.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ];
+        expect(data).not.toHaveProperty('photoKey');
       });
 
-      await service.update('eq_1', {
-        photoUrl: 'https://picsum.photos/seed/EX-001/400/300',
+      it('null limpia la foto y borra la vieja DESPUÉS de que la BD confirma', async () => {
+        findUnique.mockResolvedValue({ photoKey: 'equipment-photos/old.jpg' });
+        update.mockResolvedValue({
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          photoKey: null,
+          horometros: [],
+        });
+
+        const result = await service.update(
+          'eq_1',
+          { photoKey: null },
+          USER_ID,
+        );
+
+        expect(claimTmp).not.toHaveBeenCalled();
+        expect(update).toHaveBeenCalledWith({
+          where: { id: 'eq_1' },
+          data: { photoKey: null },
+          include: EQUIPMENT_USAGE_INCLUDE,
+        });
+        expect(deleteBestEffort).toHaveBeenCalledWith(
+          'equipment-photos/old.jpg',
+        );
+        expect(result).toMatchObject({ photoUrl: null });
+        expect(result).not.toHaveProperty('photoKey');
       });
 
-      expect(update).toHaveBeenCalledWith({
-        where: { id: 'eq_1' },
-        data: { photoUrl: 'https://picsum.photos/seed/EX-001/400/300' },
-        include: EQUIPMENT_USAGE_INCLUDE,
+      it('una key nueva reclama, actualiza y borra la vieja DESPUÉS de que la BD confirma', async () => {
+        findUnique.mockResolvedValue({ photoKey: 'equipment-photos/old.jpg' });
+        claimTmp.mockResolvedValue('equipment-photos/new.jpg');
+        sign.mockResolvedValue('https://minio.local/signed/new.jpg');
+        update.mockResolvedValue({
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          photoKey: 'equipment-photos/new.jpg',
+          horometros: [],
+        });
+
+        const result = await service.update(
+          'eq_1',
+          { photoKey: 'tmp/user1234567890123456/new.jpg' },
+          USER_ID,
+        );
+
+        expect(claimTmp).toHaveBeenCalledWith(
+          'tmp/user1234567890123456/new.jpg',
+          USER_ID,
+          'equipment-photo',
+        );
+        expect(update).toHaveBeenCalledWith({
+          where: { id: 'eq_1' },
+          data: { photoKey: 'equipment-photos/new.jpg' },
+          include: EQUIPMENT_USAGE_INCLUDE,
+        });
+        expect(deleteBestEffort).toHaveBeenCalledWith(
+          'equipment-photos/old.jpg',
+        );
+        expect(result).toMatchObject({
+          photoUrl: 'https://minio.local/signed/new.jpg',
+        });
       });
-    });
 
-    it('limpia photoUrl cuando se envía null explícito', async () => {
-      findUnique.mockResolvedValue({ id: 'eq_1' });
-      update.mockResolvedValue({
-        id: 'eq_1',
-        photoUrl: null,
-        currentOperatorId: null,
-        currentSupervisorId: null,
-        horometros: [],
+      it('una key nueva sin foto vieja no llama a deleteBestEffort', async () => {
+        findUnique.mockResolvedValue({ photoKey: null });
+        claimTmp.mockResolvedValue('equipment-photos/new.jpg');
+        update.mockResolvedValue({
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          photoKey: 'equipment-photos/new.jpg',
+          horometros: [],
+        });
+
+        await service.update(
+          'eq_1',
+          { photoKey: 'tmp/user1234567890123456/new.jpg' },
+          USER_ID,
+        );
+
+        expect(deleteBestEffort).not.toHaveBeenCalled();
       });
 
-      await service.update('eq_1', { photoUrl: null });
+      it('si la BD falla después de reclamar, descarta la copia nueva (rollback) y NO borra la vieja', async () => {
+        findUnique.mockResolvedValue({ photoKey: 'equipment-photos/old.jpg' });
+        claimTmp.mockResolvedValue('equipment-photos/new.jpg');
+        update.mockRejectedValue(new Error('boom'));
 
-      expect(update).toHaveBeenCalledWith({
-        where: { id: 'eq_1' },
-        data: { photoUrl: null },
-        include: EQUIPMENT_USAGE_INCLUDE,
+        await expect(
+          service.update(
+            'eq_1',
+            { photoKey: 'tmp/user1234567890123456/new.jpg' },
+            USER_ID,
+          ),
+        ).rejects.toThrow('boom');
+
+        expect(discard).toHaveBeenCalledWith('equipment-photos/new.jpg');
+        expect(deleteBestEffort).not.toHaveBeenCalled();
+      });
+
+      it('un tmp ajeno (error de ownership) se propaga y nunca llega a actualizar', async () => {
+        findUnique.mockResolvedValue({ photoKey: null });
+        claimTmp.mockRejectedValue(
+          new BadRequestException(
+            'No puedes usar un archivo temporal de otro usuario',
+          ),
+        );
+
+        await expect(
+          service.update(
+            'eq_1',
+            { photoKey: 'tmp/otro00000000000000000/x.jpg' },
+            USER_ID,
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(update).not.toHaveBeenCalled();
+      });
+
+      it('si el shaping falla DESPUÉS de que la BD confirma el update, NO descarta la key nueva (hallazgo BAJO B1)', async () => {
+        findUnique.mockResolvedValue({ photoKey: 'equipment-photos/old.jpg' });
+        claimTmp.mockResolvedValue('equipment-photos/new.jpg');
+        update.mockResolvedValue({
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          photoKey: 'equipment-photos/new.jpg',
+          horometros: [],
+        });
+        // El shaping llama a `sign` DESPUÉS de que el `update` en BD ya se
+        // confirmó y de que la foto vieja ya se borró.
+        sign.mockRejectedValue(new Error('sign boom'));
+
+        await expect(
+          service.update(
+            'eq_1',
+            { photoKey: 'tmp/user1234567890123456/new.jpg' },
+            USER_ID,
+          ),
+        ).rejects.toThrow('sign boom');
+
+        expect(discard).not.toHaveBeenCalled();
+        expect(deleteBestEffort).toHaveBeenCalledWith(
+          'equipment-photos/old.jpg',
+        );
       });
     });
   });
@@ -927,6 +1169,40 @@ describe('EquipmentService', () => {
         NotFoundException,
       );
     });
+
+    it('firma photoUrl y nunca expone photoKey', async () => {
+      sign.mockResolvedValue('https://minio.local/signed/x.jpg');
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        photoKey: 'equipment-photos/x.jpg',
+        horometros: [],
+      });
+
+      const result = await service.findOne('eq_1');
+
+      expect(sign).toHaveBeenCalledWith('equipment-photos/x.jpg');
+      expect(result).toMatchObject({
+        photoUrl: 'https://minio.local/signed/x.jpg',
+      });
+      expect(result).not.toHaveProperty('photoKey');
+    });
+
+    it('photoUrl es null cuando el equipo no tiene photoKey (y no llama a sign)', async () => {
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        photoKey: null,
+        horometros: [],
+      });
+
+      const result = await service.findOne('eq_1');
+
+      expect(sign).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ photoUrl: null });
+    });
   });
 
   describe('remove', () => {
@@ -934,12 +1210,28 @@ describe('EquipmentService', () => {
       findUnique.mockResolvedValue({
         id: 'eq_1',
         internalCode: 'EX-001',
+        photoKey: null,
         _count: SIN_REGISTROS,
       });
 
       await service.remove('eq_1');
 
       expect(deleteFn).toHaveBeenCalledWith({ where: { id: 'eq_1' } });
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('borra la foto del bucket DESPUÉS de eliminar el registro', async () => {
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        internalCode: 'EX-001',
+        photoKey: 'equipment-photos/old.jpg',
+        _count: SIN_REGISTROS,
+      });
+
+      await service.remove('eq_1');
+
+      expect(deleteFn).toHaveBeenCalledWith({ where: { id: 'eq_1' } });
+      expect(deleteBestEffort).toHaveBeenCalledWith('equipment-photos/old.jpg');
     });
 
     it('bloquea el borrado si el equipo tiene registros asociados', async () => {
@@ -1121,6 +1413,57 @@ describe('EquipmentService', () => {
       const result = await service.findOne('eq_1');
 
       expect(result).toMatchObject({ documentsAlert: null });
+    });
+  });
+
+  describe('findAll — photoUrl firmada, nunca fuga photoKey', () => {
+    it('firma photoUrl solo para los equipos con photoKey, en UNA sola tanda batch', async () => {
+      sign.mockImplementation((key: string) =>
+        Promise.resolve(`https://minio.local/signed/${key}`),
+      );
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          photoKey: 'equipment-photos/a.jpg',
+          horometros: [],
+        },
+        {
+          id: 'eq_2',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          photoKey: null,
+          horometros: [],
+        },
+      ]);
+
+      const [conFoto, sinFoto] = await service.findAll({});
+
+      expect(sign).toHaveBeenCalledTimes(1);
+      expect(sign).toHaveBeenCalledWith('equipment-photos/a.jpg');
+      expect(conFoto).toMatchObject({
+        photoUrl: 'https://minio.local/signed/equipment-photos/a.jpg',
+      });
+      expect(sinFoto).toMatchObject({ photoUrl: null });
+      expect(conFoto).not.toHaveProperty('photoKey');
+      expect(sinFoto).not.toHaveProperty('photoKey');
+    });
+
+    it('no llama a sign si ningún equipo tiene photoKey', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          photoKey: null,
+          horometros: [],
+        },
+      ]);
+
+      await service.findAll({});
+
+      expect(sign).not.toHaveBeenCalled();
     });
   });
 });
