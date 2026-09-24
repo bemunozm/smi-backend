@@ -12,6 +12,7 @@ import { UsersModule } from './users/users.module';
 import { BranchModule } from './branch/branch.module';
 import { EquipmentModule } from './equipment/equipment.module';
 import { FichaModule } from './ficha/ficha.module';
+import { FilesModule } from './files/files.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OcrModule } from './ocr/ocr.module';
@@ -43,6 +44,10 @@ import { auth } from './auth/auth';
     // Dominio Operación en Terreno (Alexander)
     TerrenoModule,
     UploadsModule,
+    // Almacenamiento de archivos de Flota (RFC R2-storage): sube a `tmp/` vía
+    // POST /api/files. El legacy UploadsModule/`/uploads` sigue intacto para
+    // Terreno (horómetro/hallazgos) — fuera de alcance de este RFC.
+    FilesModule,
     // Núcleo (Benjamín): OCR server-side de litros desde foto de surtidor.
     OcrModule,
     // Núcleo (Benjamín): ficha consolidada de un equipo, cruza los 4 dominios
