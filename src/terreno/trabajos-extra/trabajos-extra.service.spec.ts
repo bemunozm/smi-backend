@@ -7,6 +7,8 @@ describe('TrabajosExtraService', () => {
   const prisma = {
     equipment: { findUnique: jest.fn() },
     trabajoExtraordinario: { create: jest.fn() },
+    // Un equipo con turno en curso está ocupado y no admite trabajos extra.
+    registroHorometro: { findFirst: jest.fn() },
   };
 
   beforeEach(async () => {
@@ -18,7 +20,12 @@ describe('TrabajosExtraService', () => {
     }).compile();
     service = mod.get(TrabajosExtraService);
     jest.clearAllMocks();
-    prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+    prisma.equipment.findUnique.mockResolvedValue({
+      id: 'e1',
+      internalCode: 'CA-011',
+    });
+    // Por defecto el equipo está libre: sin turno en curso.
+    prisma.registroHorometro.findFirst.mockResolvedValue(null);
     prisma.trabajoExtraordinario.create.mockImplementation(
       ({ data }: { data: Record<string, unknown> }) => data,
     );
@@ -124,5 +131,28 @@ describe('TrabajosExtraService', () => {
       });
       expect(res.otraActividad).toBeNull();
     });
+  });
+  /**
+   * Un equipo con turno en curso está ocupado. Las horas del trabajo
+   * extraordinario y las del turno se facturan por separado, y mientras el
+   * turno siga abierto no se sabe cuáles serán sus horas — las del trabajo
+   * podrían terminar contadas dos veces.
+   */
+  it('rechaza el trabajo si el equipo tiene un turno en curso', async () => {
+    prisma.registroHorometro.findFirst.mockResolvedValue({ id: 'h1' });
+
+    await expect(
+      service.create({
+        equipoId: 'e1',
+        operador: 'Juan Rojas',
+        faena: 'Patillo',
+        turno: 'DIURNO',
+        horometroInicial: 1200,
+        horometroFinal: 1212,
+        actividades: ['REGULACION_CARGA'],
+        descripcion: 'Carga de material',
+      }),
+    ).rejects.toThrow(/tiene un turno en curso/);
+    expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
   });
 });

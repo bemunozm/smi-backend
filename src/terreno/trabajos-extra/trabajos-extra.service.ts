@@ -18,6 +18,32 @@ export class TrabajosExtraService {
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
     /**
+     * Un equipo con turno en curso está **ocupado**: no se le puede cargar un
+     * trabajo extraordinario hasta que se cierre la tarjeta.
+     *
+     * El motivo es el cobro. Las horas del trabajo extraordinario y las del
+     * turno se facturan por separado, y mientras el turno sigue abierto no se
+     * sabe cuáles serán sus horas — así que las del trabajo podrían quedar
+     * contadas dos veces, una acá y otra dentro del turno cuando se cierre.
+     *
+     * «Turno en curso» es la misma definición que usa `HorometroService`:
+     * un `RegistroHorometro` con `valorFinal` en null. Esa regla ya está
+     * respaldada por el índice único parcial sobre `(equipo_id) WHERE
+     * "valorFinal" IS NULL`, así que como mucho hay un turno abierto por
+     * equipo y esta consulta devuelve uno o ninguno.
+     */
+    const turnoAbierto = await this.prisma.registroHorometro.findFirst({
+      where: { equipoId: dto.equipoId, valorFinal: null },
+      select: { id: true },
+    });
+    if (turnoAbierto) {
+      throw new BadRequestException(
+        `El equipo ${equipo.internalCode} tiene un turno en curso y está ocupado. ` +
+          'Cerrá la tarjeta del turno antes de registrar un trabajo extraordinario.',
+      );
+    }
+
+    /**
      * Un horómetro no retrocede: si el final es menor que el inicial, alguien
      * se equivocó al tipear.
      *
