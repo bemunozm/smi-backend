@@ -10,6 +10,7 @@
  *   equipment-photos/<uuid>.<ext>          — foto de equipo (claimed)
  *   equipment-documents/<uuid>.<ext>       — documento de equipo (claimed)
  *   fuel-photos/<uuid>.<ext>               — foto de carga de combustible (claimed)
+ *   hallazgo-photos/<uuid>.<ext>           — foto de un hallazgo de Terreno (claimed)
  */
 import { randomUUID } from 'node:crypto';
 import { BadRequestException } from '@nestjs/common';
@@ -23,7 +24,7 @@ const IMAGE_EXTENSIONS = ['jpg', 'png', 'webp'] as const;
 const DOCUMENT_EXTENSIONS = [...IMAGE_EXTENSIONS, 'pdf'] as const;
 
 /**
- * Los 3 usos de Flota (ver Diseño del RFC). Cada uno define su prefijo de
+ * Los usos de archivos del sistema (ver Diseño del RFC). Cada uno define su prefijo de
  * key final y qué extensiones acepta — la extensión sale de los bytes reales
  * del archivo (ver `file-signature.ts`), nunca del nombre que mandó el
  * cliente.
@@ -39,6 +40,11 @@ export const FILE_KINDS = {
   },
   'fuel-photo': {
     prefix: 'fuel-photos/',
+    allowedExtensions: IMAGE_EXTENSIONS,
+  },
+  /** Foto de respaldo de un hallazgo de Terreno. */
+  'hallazgo-photo': {
+    prefix: 'hallazgo-photos/',
     allowedExtensions: IMAGE_EXTENSIONS,
   },
 } satisfies Record<string, FileKindConfig>;

@@ -594,7 +594,12 @@ model Hallazgo {
   descripcion String
   prioridad   String // BAJA | MEDIA | ALTA | CRITICA
   estado      String    @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO
-  fotoUrl     String?
+  fotoUrl     String? // legacy: URL servida por /api/uploads (Terreno, sigue viva)
+  /// Key del objeto en el bucket de storage (R2/MinIO), aditiva sobre
+  /// `fotoUrl` legacy — mismo patrón que `RegistroCombustible`. Los hallazgos
+  /// ya cargados conservan su `fotoUrl` y se siguen viendo; los nuevos suben
+  /// por `POST /api/files` y guardan la key.
+  fotoKey     String?
   fecha       DateTime  @default(now())
 }
 
