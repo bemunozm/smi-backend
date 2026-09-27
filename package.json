@@ -24,11 +24,13 @@
     "auth:schema": "npx @better-auth/cli generate -y"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1139.0",
+    "@aws-sdk/s3-request-presigner": "3.1139.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
     "@nestjs/event-emitter": "^3.1.0",
-    "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/platform-express": "^11.2.6",
     "@prisma/client": "^6.19.3",
     "@thallesp/nestjs-better-auth": "^2.4.0",
     "better-auth": "^1.6.26",
@@ -98,7 +100,7 @@
         }
       ]
     },
-    "transformIgnorePatterns": [],
+    "transformIgnorePatterns": ["/node_modules/(@aws-sdk|@smithy)/"],
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],

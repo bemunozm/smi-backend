@@ -93,13 +93,19 @@ export class UsersService {
   }
 
   /**
-   * Usuarios activos con un rol dado. Usado por `NotificationsService` para
-   * el fan-out de notificaciones por rol (p. ej. avisar a todo ADMIN +
-   * SUPERVISOR cuando se crea un Hallazgo).
+   * Usuarios ACTIVOS (no baneados) con un rol dado. Usado por
+   * `NotificationsService` para el fan-out de notificaciones por rol (p. ej.
+   * avisar a todo ADMIN + SUPERVISOR cuando se crea un Hallazgo) y por los
+   * pickers de operador/supervisor de Flota (`?role=` en `GET /api/users`,
+   * `assertUserWithRole` en `EquipmentService.updateAssignment`) — un
+   * operador baneado no debe poder ser asignado a un equipo ni aparecer en el
+   * picker. `banned: { not: true }` (no `banned: false`) para tratar también
+   * `null`/`undefined` como "no baneado", que es como Better Auth deja la
+   * columna cuando nunca se ha baneado al usuario.
    */
   async findByRole(role: Role): Promise<UserResponseDto[]> {
     const users = await this.prisma.user.findMany({
-      where: { role },
+      where: { role, banned: { not: true } },
       select: USER_SELECT,
       orderBy: { createdAt: 'asc' },
     });

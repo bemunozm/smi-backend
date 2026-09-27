@@ -200,6 +200,24 @@ model Equipment {
   homeBranchId String? @map("home_branch_id")
   homeBranch   Branch? @relation(fields: [homeBranchId], references: [id], onDelete: SetNull)
 
+  /// Foto de la unidad (fidelidad 1:1 con el artefacto de Flota). Guarda la
+  /// KEY del objeto en el bucket de storage (R2/MinIO, ver `StorageService`),
+  /// NUNCA una URL — la URL firmada se resuelve on-read (`sign()`), nunca se
+  /// persiste (ver Diseño del RFC R2-storage, "Contrato de la API").
+  photoKey String? @map("photo_key")
+
+  /// Asignación de uso ACTUAL de la unidad (operador + supervisor a cargo
+  /// ahora mismo) — NO es historial de sesiones, eso queda como follow-up.
+  /// `inUse` no es columna: se deriva en el service como `!!currentOperatorId`.
+  ///
+  /// Soft refs a `user.id` (String, SIN `@relation`) — mismo criterio que el
+  /// resto del schema (ver comentario de cabecera): la tabla `user` la
+  /// regenera `npm run auth:schema` y una relación real exigiría un campo
+  /// inverso (`Equipment[]`) en `User` que ese generador no toca a mano.
+  /// `EquipmentService` resuelve id → {id,name} con un `user.findMany` propio.
+  currentOperatorId   String? @map("current_operator_id")
+  currentSupervisorId String? @map("current_supervisor_id")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -213,9 +231,64 @@ model Equipment {
   trabajosExtra TrabajoExtraordinario[]
   hallazgos     Hallazgo[]
 
+  /// Documentos del equipo (revisión técnica, seguro, permiso de circulación,
+  /// certificaciones, otros) con archivo adjunto y CRUD propio — reemplaza
+  /// las columnas planas `technicalInspectionExpiry`/`insuranceExpiry` (R1/R2)
+  /// de la primera versión de Flota. Ver `EquipmentDocument`.
+  documents EquipmentDocument[]
+
   @@index([equipmentClass])
   @@index([status])
+  @@index([currentOperatorId])
+  @@index([currentSupervisorId])
   @@map("equipment")
+}
+
+/// Tipo de documento de un `EquipmentDocument`. `TECHNICAL_INSPECTION`/
+/// `INSURANCE` reemplazan a las columnas planas R1/R2 de la versión anterior;
+/// `CIRCULATION_PERMIT`/`CERTIFICATION`/`OTHER` cubren los documentos que ya
+/// se venían pidiendo pero no tenían dónde vivir.
+enum EquipmentDocumentType {
+  TECHNICAL_INSPECTION
+  INSURANCE
+  CIRCULATION_PERMIT
+  CERTIFICATION
+  OTHER
+}
+
+/// Documento de un equipo, con archivo adjunto (sube por `POST /api/files` +
+/// claim en `EquipmentDocumentService`, ver Diseño del RFC R2-storage; acá
+/// solo se guarda la KEY del objeto, nunca una URL) y vigencia opcional. A
+/// diferencia de `currentHourmeter`/`photoKey` (dato ACTUAL de la ficha,
+/// columna plana), un equipo puede tener VARIOS documentos del mismo tipo
+/// (ej. dos certificaciones distintas) — de ahí la tabla propia con CRUD
+/// dedicado en vez de columnas en `Equipment`. El estado de vigencia
+/// (VIGENTE/POR_VENCER/VENCIDO/SIN_DATO) se deriva on-read en
+/// `EquipmentDocumentService` (mismo `buildDocumentExpiryInfo` que antes vivía
+/// en `EquipmentService`, ahora en `src/equipment/document-expiry.ts`), no se
+/// persiste.
+model EquipmentDocument {
+  id String @id @default(cuid())
+
+  equipmentId String    @map("equipment_id")
+  equipment   Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+
+  type       EquipmentDocumentType
+  title      String?
+  expiryDate DateTime? @map("expiry_date")
+  fileKey    String?   @map("file_key")
+  /// Nombre "humano" del archivo (el que subió el usuario, ej. "Póliza
+  /// Seguro.pdf") — se usa para el `Content-Disposition` al servir el
+  /// archivo (`GET /api/equipment/documents/:id/file`), porque `fileKey` es
+  /// un uuid sin significado para el usuario.
+  fileName   String?   @map("file_name")
+  notes      String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([equipmentId])
+  @@map("equipment_document")
 }
 
 // ============================================================================
@@ -459,7 +532,13 @@ model RegistroCombustible {
   equipo   Equipment @relation(fields: [equipoId], references: [id])
   litros   Float
   tipo     String // PETROLEO | BENCINA
-  fotoUrl  String?
+  fotoUrl  String? // legacy: URL servida por /api/uploads (Terreno, sigue viva)
+  /// Key del objeto en el bucket de storage (R2/MinIO), aditiva sobre
+  /// `fotoUrl` legacy — ver Diseño del RFC R2-storage, "Combustible". Sin
+  /// `@map` a propósito: este modelo, igual que el resto de Terreno, no sigue
+  /// la convención snake_case del resto del schema (ver comentario de
+  /// cabecera de esta sección).
+  fotoKey  String?
   fecha    DateTime  @default(now())
 }
 
@@ -472,8 +551,15 @@ model RegistroHorometro {
   valorInicial     Float
   valorFinal       Float?
   nivelCombustible Float? // % de combustible
-  fotoUrl          String?
-  fecha            DateTime  @default(now())
+  fotoUrl          String? // foto de ENTRADA (horómetro/odómetro al iniciar)
+  fecha            DateTime  @default(now()) // hora de ENTRADA
+
+  /// Flujo ENTRADA/SALIDA en dos pasos (Flota): "turno abierto" = `valorFinal
+  /// == null`. Al cerrar (`PATCH /horometro/:id/salida`) se completan estos
+  /// dos campos junto con `valorFinal` — quedan `null` mientras el turno está
+  /// abierto.
+  fechaSalida    DateTime? // hora de SALIDA
+  fotoUrlSalida  String? // foto de SALIDA (horómetro/odómetro al terminar)
 }
 
 model TrabajoExtraordinario {

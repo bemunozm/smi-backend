@@ -25,6 +25,35 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+API REST del **Sistema de Mantenimiento e Inventario (SMI)**. Ver `CLAUDE.md`
+para la arquitectura y convenciones, y `CONTRIBUTING.md` para el flujo de
+trabajo del equipo.
+
+## Setup local
+
+```bash
+# Postgres + MinIO (storage de archivos de Flota). SIEMPRE con nombres
+# explícitos: un `docker compose up` a secas puede chocar con contenedores
+# de otro proyecto local (ver comentario en docker-compose.yml).
+docker compose up -d postgres
+docker compose up -d minio minio-init   # ⚠️ NUNCA "docker compose up -d" sin nombres
+
+cp .env.example .env   # ajustar; genera BETTER_AUTH_SECRET con: openssl rand -base64 32
+npm install
+npx prisma migrate dev
+npm run db:seed        # 4 usuarios: <rol>@smi.local / Smi123456!  (solo dev)
+npm run start:dev      # API en http://localhost:3000  (rutas bajo /api)
+```
+
+Sin las vars `STORAGE_*` en tu `.env`, el backend cae a los defaults del
+MinIO de `docker-compose.yml` (bucket `smi-files`, credenciales de
+desarrollo) — no hace falta configurarlas para levantar en local. Ver
+`.env.example` para el detalle de cada variable y sus equivalentes en
+Cloudflare R2 (producción).
+
+Consola web de MinIO: http://localhost:9001 (usuario/clave: ver
+`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` en `docker-compose.yml`).
+
 ## Project setup
 
 ```bash
@@ -58,6 +87,14 @@ $ npm run test:cov
 ```
 
 ## Deployment
+
+**`NODE_ENV=production` es OBLIGATORIO en el VPS.** Con ese valor,
+`src/common/config/env.ts` exige las variables `STORAGE_*` reales (bucket
+Cloudflare R2, credenciales propias) en vez de caer silenciosamente a los
+defaults del MinIO local — sin `NODE_ENV=production`, el backend arrancaría
+igual pero usando credenciales de desarrollo contra storage real
+(`StorageService.onModuleInit` loguea un `warn` si detecta este caso). Ver
+`.env.example` para el resto de las variables de producción.
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
 

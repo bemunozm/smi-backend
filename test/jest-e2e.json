@@ -10,5 +10,5 @@
       { "presets": [["@babel/preset-env", { "targets": { "node": "current" } }]] }
     ]
   },
-  "transformIgnorePatterns": []
+  "transformIgnorePatterns": ["/node_modules/(@aws-sdk|@smithy)/"]
 }

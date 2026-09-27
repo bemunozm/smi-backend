@@ -1,4 +1,11 @@
-import { IsIn, IsNumber, IsOptional, IsString } from 'class-validator';
+import {
+  IsIn,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class CreateHorometroDto {
   @IsString()
@@ -11,14 +18,18 @@ export class CreateHorometroDto {
   turno!: string;
 
   @IsNumber()
+  @Min(0)
   valorInicial!: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(0)
   valorFinal?: number;
 
   @IsOptional()
   @IsNumber()
+  @Min(0)
+  @Max(100)
   nivelCombustible?: number;
 
   @IsOptional()

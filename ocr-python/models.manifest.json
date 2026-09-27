@@ -1,0 +1,35 @@
+{
+  "version": "litros-v1",
+  "files": [
+    {
+      "file": "vision.int8.onnx",
+      "bytes": 112920720,
+      "sha256": "809473c156bbe64217f3de0a1aa9e38db6311b14ad2e498e96e6b3c14d442112"
+    },
+    {
+      "file": "encoder.int8.onnx",
+      "bytes": 53399094,
+      "sha256": "b4e0b820d36454782e6f41fae8ab1620a4ec23569ab4306234824aebdb8bd68c"
+    },
+    {
+      "file": "decoder.int8.onnx",
+      "bytes": 130111925,
+      "sha256": "57ba2d21e2fe46d537a782f8a5de181e13f3632789020e9d506b0adc53593d16"
+    },
+    {
+      "file": "tokenizer.json",
+      "bytes": 3748144,
+      "sha256": "3ad7001f773409abe6bba33eac92662611a73d72f459bda2f00d2a221dd31ce4"
+    },
+    {
+      "file": "litros_config.json",
+      "bytes": 238,
+      "sha256": "406877692b24568bb5288af5799f2930a577df4c430f9177189922611c4187dd"
+    },
+    {
+      "file": "crnn.onnx",
+      "bytes": 1273673,
+      "sha256": "2f55b2c8b7166d42e0682aebeccda699f8ce983ae15d28b8f9dea803fe0409b7"
+    }
+  ]
+}

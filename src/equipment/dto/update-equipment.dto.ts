@@ -6,11 +6,14 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
+
+import { TMP_KEY_REGEX } from '../../storage/storage-keys';
 
 const normalizeCode = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toUpperCase() : value;
@@ -96,6 +99,19 @@ export class UpdateEquipmentDto {
   @IsOptional()
   @IsString()
   homeBranchId?: string | null;
+
+  /**
+   * Tri-state (ver Diseño del RFC R2-storage, "Contrato de la API"):
+   * `undefined` (propiedad omitida) deja la foto intacta, `null` explícito la
+   * borra, un string es la key `tmp/<userId>/<uuid>.<ext>` de una foto nueva
+   * subida por `POST /api/files` — el DTO valida solo la FORMA, igual que en
+   * `CreateEquipmentDto.photoKey`.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  @Matches(TMP_KEY_REGEX)
+  photoKey?: string | null;
 }
 
 /**
@@ -107,4 +123,23 @@ export class UpdateEquipmentDto {
 export class UpdateEquipmentStatusDto {
   @IsEnum(EquipmentStatus)
   status!: EquipmentStatus;
+}
+
+/**
+ * Body de `PATCH /api/equipment/:id/assignment`. Asigna/libera la asignación
+ * de uso ACTUAL de la unidad (operador + supervisor a cargo ahora mismo).
+ * Ambos campos son independientes: omitir la propiedad deja esa asignación
+ * intacta; `null` explícito la libera (mismo criterio `@IsOptional()` +
+ * ensanchar el tipo que el resto del DTO — ver comentario de `licensePlate`).
+ * El `EquipmentService` valida que el usuario exista y tenga el rol
+ * correspondiente (OPERADOR / SUPERVISOR) antes de guardar.
+ */
+export class UpdateEquipmentAssignmentDto {
+  @IsOptional()
+  @IsString()
+  operatorId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  supervisorId?: string | null;
 }

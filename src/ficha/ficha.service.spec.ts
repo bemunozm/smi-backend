@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
 import { PrismaService } from '../common/prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { FichaService } from './ficha.service';
 
 const EQUIPO_MOCK = {
@@ -152,6 +153,7 @@ describe('FichaService', () => {
   const hallazgoCount = jest.fn();
   const ordenCount = jest.fn();
   const actividadCount = jest.fn();
+  const sign = jest.fn();
 
   beforeEach(async () => {
     [
@@ -168,6 +170,7 @@ describe('FichaService', () => {
       hallazgoCount,
       ordenCount,
       actividadCount,
+      sign,
     ].forEach((m) => m.mockReset());
 
     const module: TestingModule = await Test.createTestingModule({
@@ -193,6 +196,10 @@ describe('FichaService', () => {
             ordenTrabajo: { findMany: ordenFindMany, count: ordenCount },
             actividad: { findMany: actividadFindMany, count: actividadCount },
           },
+        },
+        {
+          provide: StorageService,
+          useValue: { sign },
         },
       ],
     }).compile();
@@ -321,6 +328,53 @@ describe('FichaService', () => {
       ordenes: 0,
       ordenesAbiertas: 0,
       actividades: 0,
+    });
+  });
+
+  describe('meta.fotoUrl del combustible — firmado ANTES de mapear (RFC R2-storage)', () => {
+    it('con fotoKey, meta.fotoUrl trae la URL firmada (NO la legacy)', async () => {
+      mockearOrigenesVacios();
+      combustibleFindMany.mockResolvedValue([
+        {
+          id: 'c1',
+          equipoId: 'eq_1',
+          litros: 120,
+          tipo: 'PETROLEO',
+          fotoUrl: '/uploads/legacy-viejo.jpg',
+          fotoKey: 'fuel-photos/nuevo.jpg',
+          fecha: new Date('2026-08-01T10:00:00Z'),
+        },
+      ]);
+      combustibleCount.mockResolvedValue(1);
+      sign.mockResolvedValue('https://minio.local/signed/nuevo.jpg');
+
+      const ficha = await service.getFichaEquipo('eq_1');
+
+      expect(sign).toHaveBeenCalledWith('fuel-photos/nuevo.jpg');
+      const evento = ficha.timeline.find((e) => e.tipo === 'COMBUSTIBLE');
+      expect(evento?.meta.fotoUrl).toBe('https://minio.local/signed/nuevo.jpg');
+    });
+
+    it('sin fotoKey, meta.fotoUrl cae al valor legacy tal cual (no llama a sign)', async () => {
+      mockearOrigenesVacios();
+      combustibleFindMany.mockResolvedValue([
+        {
+          id: 'c1',
+          equipoId: 'eq_1',
+          litros: 120,
+          tipo: 'PETROLEO',
+          fotoUrl: '/uploads/legacy.jpg',
+          fotoKey: null,
+          fecha: new Date('2026-08-01T10:00:00Z'),
+        },
+      ]);
+      combustibleCount.mockResolvedValue(1);
+
+      const ficha = await service.getFichaEquipo('eq_1');
+
+      expect(sign).not.toHaveBeenCalled();
+      const evento = ficha.timeline.find((e) => e.tipo === 'COMBUSTIBLE');
+      expect(evento?.meta.fotoUrl).toBe('/uploads/legacy.jpg');
     });
   });
 });

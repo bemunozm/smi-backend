@@ -19,5 +19,77 @@ services:
       timeout: 5s
       retries: 5
 
+  # Almacenamiento de archivos de Flota (foto/documento de equipo, foto de
+  # combustible) en desarrollo local — en producción se usa Cloudflare R2
+  # (mismo protocolo S3, ver `.env.example` STORAGE_*). Imagen desde quay.io:
+  # Docker Hub retiró `minio/minio` y `minio/mc`, quay.io es la distribución
+  # oficial vigente.
+  #
+  # ⚠️ SIEMPRE levantar con nombres explícitos: `docker compose up -d minio
+  # minio-init`. Este `smi-postgres` NO fue creado por este compose (viene de
+  # antes) — un `docker compose up` sin nombres puede chocar con contenedores
+  # de otro proyecto local (RUKLO) que escuchan en otros puertos.
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: smi-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      # Credenciales SOLO de desarrollo local — deben calzar con los defaults
+      # de `STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY` en
+      # `src/common/config/env.ts` para que el boot funcione sin `.env`.
+      MINIO_ROOT_USER: smi_dev_admin
+      MINIO_ROOT_PASSWORD: smi_dev_admin_secret
+    ports:
+      - '127.0.0.1:9000:9000'
+      - '127.0.0.1:9001:9001'
+    volumes:
+      - smi_minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Setup idempotente del bucket: crea `smi-files` (privado, sin acceso
+  # anónimo), aplica el lifecycle que expira `tmp/` al día y el CORS
+  # GET/HEAD para el front local. Corre una vez y termina (no `restart`).
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: smi-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: smi_dev_admin
+      MINIO_ROOT_PASSWORD: smi_dev_admin_secret
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -e
+        RETRIES=30
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+          RETRIES=$$((RETRIES - 1))
+          if [ "$$RETRIES" -le 0 ]; then
+            echo "minio-init: no se pudo conectar a MinIO" >&2
+            exit 1
+          fi
+          sleep 1
+        done
+        mc mb --ignore-existing local/smi-files
+        mc anonymous set none local/smi-files
+        mc ilm import local/smi-files < /docker-entrypoint-init.d/lifecycle.json
+        if mc cors set local/smi-files /docker-entrypoint-init.d/cors.xml; then
+          echo "minio-init: CORS configurado en smi-files"
+        else
+          echo "minio-init: 'mc cors set' no se pudo aplicar en esta imagen de MinIO (confirmado: sigue devolviendo Access-Control-Allow-Origin por defecto en cada request, verificado con un OPTIONS manual) -- ver README.md"
+        fi
+        echo "minio-init: listo"
+    volumes:
+      - ./docker/minio/lifecycle.json:/docker-entrypoint-init.d/lifecycle.json:ro
+      - ./docker/minio/cors.xml:/docker-entrypoint-init.d/cors.xml:ro
+    restart: 'no'
+
 volumes:
   smi_postgres_data:
+  smi_minio_data:

@@ -9,12 +9,14 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { QueryEquipmentDto } from './dto/query-equipment.dto';
 import {
+  UpdateEquipmentAssignmentDto,
   UpdateEquipmentDto,
   UpdateEquipmentStatusDto,
 } from './dto/update-equipment.dto';
@@ -56,16 +58,26 @@ export class EquipmentController {
 
   @Post()
   @Roles([ROLES.ADMIN])
-  async create(@Body() dto: CreateEquipmentDto) {
-    return { data: await this.service.create(dto), message: 'Equipo creado' };
+  async create(
+    @Body() dto: CreateEquipmentDto,
+    @Session() session: UserSession,
+  ) {
+    return {
+      data: await this.service.create(dto, session.user.id),
+      message: 'Equipo creado',
+    };
   }
 
   @Patch(':id')
   @Roles([ROLES.ADMIN])
-  async update(@Param('id') id: string, @Body() dto: UpdateEquipmentDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateEquipmentDto,
+    @Session() session: UserSession,
+  ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto),
+      data: await this.service.update(id, dto, session.user.id),
       message: 'Equipo actualizado',
     };
   }
@@ -80,6 +92,25 @@ export class EquipmentController {
     return {
       data: await this.service.updateStatus(id, dto),
       message: 'Estado actualizado',
+    };
+  }
+
+  /**
+   * Asigna/libera la asignación de uso ACTUAL de la unidad (operador +
+   * supervisor a cargo). Mismo gate que `updateStatus`: ADMIN/SUPERVISOR
+   * (requerimientos §5.2, "Control de Flota" — el supervisor coordina a su
+   * cuadrilla desde terreno, no solo el estado de la máquina).
+   */
+  @Patch(':id/assignment')
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
+  async updateAssignment(
+    @Param('id') id: string,
+    @Body() dto: UpdateEquipmentAssignmentDto,
+  ) {
+    assertNonEmptyId(id);
+    return {
+      data: await this.service.updateAssignment(id, dto),
+      message: 'Asignación actualizada',
     };
   }
 

@@ -81,10 +81,26 @@ describe('UsersService', () => {
     const result = await service.findByRole('ADMIN');
 
     expect(findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { role: 'ADMIN' } }),
+      expect.objectContaining({
+        where: { role: 'ADMIN', banned: { not: true } },
+      }),
     );
     expect(result).toEqual([
       expect.objectContaining({ id: 'user_1', role: 'ADMIN' }),
     ]);
+  });
+
+  it('findByRole excluye usuarios baneados de la consulta (pickers de asignación de Flota)', async () => {
+    // No hay BD real en estos tests: lo que sí podemos asertar es que la
+    // query a Prisma excluye explícitamente `banned: true` — la exclusión
+    // real la aplica la BD a partir de ese `where`.
+    findMany.mockResolvedValue([]);
+
+    await service.findByRole('OPERADOR');
+
+    const [{ where }] = findMany.mock.calls[0] as [
+      { where: { role: string; banned: unknown } },
+    ];
+    expect(where.banned).toEqual({ not: true });
   });
 });

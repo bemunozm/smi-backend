@@ -10,6 +10,7 @@ import {
 } from '@prisma/client';
 
 import { PrismaService } from '../common/prisma/prisma.service';
+import { StorageService } from '../storage/storage.service';
 import { EventoFicha, FichaEquipo, ResumenFicha } from './dto/ficha.dto';
 
 const LIMITE_POR_ORIGEN = 50;
@@ -27,7 +28,10 @@ type OrdenTrabajoConIntervenciones = OrdenTrabajo & {
  */
 @Injectable()
 export class FichaService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
+  ) {}
 
   async getFichaEquipo(id: string): Promise<FichaEquipo> {
     const [
@@ -116,6 +120,12 @@ export class FichaService {
 
     if (!equipo) throw new NotFoundException(`Equipo "${id}" no encontrado`);
 
+    // Firmas resueltas ANTES de mapear (ver Diseño del RFC R2-storage,
+    // "Combustible"): `mapCombustible` se mantiene síncrono, consumiendo el
+    // mapa ya resuelto — mismo patrón batch que `EquipmentService.resolvePhotoUrls`.
+    const fotoUrlsPorCombustible =
+      await this.resolveCombustibleFotoUrls(combustibles);
+
     const eventosOrdenes = ordenes.map((ot) => this.mapOrden(ot));
     const eventosIntervenciones = ordenes.flatMap((ot) =>
       ot.intervenciones.map((intervencion) =>
@@ -124,7 +134,9 @@ export class FichaService {
     );
 
     const timeline: EventoFicha[] = [
-      ...combustibles.map((r) => this.mapCombustible(r)),
+      ...combustibles.map((r) =>
+        this.mapCombustible(r, fotoUrlsPorCombustible.get(r.id) ?? null),
+      ),
       ...horometros.map((r) => this.mapHorometro(r)),
       ...trabajosExtra.map((r) => this.mapTrabajoExtra(r)),
       ...hallazgos.map((r) => this.mapHallazgo(r)),
@@ -147,7 +159,12 @@ export class FichaService {
     return { equipo, resumen, timeline };
   }
 
-  private mapCombustible(registro: RegistroCombustible): EventoFicha {
+  /** `fotoUrl` YA resuelta por `resolveCombustibleFotoUrls` — este método se
+   * mantiene síncrono a propósito (ver docstring de `getFichaEquipo`). */
+  private mapCombustible(
+    registro: RegistroCombustible,
+    fotoUrl: string | null,
+  ): EventoFicha {
     return {
       id: registro.id,
       tipo: 'COMBUSTIBLE',
@@ -157,9 +174,29 @@ export class FichaService {
       meta: {
         litros: registro.litros,
         tipo: registro.tipo,
-        fotoUrl: registro.fotoUrl,
+        fotoUrl,
       },
     };
+  }
+
+  /**
+   * `fotoUrl` de cada combustible, en UNA tanda `Promise.all`: firmada si el
+   * registro tiene `fotoKey` (subida nueva por R2/MinIO), o el valor legacy
+   * `fotoUrl` tal cual si no (subida vieja por `/api/uploads`, Terreno sigue
+   * usándola) — mismo criterio que `CombustibleService.shape`.
+   */
+  private async resolveCombustibleFotoUrls(
+    combustibles: readonly RegistroCombustible[],
+  ): Promise<ReadonlyMap<string, string | null>> {
+    const entradas = await Promise.all(
+      combustibles.map(async (registro) => {
+        const fotoUrl = registro.fotoKey
+          ? await this.storage.sign(registro.fotoKey)
+          : registro.fotoUrl;
+        return [registro.id, fotoUrl] as const;
+      }),
+    );
+    return new Map(entradas);
   }
 
   private mapHorometro(registro: RegistroHorometro): EventoFicha {
