@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
 import { HallazgosService } from './hallazgos.service';
@@ -22,8 +23,13 @@ export class HallazgosController {
 
   @Post()
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async create(@Body() dto: CreateHallazgoDto) {
-    return { data: await this.service.create(dto), message: 'Hallazgo registrado' };
+  async create(@Body() dto: CreateHallazgoDto, @Session() session: UserSession) {
+    // El usuario hace falta para reclamar la foto temporal: `claimTmp` valida
+    // que la key subida le pertenezca antes de moverla a su lugar definitivo.
+    return {
+      data: await this.service.create(dto, session.user.id),
+      message: 'Hallazgo registrado',
+    };
   }
 
   @Patch(':id')
