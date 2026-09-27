@@ -10,7 +10,11 @@ describe('HorometroService', () => {
   // `tx` que recibe el callback, nunca por el cliente `prisma` de nivel
   // superior. Se mockean ambos para poder distinguirlos en los asserts.
   const tx = {
-    registroHorometro: { create: jest.fn(), update: jest.fn() },
+    registroHorometro: {
+      create: jest.fn(),
+      update: jest.fn(),
+      findUnique: jest.fn(),
+    },
     equipment: { findUnique: jest.fn(), update: jest.fn() },
   };
 
@@ -56,10 +60,19 @@ describe('HorometroService', () => {
         ...data,
       }),
     );
-    // Usado por `update()` dentro de la transacción.
+    // Usado por `update()` dentro de la transacción: la lectura previa, para
+    // poder validar el `valorFinal` nuevo contra su `valorInicial`.
+    tx.registroHorometro.findUnique.mockResolvedValue({
+      valorInicial: 100,
+      equipoId: 'e1',
+    });
+    // Usado por `update()` dentro de la transacción. Lleva los contadores
+    // porque la validación compara contra ellos: el contador no retrocede.
     tx.equipment.findUnique.mockResolvedValue({
       id: 'e1',
       controlUnit: 'HOURS',
+      currentHourmeter: 100,
+      currentMileage: null,
     });
 
     prisma.$transaction.mockImplementation(
@@ -97,7 +110,9 @@ describe('HorometroService', () => {
       prisma.equipment.findUnique.mockResolvedValue({
         id: 'e1',
         controlUnit: 'KM',
-        currentMileage: 5000,
+        // Coherente con la lectura de abajo (100 → 130): el contador de la
+        // ficha no puede quedar por delante del final que se está cerrando.
+        currentMileage: 100,
       });
 
       await service.create({
@@ -163,6 +178,76 @@ describe('HorometroService', () => {
       // Ninguna escritura debe ocurrir fuera del `tx` de la transacción.
       expect(prisma.registroHorometro.create).not.toHaveBeenCalled();
       expect(prisma.equipment.update).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * El contador de la ficha alimenta el motor de mantenimiento preventivo
+   * (R6). Si retrocede, una mantención que estaba por vencer vuelve a quedar
+   * lejos y el equipo se pasa del umbral sin que nadie se entere — un error
+   * que no se ve hasta que rompe algo. Por eso se valida en el servidor y no
+   * solo en el formulario: R4 pide registrar sin señal y sincronizar después,
+   * y un registro encolado se reenvía sin pasar por la pantalla.
+   */
+  describe('el contador no retrocede', () => {
+    const lectura = {
+      equipoId: 'e1',
+      operador: 'Juan Rojas',
+      turno: 'DIURNO' as const,
+      valorInicial: 100,
+    };
+
+    it('rechaza el valor final menor que el inicial', async () => {
+      await expect(
+        service.create({ ...lectura, valorInicial: 5400, valorFinal: 5388 }),
+      ).rejects.toThrow(/no puede ser menor que el inicial/);
+      expect(tx.registroHorometro.create).not.toHaveBeenCalled();
+      expect(tx.equipment.update).not.toHaveBeenCalled();
+    });
+
+    it('rechaza el valor final menor que el contador actual del equipo', async () => {
+      // El equipo va en 100 h; cerrar en 90 lo haría retroceder.
+      await expect(
+        service.create({ ...lectura, valorInicial: 80, valorFinal: 90 }),
+      ).rejects.toThrow(/no puede retroceder/);
+      expect(tx.equipment.update).not.toHaveBeenCalled();
+    });
+
+    it('acepta la primera lectura de un equipo sin contador previo', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        id: 'e1',
+        controlUnit: 'HOURS',
+        currentHourmeter: null,
+      });
+
+      await service.create({ ...lectura, valorInicial: 0, valorFinal: 8 });
+
+      expect(tx.equipment.update).toHaveBeenCalledWith({
+        where: { id: 'e1' },
+        data: { currentHourmeter: 8 },
+      });
+    });
+
+    it('un turno abierto (sin valor final) no valida ni mueve el contador', async () => {
+      await service.create({ ...lectura, valorInicial: 50 });
+
+      expect(tx.registroHorometro.create).toHaveBeenCalled();
+      expect(tx.equipment.update).not.toHaveBeenCalled();
+    });
+
+    it('al editar tampoco deja retroceder el contador', async () => {
+      // La lectura abrió en 80 y el equipo va en 100: cerrar en 90 pasa la
+      // regla del inicial pero haría retroceder el contador igual.
+      tx.registroHorometro.findUnique.mockResolvedValue({
+        valorInicial: 80,
+        equipoId: 'e1',
+      });
+
+      await expect(service.update('r1', { valorFinal: 90 })).rejects.toThrow(
+        /no puede retroceder/,
+      );
+      expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+      expect(tx.equipment.update).not.toHaveBeenCalled();
     });
   });
 
