@@ -572,7 +572,16 @@ model TrabajoExtraordinario {
   horometroInicial Float
   horometroFinal   Float
   totalHoras       Float
-  actividad        String // REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL | LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA
+  /// Actividades del trabajo. Son VARIAS: la especificación del 21/09 pide
+  /// multi-selección, porque una misma salida suele mezclar tareas — soltar
+  /// material y después limpiar la cancha es un trabajo, no dos.
+  /// Valores: REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL |
+  /// LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA.
+  actividades      String[]
+  /// Texto libre de la opción «Otro», para la tarea que no estaba en la lista.
+  /// Null cuando no se eligió «Otro». El catálogo administrable que pide R7 es
+  /// un paso posterior; esto es la válvula de escape mientras tanto.
+  otraActividad    String?   @map("otra_actividad")
   descripcion      String
   observaciones    String?
   fecha            DateTime  @default(now())

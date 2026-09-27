@@ -599,7 +599,8 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
         horometroInicial: 5388,
         horometroFinal: 5400,
         totalHoras: 12,
-        actividad: 'REGULACION_CARGA',
+        // Una salida suele mezclar tareas: el seed lo refleja.
+        actividades: ['REGULACION_CARGA', 'SOLTAR_MATERIAL'],
         descripcion: 'Regulación y carga de material en frente 3.',
         observaciones: 'Sin novedades.',
       },
@@ -611,7 +612,7 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
         horometroInicial: 3292,
         horometroFinal: 3300,
         totalHoras: 8,
-        actividad: 'LIMPIEZA_CANCHA',
+        actividades: ['LIMPIEZA_CANCHA'],
         descripcion: 'Limpieza de cancha de acopio.',
         observaciones: null,
       },

@@ -220,11 +220,18 @@ export class FichaService {
   }
 
   private mapTrabajoExtra(registro: TrabajoExtraordinario): EventoFicha {
+    // Un trabajo puede tener varias actividades. En el título de la ficha se
+    // listan juntas, y «Otro» se muestra con su texto en vez de la etiqueta
+    // genérica, que no le diría nada a quien lee el historial del equipo.
+    const actividades = registro.actividades.map((a) =>
+      a === 'OTRO' && registro.otraActividad ? registro.otraActividad : a,
+    );
+
     return {
       id: registro.id,
       tipo: 'TRABAJO_EXTRA',
       fecha: registro.fecha.toISOString(),
-      titulo: `Trabajo extraordinario — ${registro.actividad}`,
+      titulo: `Trabajo extraordinario — ${actividades.join(', ')}`,
       detalle: registro.descripcion,
       meta: {
         operador: registro.operador,
@@ -233,7 +240,9 @@ export class FichaService {
         horometroInicial: registro.horometroInicial,
         horometroFinal: registro.horometroFinal,
         totalHoras: registro.totalHoras,
-        actividad: registro.actividad,
+        // `meta` es un mapa plano de valores para mostrar (ver `ficha.dto.ts`),
+        // así que las actividades van juntas en una línea y no como arreglo.
+        actividades: actividades.join(', '),
         observaciones: registro.observaciones,
       },
     };

@@ -39,7 +39,7 @@ describe('TrabajosExtraService', () => {
       turno: 'DIURNO',
       horometroInicial: 1200,
       horometroFinal: 1212,
-      actividad: 'REGULACION_CARGA',
+      actividades: ['REGULACION_CARGA'],
       descripcion: 'Carga de material',
     });
     expect(res.totalHoras).toBe(12);
@@ -59,7 +59,7 @@ describe('TrabajosExtraService', () => {
       turno: 'NOCTURNO',
       horometroInicial: 5400,
       horometroFinal: 5388,
-      actividad: 'HACER_PETRIL',
+      actividades: ['HACER_PETRIL'],
       descripcion: 'Horómetro tipeado al revés',
     };
 
@@ -76,12 +76,62 @@ describe('TrabajosExtraService', () => {
       turno: 'DIURNO',
       horometroInicial: 900,
       horometroFinal: 900,
-      actividad: 'LIMPIEZA_CANCHA',
+      actividades: ['LIMPIEZA_CANCHA'],
       descripcion: 'Se canceló antes de empezar',
     });
     expect(res.totalHoras).toBe(0);
   });
 
+  describe('actividades', () => {
+    const trabajo = {
+      equipoId: 'e1',
+      operador: 'Juan Rojas',
+      faena: 'Patillo',
+      turno: 'DIURNO' as const,
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      descripcion: 'Carga de material',
+    };
+
+    it('guarda varias actividades en un mismo trabajo', async () => {
+      const res = await service.create({
+        ...trabajo,
+        actividades: ['SOLTAR_MATERIAL', 'LIMPIEZA_CANCHA'],
+      });
+      expect(res.actividades).toEqual(['SOLTAR_MATERIAL', 'LIMPIEZA_CANCHA']);
+      expect(res.otraActividad).toBeNull();
+    });
+
+    /**
+     * «Otro» sin texto deja la actividad registrada como «otro» a secas: el
+     * trabajo no se podría justificar ni cobrar.
+     */
+    it('exige el texto cuando se elige Otro', async () => {
+      await expect(
+        service.create({ ...trabajo, actividades: ['OTRO'] }),
+      ).rejects.toThrow(/describí cuál fue/);
+      expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    });
+
+    it('guarda el texto de Otro junto a las demás actividades', async () => {
+      const res = await service.create({
+        ...trabajo,
+        actividades: ['HACER_PETRIL', 'OTRO'],
+        otraActividad: '  Despeje de acceso a romana  ',
+      });
+      expect(res.otraActividad).toBe('Despeje de acceso a romana');
+    });
+
+    /** Un texto sin haber elegido «Otro» contradiría la lista: se descarta. */
+    it('descarta el texto si no se eligió Otro', async () => {
+      const res = await service.create({
+        ...trabajo,
+        actividades: ['HACER_PETRIL'],
+        otraActividad: 'texto huérfano',
+      });
+      expect(res.otraActividad).toBeNull();
+    });
+  });
   /**
    * Un equipo con turno en curso está ocupado. Las horas del trabajo
    * extraordinario y las del turno se facturan por separado, y mientras el
@@ -99,7 +149,7 @@ describe('TrabajosExtraService', () => {
         turno: 'DIURNO',
         horometroInicial: 1200,
         horometroFinal: 1212,
-        actividad: 'REGULACION_CARGA',
+        actividades: ['REGULACION_CARGA'],
         descripcion: 'Carga de material',
       }),
     ).rejects.toThrow(/tiene un turno en curso/);

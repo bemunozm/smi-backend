@@ -63,6 +63,20 @@ export class TrabajosExtraService {
       );
     }
 
+    /**
+     * «Otro» sin texto no dice nada: la actividad quedaría registrada como
+     * «otro» a secas y el trabajo no se podría justificar ni cobrar. Si se
+     * eligió, el texto es obligatorio; si no se eligió, se descarta para que
+     * no quede un texto huérfano contradiciendo la lista.
+     */
+    const eligioOtro = dto.actividades.includes('OTRO');
+    const otraActividad = dto.otraActividad?.trim();
+    if (eligioOtro && !otraActividad) {
+      throw new BadRequestException(
+        'Elegiste «Otro» como actividad: describí cuál fue.',
+      );
+    }
+
     const totalHoras = Number(
       (dto.horometroFinal - dto.horometroInicial).toFixed(2),
     );
@@ -75,7 +89,8 @@ export class TrabajosExtraService {
         horometroInicial: dto.horometroInicial,
         horometroFinal: dto.horometroFinal,
         totalHoras,
-        actividad: dto.actividad,
+        actividades: dto.actividades,
+        otraActividad: eligioOtro ? otraActividad : null,
         descripcion: dto.descripcion,
         observaciones: dto.observaciones ?? null,
       },
