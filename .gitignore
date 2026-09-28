@@ -2,6 +2,13 @@
 /dist
 /node_modules
 /build
+# Caché incremental de `tsc` (`incremental: true` en tsconfig.json). Vive en
+# la raíz del repo, FUERA de /dist, así que `deleteOutDir` no la limpia entre
+# builds — si queda vieja (apunta a un `rootDir`/fileset previo) y luego se
+# borra `dist/` a mano, `tsc --watch`/`nest start --watch` la cree "al día" y
+# no vuelve a emitir nada (falla con `Cannot find module '.../dist/main'`
+# aunque diga "Found 0 errors"). Nunca versionarla.
+*.tsbuildinfo
 
 # Logs
 logs
