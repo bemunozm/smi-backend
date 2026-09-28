@@ -121,10 +121,17 @@ export class FichaService {
     if (!equipo) throw new NotFoundException(`Equipo "${id}" no encontrado`);
 
     // Firmas resueltas ANTES de mapear (ver Diseño del RFC R2-storage,
-    // "Combustible"): `mapCombustible` se mantiene síncrono, consumiendo el
-    // mapa ya resuelto — mismo patrón batch que `EquipmentService.resolvePhotoUrls`.
-    const fotoUrlsPorCombustible =
-      await this.resolveCombustibleFotoUrls(combustibles);
+    // "Combustible"): `mapCombustible`/`mapHallazgo` se mantienen síncronos,
+    // consumiendo el mapa ya resuelto — mismo patrón batch que
+    // `EquipmentService.resolvePhotoUrls`. `mapHallazgo` no firmaba `fotoKey`
+    // hasta el cierre de R2 (RFC Supervisión en Terreno, Fase 3) — devolvía
+    // `registro.fotoUrl` a secas, así que un hallazgo con foto nueva (subida
+    // vía `/api/files`, con `fotoKey` y `fotoUrl: null`) mostraba la ficha
+    // sin foto.
+    const [fotoUrlsPorCombustible, fotoUrlsPorHallazgo] = await Promise.all([
+      this.resolveCombustibleFotoUrls(combustibles),
+      this.resolveHallazgoFotoUrls(hallazgos),
+    ]);
 
     const eventosOrdenes = ordenes.map((ot) => this.mapOrden(ot));
     const eventosIntervenciones = ordenes.flatMap((ot) =>
@@ -139,7 +146,9 @@ export class FichaService {
       ),
       ...horometros.map((r) => this.mapHorometro(r)),
       ...trabajosExtra.map((r) => this.mapTrabajoExtra(r)),
-      ...hallazgos.map((r) => this.mapHallazgo(r)),
+      ...hallazgos.map((r) =>
+        this.mapHallazgo(r, fotoUrlsPorHallazgo.get(r.id) ?? null),
+      ),
       ...eventosOrdenes,
       ...eventosIntervenciones,
       ...actividades.map((r) => this.mapActividad(r)),
@@ -199,6 +208,27 @@ export class FichaService {
     return new Map(entradas);
   }
 
+  /**
+   * `fotoUrl` de cada hallazgo, en UNA tanda `Promise.all` — mismo criterio
+   * que `resolveCombustibleFotoUrls`: firmada si el registro tiene `fotoKey`
+   * (subida nueva por R2/MinIO), o el valor legacy `fotoUrl` tal cual si no
+   * (subida vieja por `/api/uploads`, retirado en el cierre de R2 — la
+   * columna y el valor persistido se conservan para datos históricos).
+   */
+  private async resolveHallazgoFotoUrls(
+    hallazgos: readonly Hallazgo[],
+  ): Promise<ReadonlyMap<string, string | null>> {
+    const entradas = await Promise.all(
+      hallazgos.map(async (registro) => {
+        const fotoUrl = registro.fotoKey
+          ? await this.storage.sign(registro.fotoKey)
+          : registro.fotoUrl;
+        return [registro.id, fotoUrl] as const;
+      }),
+    );
+    return new Map(entradas);
+  }
+
   private mapHorometro(registro: RegistroHorometro): EventoFicha {
     return {
       id: registro.id,
@@ -214,7 +244,6 @@ export class FichaService {
         valorInicial: registro.valorInicial,
         valorFinal: registro.valorFinal,
         nivelCombustible: registro.nivelCombustible,
-        fotoUrl: registro.fotoUrl,
       },
     };
   }
@@ -248,7 +277,9 @@ export class FichaService {
     };
   }
 
-  private mapHallazgo(registro: Hallazgo): EventoFicha {
+  /** `fotoUrl` YA resuelta por `resolveHallazgoFotoUrls` — este método se
+   * mantiene síncrono a propósito (ver docstring de `getFichaEquipo`). */
+  private mapHallazgo(registro: Hallazgo, fotoUrl: string | null): EventoFicha {
     const estadoLegible: Record<string, string> = {
       ABIERTO: 'abierto',
       EN_PROCESO: 'en proceso',
@@ -266,7 +297,7 @@ export class FichaService {
       meta: {
         prioridad: registro.prioridad,
         estado: registro.estado,
-        fotoUrl: registro.fotoUrl,
+        fotoUrl,
       },
     };
   }

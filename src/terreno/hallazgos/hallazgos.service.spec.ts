@@ -9,7 +9,7 @@ describe('HallazgosService', () => {
   let service: HallazgosService;
   const prisma = {
     equipment: { findUnique: jest.fn() },
-    hallazgo: { create: jest.fn() },
+    hallazgo: { create: jest.fn(), findUnique: jest.fn() },
   };
   const eventEmitter = { emit: jest.fn() };
   // La foto ahora va al storage privado: `claimTmp` mueve la key temporal a su
@@ -39,21 +39,27 @@ describe('HallazgosService', () => {
   });
 
   it('crea con estado ABIERTO y guarda la prioridad', async () => {
-    const res = await service.create({
-      equipoId: 'e1',
-      descripcion: 'Fuga',
-      prioridad: 'ALTA',
-    }, 'u1');
+    const res = await service.create(
+      {
+        equipoId: 'e1',
+        descripcion: 'Fuga',
+        prioridad: 'ALTA',
+      },
+      'u1',
+    );
     expect(res.estado).toBe('ABIERTO');
     expect(res.prioridad).toBe('ALTA');
   });
 
   it('emite HALLAZGO_CREATED con el id creado y los campos del hallazgo', async () => {
-    await service.create({
-      equipoId: 'e1',
-      descripcion: 'Fuga',
-      prioridad: 'ALTA',
-    }, 'u1');
+    await service.create(
+      {
+        equipoId: 'e1',
+        descripcion: 'Fuga',
+        prioridad: 'ALTA',
+      },
+      'u1',
+    );
 
     expect(eventEmitter.emit).toHaveBeenCalledWith(
       DOMAIN_EVENTS.HALLAZGO_CREATED,
@@ -69,22 +75,20 @@ describe('HallazgosService', () => {
   describe('foto en storage privado', () => {
     const base = { equipoId: 'e1', descripcion: 'Fuga', prioridad: 'ALTA' };
 
-    /** Las dos juntas son ambiguas: no se sabe cuál es la foto de verdad. */
-    it('rechaza fotoUrl y fotoKey a la vez', async () => {
-      await expect(
-        service.create(
-          { ...base, fotoUrl: '/uploads/a.jpg', fotoKey: 'tmp/u1/x.jpg' },
-          'u1',
-        ),
-      ).rejects.toThrow(/juntos/);
-      expect(prisma.hallazgo.create).not.toHaveBeenCalled();
-    });
-
     it('reclama la key temporal y devuelve la foto firmada, nunca la key', async () => {
-      const res = await service.create({ ...base, fotoKey: 'tmp/u1/x.jpg' }, 'u1');
+      const res = await service.create(
+        { ...base, fotoKey: 'tmp/u1/x.jpg' },
+        'u1',
+      );
 
-      expect(storage.claimTmp).toHaveBeenCalledWith('tmp/u1/x.jpg', 'u1', 'hallazgo-photo');
-      expect(res.fotoUrl).toBe('https://signed.example/hallazgo-photos/tmp/u1/x.jpg');
+      expect(storage.claimTmp).toHaveBeenCalledWith(
+        'tmp/u1/x.jpg',
+        'u1',
+        'hallazgo-photo',
+      );
+      expect(res.fotoUrl).toBe(
+        'https://signed.example/hallazgo-photos/tmp/u1/x.jpg',
+      );
       expect('fotoKey' in res).toBe(false);
     });
 
@@ -98,12 +102,30 @@ describe('HallazgosService', () => {
       await expect(
         service.create({ ...base, fotoKey: 'tmp/u1/x.jpg' }, 'u1'),
       ).rejects.toThrow('db caída');
-      expect(storage.discard).toHaveBeenCalledWith('hallazgo-photos/tmp/u1/x.jpg');
+      expect(storage.discard).toHaveBeenCalledWith(
+        'hallazgo-photos/tmp/u1/x.jpg',
+      );
     });
 
-    /** Los hallazgos viejos siguen con su URL de /api/uploads y se ven igual. */
-    it('deja pasar la fotoUrl legacy sin tocar el storage', async () => {
-      const res = await service.create({ ...base, fotoUrl: '/uploads/vieja.jpg' }, 'u1');
+    /**
+     * `fotoUrl` (legacy) ya no es un campo de `CreateHallazgoDto` — se
+     * retiró en el cierre de R2 (RFC Supervisión en Terreno, Fase 3): ya no
+     * se puede CREAR un hallazgo con ella, pero los hallazgos viejos que ya
+     * la tienen siguen mostrándola tal cual en lectura (`findOne`/`shape`).
+     */
+    it('findOne devuelve fotoUrl legacy tal cual cuando el hallazgo no tiene fotoKey (dato histórico)', async () => {
+      prisma.hallazgo.findUnique.mockResolvedValue({
+        id: 'h1',
+        equipoId: 'e1',
+        descripcion: 'Fuga',
+        prioridad: 'ALTA',
+        estado: 'ABIERTO',
+        fotoUrl: '/uploads/vieja.jpg',
+        fotoKey: null,
+        fecha: new Date(),
+      });
+
+      const res = await service.findOne('h1');
 
       expect(storage.claimTmp).not.toHaveBeenCalled();
       expect(res.fotoUrl).toBe('/uploads/vieja.jpg');

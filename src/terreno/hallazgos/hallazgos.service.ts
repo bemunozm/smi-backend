@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { Hallazgo } from '@prisma/client';
 
@@ -31,12 +27,6 @@ export class HallazgosService {
   ) {}
 
   async create(dto: CreateHallazgoDto, userId: string) {
-    if (dto.fotoUrl && dto.fotoKey) {
-      throw new BadRequestException(
-        'No se puede enviar "fotoUrl" y "fotoKey" juntos',
-      );
-    }
-
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },
     });
@@ -56,7 +46,8 @@ export class HallazgosService {
           descripcion: dto.descripcion,
           prioridad: dto.prioridad,
           estado: 'ABIERTO',
-          fotoUrl: dto.fotoUrl ?? null,
+          // `fotoUrl` (legacy) ya no es un campo de creación — ver
+          // `CreateHallazgoDto`. Se omite la key: Prisma inserta NULL.
           fotoKey: finalKey ?? null,
         },
       });
@@ -94,7 +85,9 @@ export class HallazgosService {
   }
 
   async update(id: string, dto: UpdateHallazgoDto) {
-    return this.shape(await this.prisma.hallazgo.update({ where: { id }, data: dto }));
+    return this.shape(
+      await this.prisma.hallazgo.update({ where: { id }, data: dto }),
+    );
   }
 
   /**

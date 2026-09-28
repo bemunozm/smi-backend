@@ -37,7 +37,7 @@ function assertNonEmptyId(id: string, param = 'id'): void {
  *
  * Lectura abierta a cualquier sesión autenticada (el `AuthGuard` global ya
  * exige sesión) — mismo criterio que `EquipmentController.findAll/findOne`.
- * Escritura restringida a SUPERVISOR/ADMIN, igual que `/api/uploads`.
+ * Escritura restringida a SUPERVISOR/ADMIN, igual que `/api/files`.
  */
 @Controller('equipment')
 export class EquipmentDocumentController {

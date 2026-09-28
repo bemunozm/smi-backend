@@ -23,27 +23,18 @@ export class CreateCombustibleDto {
   tipo!: string;
 
   /**
-   * Legacy: URL servida por `/api/uploads` (Terreno, sigue viva — ver
-   * Diseño del RFC R2-storage, "Combustible"). Mutuamente excluyente con
-   * `fotoKey`: `CombustibleService` rechaza con 400 si llegan los dos.
-   *
-   * Restringida a una ruta relativa `/uploads/<archivo>` propia (hallazgo
-   * BAJO B3 de la revisión de seguridad, código de Terreno): sin este
-   * `@Matches`, cualquier string pasaba, y una URL externa (`https://evil.com/
-   * pixel.png`) quedaba guardada y se renderizaba tal cual como `<img src>`
-   * en el listado — un tracking pixel disfrazado de foto de carga.
-   */
-  @IsOptional()
-  @IsString()
-  @MaxLength(300)
-  @Matches(/^\/uploads\/[\w.-]+$/)
-  fotoUrl?: string;
-
-  /**
    * Key `tmp/<userId>/<uuid>.<ext>` de una foto recién subida por
-   * `POST /api/files`, ADITIVA sobre `fotoUrl` legacy. El DTO valida solo la
-   * FORMA — `CombustibleService` valida ownership (vía
-   * `StorageService.claimTmp`) y que no venga junto con `fotoUrl`.
+   * `POST /api/files`. El DTO valida solo la FORMA — `CombustibleService`
+   * valida ownership vía `StorageService.claimTmp`.
+   *
+   * `fotoUrl` (legacy, URL servida por `/api/uploads`) YA NO es un campo de
+   * este DTO — se retiró en el cierre de R2 (RFC Supervisión en Terreno,
+   * Fase 3): `/api/uploads` se eliminó por completo, así que ya no hay forma
+   * de producir un `fotoUrl` válido. La columna y el mapeo de LECTURA en
+   * `CombustibleService.shape` siguen intactos, para que las filas viejas
+   * que ya tenían ese valor sigan renderizando (aunque el link en sí quede
+   * roto). Cualquier request que mande `fotoUrl` ahora se rechaza con 400
+   * (`forbidNonWhitelisted`).
    */
   @IsOptional()
   @IsString()

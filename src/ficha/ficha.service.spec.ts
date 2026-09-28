@@ -378,4 +378,55 @@ describe('FichaService', () => {
       expect(evento?.meta.fotoUrl).toBe('/uploads/legacy.jpg');
     });
   });
+
+  describe('meta.fotoUrl del hallazgo — firmado ANTES de mapear (cierre de R2, RFC Supervisión en Terreno Fase 3)', () => {
+    it('con fotoKey, meta.fotoUrl trae la URL firmada (antes del fix devolvía siempre fotoUrl, ignorando fotoKey)', async () => {
+      mockearOrigenesVacios();
+      hallazgoFindMany.mockResolvedValue([
+        {
+          id: 'ha1',
+          equipoId: 'eq_1',
+          descripcion: 'Fuga de aceite',
+          prioridad: 'CRITICA',
+          estado: 'ABIERTO',
+          fotoUrl: null,
+          fotoKey: 'hallazgo-photos/nuevo.jpg',
+          fecha: new Date('2026-08-02T10:00:00Z'),
+        },
+      ]);
+      hallazgoCount.mockResolvedValueOnce(1).mockResolvedValueOnce(1);
+      sign.mockResolvedValue('https://minio.local/signed/hallazgo-nuevo.jpg');
+
+      const ficha = await service.getFichaEquipo('eq_1');
+
+      expect(sign).toHaveBeenCalledWith('hallazgo-photos/nuevo.jpg');
+      const evento = ficha.timeline.find((e) => e.tipo === 'HALLAZGO');
+      expect(evento?.meta.fotoUrl).toBe(
+        'https://minio.local/signed/hallazgo-nuevo.jpg',
+      );
+    });
+
+    it('sin fotoKey, meta.fotoUrl cae al valor legacy tal cual (no llama a sign)', async () => {
+      mockearOrigenesVacios();
+      hallazgoFindMany.mockResolvedValue([
+        {
+          id: 'ha1',
+          equipoId: 'eq_1',
+          descripcion: 'Fuga de aceite',
+          prioridad: 'CRITICA',
+          estado: 'ABIERTO',
+          fotoUrl: '/uploads/legacy-viejo.jpg',
+          fotoKey: null,
+          fecha: new Date('2026-08-02T10:00:00Z'),
+        },
+      ]);
+      hallazgoCount.mockResolvedValueOnce(1).mockResolvedValueOnce(1);
+
+      const ficha = await service.getFichaEquipo('eq_1');
+
+      expect(sign).not.toHaveBeenCalled();
+      const evento = ficha.timeline.find((e) => e.tipo === 'HALLAZGO');
+      expect(evento?.meta.fotoUrl).toBe('/uploads/legacy-viejo.jpg');
+    });
+  });
 });
