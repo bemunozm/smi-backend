@@ -48,3 +48,22 @@ export const ROLES = {
 export type Role = (typeof ROLES)[keyof typeof ROLES];
 
 export const ALL_ROLES: readonly Role[] = Object.values(ROLES);
+
+/**
+ * `session.user.role` (de `@thallesp/nestjs-better-auth`) llega tipado como
+ * `string | string[] | undefined` — puede ser un solo rol, un array, o (en
+ * teoría, según la lib) una lista separada por comas. Normaliza antes de
+ * comparar. Uso: un flujo de negocio que necesita ramificar por rol DENTRO
+ * del handler (no el gate binario de `@Roles()`), ej. "el dueño de la
+ * tarjeta o un ADMIN pueden cerrarla" (RFC Supervisión en Terreno, Fase 2).
+ */
+export function sessionHasRole(
+  role: string | string[] | undefined,
+  target: Role,
+): boolean {
+  if (!role) return false;
+  const roles = Array.isArray(role)
+    ? role
+    : role.split(',').map((r) => r.trim());
+  return roles.includes(target);
+}
