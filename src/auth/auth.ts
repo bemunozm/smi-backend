@@ -26,6 +26,29 @@ export const auth = betterAuth({
     disableSignUp: true,
   },
   trustedOrigins: [env.frontendUrl],
+  // B5 (auditoría de seguridad): `/update-user` (endpoint propio de Better
+  // Auth, self-service — cualquier usuario autenticado podría cambiar su
+  // propio `name`) está DESHABILITADO. El frontend no lo usa: `UsersView` /
+  // `useUpdateUser` llaman a nuestra API propia `/api/users` (admin-only,
+  // ver `UsersModule`), nunca `authClient.updateUser` (confirmado por grep
+  // en `smi-frontend/src`, 28/09). Si algún día se habilita self-editing de
+  // nombre, sacar esto de acá Y truncar/sanear ese `name` en los mismos
+  // puntos que `ShiftReportsService` trunca `supervisorName` (PDF/correo).
+  disabledPaths: ['/update-user'],
+  // Info (auditoría de seguridad, prep para la prueba con túnel HTTPS):
+  // rate limit nativo de Better Auth, `enabled` gobernado por
+  // `AUTH_RATE_LIMIT_ENABLED` (ver env.ts) — `true` por defecto en
+  // producción, `false` en el resto para no romper el e2e suite (hace login
+  // muchas veces seguidas). `customRules` fija 5 intentos / 60s para
+  // `/sign-in/email` en vez de confiar en la regla especial por defecto de
+  // Better Auth (3/10s para cualquier path que empiece con `/sign-in`) —
+  // SECURITY-NOTES.md pide explícitamente "5 intentos / 60s".
+  rateLimit: {
+    enabled: env.authRateLimitEnabled,
+    customRules: {
+      '/sign-in/email': { window: 60, max: 5 },
+    },
+  },
   plugins: [
     admin({
       // Tier 3 #11: roles de Access Control custom — ver access-control.ts
