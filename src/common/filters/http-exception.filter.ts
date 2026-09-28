@@ -24,6 +24,11 @@ import type { Response } from 'express';
 interface ErrorResponseBody {
   data: null;
   message: string;
+  /** Opcional: clasificador estable para que el caller (ej. el outbox
+   * offline del front) distinga casos de negocio sin parsear `message`. Solo
+   * aparece cuando quien lanzó la excepción lo puso explícito, ej.
+   * `new ConflictException({ message, code: 'EQUIPMENT_BUSY' })`. */
+  code?: string;
 }
 
 // `resolveStatus` devuelve `number` (viene de `exception.getStatus()`, no
@@ -41,6 +46,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     const status = this.resolveStatus(exception);
     const message = this.resolveMessage(exception, status);
+    const code = this.resolveCode(exception);
 
     if (status >= INTERNAL_SERVER_ERROR_STATUS) {
       this.logger.error(
@@ -48,10 +54,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
         exception instanceof Error ? exception.stack : undefined,
       );
     } else {
-      this.logger.warn(`${status} ${message}`);
+      this.logger.warn(`${status} ${message}${code ? ` (${code})` : ''}`);
     }
 
-    const body: ErrorResponseBody = { data: null, message };
+    const body: ErrorResponseBody = {
+      data: null,
+      message,
+      ...(code ? { code } : {}),
+    };
     response.status(status).json(body);
   }
 
@@ -83,5 +93,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
     return status === INTERNAL_SERVER_ERROR_STATUS
       ? 'Internal server error'
       : 'Unexpected error';
+  }
+
+  /** `undefined` salvo que el body de la excepción sea un objeto con un
+   * `code` de tipo string explícito — nunca lo inventa a partir del
+   * `message` ni del nombre de la excepción. */
+  private resolveCode(exception: unknown): string | undefined {
+    if (!(exception instanceof HttpException)) return undefined;
+
+    const body = exception.getResponse();
+    if (typeof body !== 'object' || body === null || !('code' in body)) {
+      return undefined;
+    }
+
+    const code = (body as { code?: unknown }).code;
+    return typeof code === 'string' ? code : undefined;
   }
 }

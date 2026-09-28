@@ -70,6 +70,11 @@ export interface OpenShiftSummary {
   operador: string;
   turno: string;
   fecha: Date;
+  /** Nombre del supervisor que abrió la tarjeta (RFC Supervisión en Terreno,
+   * Fase 2 — `RegistroHorometro.supervisorId`), o `null` si el registro no
+   * tiene supervisor asociado (dato legacy, previo a Fase 1) o el usuario ya
+   * no existe (soft ref, ver comentario de cabecera del schema). */
+  supervisorName: string | null;
 }
 
 /** Campos que `findAll`/`findOne`/`updateAssignment` agregan a la ficha cruda de Prisma. */
@@ -587,8 +592,19 @@ export class EquipmentService {
         operador: true,
         turno: true,
         fecha: true,
+        supervisorId: true,
       },
     });
+
+    // `supervisorName` (RFC Supervisión en Terreno, Fase 2): UNA consulta
+    // batch extra, aparte de `resolveAssignedUsers` (que resuelve
+    // `currentOperatorId`/`currentSupervisorId`, campos DISTINTOS de la
+    // asignación de uso — acá se necesita el `supervisorId` de la TARJETA,
+    // que solo se conoce después de leer `turnos`). `resolveAssignedUsers` ya
+    // dedupea y devuelve mapa vacío sin consultar si no hay ids.
+    const supervisoresPorId = await this.resolveAssignedUsers(
+      turnos.map((turno) => turno.supervisorId),
+    );
 
     return new Map(
       turnos.map((turno) => [
@@ -599,6 +615,9 @@ export class EquipmentService {
           operador: turno.operador,
           turno: turno.turno,
           fecha: turno.fecha,
+          supervisorName: turno.supervisorId
+            ? (supervisoresPorId.get(turno.supervisorId)?.name ?? null)
+            : null,
         },
       ]),
     );
