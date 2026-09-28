@@ -648,6 +648,54 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
 }
 
 // ============================================================================
+// Supervisión en Terreno (Benjamín) — catálogo de operadores
+// ============================================================================
+
+/**
+ * Nombres de la maqueta del Módulo A (`RegistroEquipoView.tsx`, arreglo
+ * `OPERADORES`), sembrados sin RUT hasta que llegue la nómina real del
+ * cliente (insumo pendiente, Acta 003 — RFC Supervisión en Terreno).
+ */
+const OPERATOR_NAMES = [
+  'Patricio Rojas',
+  'Luis Contreras',
+  'Marcelo Soto',
+  'Cristian Araya',
+  'Héctor Villalobos',
+  'Sebastián Tapia',
+  'Nicolás Espinoza',
+  'Jorge Pizarro',
+  'Rubén Carrasco',
+  'Mauricio Olivares',
+  'Felipe Gallardo',
+] as const;
+
+/**
+ * Siembra el catálogo de operadores. Idempotente por NOMBRE — skip-if-exists
+ * y no `upsert`, porque `Operator.name` NO es `@unique` (dos operadores
+ * homónimos son válidos; el `where` de un upsert necesita un campo único) —
+ * así que un rerun de `npm run db:seed` no duplica filas, a diferencia del
+ * resto del dominio (que `limpiarDatosDeDominio` borra y recrea entero en
+ * cada corrida). Operadores queda fuera de esa limpieza a propósito: es un
+ * catálogo, no datos de demo desechables.
+ */
+async function seedOperators(): Promise<void> {
+  let creados = 0;
+  for (const name of OPERATOR_NAMES) {
+    const existe = await prismaClient.operator.findFirst({
+      where: { name },
+      select: { id: true },
+    });
+    if (existe) continue;
+    await prismaClient.operator.create({ data: { name } });
+    creados += 1;
+  }
+  logger.log(
+    `Operadores: ${creados} creados, ${OPERATOR_NAMES.length - creados} ya existían`,
+  );
+}
+
+// ============================================================================
 // Flota (Benjamín) — asignación de uso ACTUAL
 // ============================================================================
 
@@ -751,6 +799,7 @@ async function seed(): Promise<void> {
     categories,
   );
   await seedTerreno(equipos);
+  await seedOperators();
   await seedAsignacionesFlota(
     equipos,
     operador?.id ?? null,
