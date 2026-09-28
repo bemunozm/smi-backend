@@ -280,7 +280,7 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
 
   let adminAgent: SupertestAgent;
   let supervisorAgent: SupertestAgent;
-  let operadorAgent: SupertestAgent;
+  let mantenedorAgent: SupertestAgent;
 
   // `internalCode` tiene @MaxLength(20) — "E2E-" (4) + RUN_ID (5) + "-" (1) =
   // 10 chars fijos, deja 10 para el sufijo.
@@ -328,7 +328,11 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
       'supervisor@smi.local',
       SEED_PASSWORD,
     );
-    operadorAgent = await loginAgent(app, 'operador@smi.local', SEED_PASSWORD);
+    mantenedorAgent = await loginAgent(
+      app,
+      'mantenedor@smi.local',
+      SEED_PASSWORD,
+    );
   });
 
   afterAll(async () => {
@@ -690,15 +694,15 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
         .expect(413);
     }, 20_000);
 
-    it('19) sin sesión -> 401; OPERADOR -> 403', async () => {
+    it('19) sin sesión -> 401; MANTENEDOR -> 403', async () => {
       await request(app.getHttpServer())
         .post('/api/equipment')
         .send(baseEquipmentPayload(internalCode('NOSESSION')))
         .expect(401);
 
-      await operadorAgent
+      await mantenedorAgent
         .post('/api/equipment')
-        .send(baseEquipmentPayload(internalCode('OPERADOR')))
+        .send(baseEquipmentPayload(internalCode('MANTENEDOR')))
         .expect(403);
     });
 

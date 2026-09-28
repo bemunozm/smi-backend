@@ -55,8 +55,15 @@ export const auth = betterAuth({
       // para el porqué (bug de hasPermission con roles en mayúscula).
       ac,
       roles,
-      // Rol asignado por defecto a cualquier usuario nuevo.
-      defaultRole: ROLES.OPERADOR,
+      // Rol asignado por defecto a cualquier usuario nuevo. En la práctica
+      // es INALCANZABLE hoy: `disableSignUp` cierra el auto-registro y
+      // `CreateUserDto.role` es obligatorio en `POST /api/users` (única vía
+      // de alta) — se mantiene solo por consistencia con lo que exige el
+      // generador del plugin admin. MANTENEDOR (no OPERADOR: ese rol se
+      // eliminó, RFC Supervisión en Terreno, anexo "el operador deja de ser
+      // usuario de la plataforma", 28/09 — el operador es un catálogo
+      // propio, `src/operators/*`, sin acceso a la plataforma).
+      defaultRole: ROLES.MANTENEDOR,
       // Únicos roles que el plugin admin trata como "administradores"
       // (habilita las capacidades de gestión de usuarios del plugin).
       adminRoles: [ROLES.ADMIN],

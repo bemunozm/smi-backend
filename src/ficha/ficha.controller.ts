@@ -14,8 +14,11 @@ function assertNonEmptyId(id: string): void {
  * Ficha consolidada de un equipo (requerimientos §5.5, Núcleo). Cruza los
  * dominios de Flota, Terreno, Mantenimiento e Inventario en una sola línea de
  * tiempo. Solo lectura, por eso comparte roles con quienes operan sobre un
- * equipo en el día a día — OPERADOR queda fuera porque la ficha expone
- * historial completo (hallazgos, órdenes, intervenciones), no solo lo propio.
+ * equipo en el día a día — los 3 roles de plataforma (ADMIN, SUPERVISOR,
+ * MANTENEDOR). El operador no entra en este chequeo porque ya no es un rol
+ * de usuario: es un catálogo propio (`Operator`, `src/operators/*`) sin
+ * acceso a la plataforma (RFC Supervisión en Terreno, anexo "el operador
+ * deja de ser usuario de la plataforma", 28/09).
  */
 @Controller('equipos')
 export class FichaController {

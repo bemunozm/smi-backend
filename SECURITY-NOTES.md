@@ -143,8 +143,11 @@ otra ronda de revisión.
   restringido a ADMIN/SUPERVISOR) o de las tarjetas de turno (todo el módulo
   es SUPERVISOR/ADMIN), el listado de cargas de combustible —con la URL
   firmada de la foto— es legible por cualquier sesión autenticada, incluido
-  OPERADOR/MANTENEDOR. Si el negocio decide que debería restringirse, es un
-  cambio de alcance nuevo, no un bug de esta revisión.
+  MANTENEDOR. Si el negocio decide que debería restringirse, es un cambio de
+  alcance nuevo, no un bug de esta revisión. (Nota: el rol OPERADOR de esta
+  nota original se eliminó — RFC Supervisión en Terreno, anexo "el operador
+  deja de ser usuario de la plataforma", 28/09 — el operador ya no es una
+  sesión de plataforma.)
 - **`name` propio editable si `/update-user` se vuelve a habilitar** — B5
   deshabilitó `/update-user` (self-service, sin usar por el frontend hoy).
   Si en el futuro se habilita para que un usuario edite su propio nombre,
