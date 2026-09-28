@@ -36,10 +36,13 @@ model User {
   image         String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
-  /// Valores válidos: ADMIN | SUPERVISOR | MANTENEDOR | OPERADOR (ver src/auth/roles.ts).
+  /// Valores válidos: ADMIN | SUPERVISOR | MANTENEDOR (ver src/auth/roles.ts).
+  /// El operador NO es un rol de usuario — es un catálogo propio (`Operator`,
+  /// más abajo), sin acceso a la plataforma (RFC Supervisión en Terreno,
+  /// anexo "el operador deja de ser usuario de la plataforma", 28/09).
   /// String (no enum Prisma) a propósito: el admin plugin de Better Auth tipa
   /// el rol como string dinámico; un enum Prisma introduciría fricción de tipos.
-  role          String    @default("OPERADOR")
+  role          String    @default("MANTENEDOR")
   banned        Boolean?  @default(false)
   banReason     String?
   banExpires    DateTime?
@@ -210,13 +213,20 @@ model Equipment {
   /// ahora mismo) — NO es historial de sesiones, eso queda como follow-up.
   /// `inUse` no es columna: se deriva en el service como `!!currentOperatorId`.
   ///
-  /// Soft refs a `user.id` (String, SIN `@relation`) — mismo criterio que el
-  /// resto del schema (ver comentario de cabecera): la tabla `user` la
-  /// regenera `npm run auth:schema` y una relación real exigiría un campo
-  /// inverso (`Equipment[]`) en `User` que ese generador no toca a mano.
-  /// `EquipmentService` resuelve id → {id,name} con un `user.findMany` propio.
-  currentOperatorId   String? @map("current_operator_id")
-  currentSupervisorId String? @map("current_supervisor_id")
+  /// `currentOperatorId` es FK REAL a `Operator` (RFC Supervisión en Terreno,
+  /// anexo "el operador deja de ser usuario de la plataforma", 28/09): el
+  /// operador es un catálogo propio nuestro, así que SÍ se permite la
+  /// relación Prisma — a diferencia de `currentSupervisorId`, que sigue
+  /// siendo un soft ref a `user.id` (String, SIN `@relation`, mismo criterio
+  /// que el resto del schema: la tabla `user` la regenera `npm run
+  /// auth:schema` y una relación real exigiría un campo inverso que ese
+  /// generador no toca a mano — `EquipmentService` resuelve ese id → {id,name}
+  /// con un `user.findMany` propio). `onDelete: SetNull` en ambos: borrar el
+  /// operador/supervisor no debe borrar el equipo, solo liberar la
+  /// asignación.
+  currentOperatorId   String?   @map("current_operator_id")
+  currentOperator     Operator? @relation(fields: [currentOperatorId], references: [id], onDelete: SetNull)
+  currentSupervisorId String?   @map("current_supervisor_id")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -275,13 +285,13 @@ model EquipmentDocument {
 
   type       EquipmentDocumentType
   title      String?
-  expiryDate DateTime? @map("expiry_date")
-  fileKey    String?   @map("file_key")
+  expiryDate DateTime?             @map("expiry_date")
+  fileKey    String?               @map("file_key")
   /// Nombre "humano" del archivo (el que subió el usuario, ej. "Póliza
   /// Seguro.pdf") — se usa para el `Content-Disposition` al servir el
   /// archivo (`GET /api/equipment/documents/:id/file`), porque `fileKey` es
   /// un uuid sin significado para el usuario.
-  fileName   String?   @map("file_name")
+  fileName   String?               @map("file_name")
   notes      String?
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -446,7 +456,7 @@ model StockMovement {
   reason    MovementReason
 
   /// Siempre > 0. El signo lo determina `direction`.
-  quantity Float
+  quantity         Float
   /// Saldo del ítem EN ESTA BODEGA después de aplicar el asiento, calculado
   /// dentro de la misma transacción. Denormalizado a propósito: deja evidencia
   /// auditable del saldo en cada punto sin recalcular la serie completa.
@@ -608,7 +618,7 @@ model RegistroHorometro {
   /// `RegistroCombustible.litros` — si es > 0, Fase 2 crea la carga
   /// vinculada (`RegistroCombustible.registroHorometroId`) con esta misma
   /// `pumpPhotoKey`.
-  fuelLiters Float? @map("fuel_liters")
+  fuelLiters    Float?  @map("fuel_liters")
   /// Key del objeto en el bucket de storage (R2/MinIO) de la foto del
   /// surtidor/horómetro al cierre. Reemplaza a `fotoUrlSalida` (legacy,
   /// pública, eliminada en esta misma migración) — nunca una URL, se firma
@@ -620,7 +630,7 @@ model RegistroHorometro {
   /// que permita re-subir la foto de cierre) tiene que considerar TAMBIÉN la
   /// fila de `RegistroCombustible`, o esa carga queda apuntando a un objeto
   /// borrado.
-  pumpPhotoKey String? @map("pump_photo_key")
+  pumpPhotoKey  String? @map("pump_photo_key")
   /// Observaciones libres del supervisor al cierre.
   observaciones String?
 
@@ -733,6 +743,11 @@ model Operator {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   horometros RegistroHorometro[]
+
+  /// Asignación de uso ACTUAL de Flota (`Equipment.currentOperatorId`, RFC
+  /// Supervisión en Terreno, anexo "el operador deja de ser usuario de la
+  /// plataforma") — inverso de la FK real agregada en esa migración.
+  assignedEquipment Equipment[]
 
   @@map("operator")
 }

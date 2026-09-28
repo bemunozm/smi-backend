@@ -39,6 +39,12 @@ interface SeedUser {
   role: (typeof ROLES)[keyof typeof ROLES];
 }
 
+/**
+ * Sin usuario OPERADOR: el operador dejó de ser un rol de la plataforma (RFC
+ * Supervisión en Terreno, anexo "el operador deja de ser usuario de la
+ * plataforma", 28/09) — ahora es un catálogo propio, sembrado aparte por
+ * `seedOperators()`.
+ */
 const SEED_USERS: SeedUser[] = [
   { name: 'Admin SMI', email: 'admin@smi.local', role: ROLES.ADMIN },
   {
@@ -51,7 +57,6 @@ const SEED_USERS: SeedUser[] = [
     email: 'mantenedor@smi.local',
     role: ROLES.MANTENEDOR,
   },
-  { name: 'Operador SMI', email: 'operador@smi.local', role: ROLES.OPERADOR },
 ];
 
 function isUserAlreadyExistsError(error: unknown): boolean {
@@ -705,9 +710,12 @@ const EN_USO_INDEX = [0, 1, 5, 6] as const;
 /**
  * Asigna operador + supervisor ACTUALES a algunas unidades operativas, para
  * que el listado se vea "en uso" con datos reales (fidelidad 1:1 con el
- * artefacto de referencia de Flota). En dev solo existe UN usuario seed por
- * rol (`operador@smi.local`/`supervisor@smi.local`), así que se repiten entre
- * las 4 unidades — aceptable para demo; en producción cada operador tiene su
+ * artefacto de referencia de Flota). `operatorId` es del CATÁLOGO
+ * (`Operator`, sembrado por `seedOperators()` — RFC Supervisión en Terreno,
+ * anexo "el operador deja de ser usuario de la plataforma": el operador ya
+ * no es un usuario). En dev solo existe UN usuario seed por rol de
+ * plataforma (`supervisor@smi.local`), así que se repite entre las 4
+ * unidades — aceptable para demo; en producción cada supervisor tiene su
  * propia cuenta.
  */
 async function seedAsignacionesFlota(
@@ -717,7 +725,7 @@ async function seedAsignacionesFlota(
 ): Promise<void> {
   if (!operatorId || !supervisorId) {
     logger.warn(
-      'No se encontró el operador/supervisor seed: se omite la asignación "en uso" de Flota',
+      'No se encontró el operador de catálogo/supervisor seed: se omite la asignación "en uso" de Flota',
     );
     return;
   }
@@ -772,19 +780,17 @@ async function seed(): Promise<void> {
 
   // Los movimientos de inventario quedan imputados al admin del seed, para que
   // la columna "responsable" del kardex no salga vacía en la demo. Se
-  // resuelven acá también el operador y supervisor seed: los usa la
-  // asignación de uso de Flota (`seedAsignacionesFlota`) al final.
-  const [admin, supervisor, operador] = await Promise.all([
+  // resuelve acá también el supervisor seed: lo usa la asignación de uso de
+  // Flota (`seedAsignacionesFlota`) al final. El operador YA NO es un
+  // usuario (anexo "el operador deja de ser usuario de la plataforma") — se
+  // resuelve más abajo, del catálogo, después de `seedOperators()`.
+  const [admin, supervisor] = await Promise.all([
     prismaClient.user.findUnique({
       where: { email: 'admin@smi.local' },
       select: { id: true },
     }),
     prismaClient.user.findUnique({
       where: { email: 'supervisor@smi.local' },
-      select: { id: true },
-    }),
-    prismaClient.user.findUnique({
-      where: { email: 'operador@smi.local' },
       select: { id: true },
     }),
   ]);
@@ -800,6 +806,13 @@ async function seed(): Promise<void> {
   );
   await seedTerreno(equipos);
   await seedOperators();
+
+  // Primer nombre de `OPERATOR_NAMES` — cualquiera del catálogo sirve para
+  // la demo de "en uso" de Flota.
+  const operador = await prismaClient.operator.findFirst({
+    where: { name: OPERATOR_NAMES[0] },
+    select: { id: true },
+  });
   await seedAsignacionesFlota(
     equipos,
     operador?.id ?? null,

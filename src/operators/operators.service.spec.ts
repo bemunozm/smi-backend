@@ -119,18 +119,6 @@ describe('OperatorsService', () => {
         });
       });
 
-      it('OPERADOR NO ve el rut (omit)', async () => {
-        findMany.mockResolvedValue([]);
-
-        await service.findAll({}, buildSession('OPERADOR'));
-
-        expect(findMany).toHaveBeenCalledWith({
-          where: {},
-          orderBy: { name: 'asc' },
-          omit: { rut: true },
-        });
-      });
-
       it('MANTENEDOR NO ve el rut (omit)', async () => {
         findMany.mockResolvedValue([]);
 
@@ -161,10 +149,10 @@ describe('OperatorsService', () => {
       expect(findUnique).toHaveBeenCalledWith({ where: { id: 'op_1' } });
     });
 
-    it('OPERADOR/MANTENEDOR no ven rut vía findOne', async () => {
+    it('MANTENEDOR no ve rut vía findOne', async () => {
       findUnique.mockResolvedValue({ id: 'op_1', name: 'X' });
 
-      await service.findOne('op_1', buildSession('OPERADOR'));
+      await service.findOne('op_1', buildSession('MANTENEDOR'));
 
       expect(findUnique).toHaveBeenCalledWith({
         where: { id: 'op_1' },
@@ -184,7 +172,7 @@ describe('OperatorsService', () => {
       findUnique.mockResolvedValue(null);
 
       await expect(
-        service.findOne('missing', buildSession('OPERADOR')),
+        service.findOne('missing', buildSession('MANTENEDOR')),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
@@ -311,6 +299,40 @@ describe('OperatorsService', () => {
         id: 'op_1',
         name: 'Patricio Rojas',
         _count: { horometros: 3 },
+      });
+
+      expect.assertions(1);
+      try {
+        await service.remove('op_1');
+      } catch (error: unknown) {
+        const response = (error as ConflictException).getResponse();
+        expect(response).toMatchObject({ code: 'OPERATOR_IN_USE' });
+      }
+    });
+
+    // RFC Supervisión en Terreno, anexo "el operador deja de ser usuario de
+    // la plataforma": `Equipment.currentOperatorId` es FK real a `Operator`
+    // (`onDelete: SetNull`) — un borrado físico dejaría el equipo sin
+    // operador de forma silenciosa, así que se bloquea igual que con
+    // `horometros`.
+    it('bloquea el borrado si el operador está asignado a un equipo (currentOperatorId)', async () => {
+      findUnique.mockResolvedValue({
+        id: 'op_1',
+        name: 'Patricio Rojas',
+        _count: { horometros: 0, assignedEquipment: 1 },
+      });
+
+      await expect(service.remove('op_1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(deleteFn).not.toHaveBeenCalled();
+    });
+
+    it('el 409 por asignación de equipo trae code OPERATOR_IN_USE en el body', async () => {
+      findUnique.mockResolvedValue({
+        id: 'op_1',
+        name: 'Patricio Rojas',
+        _count: { horometros: 0, assignedEquipment: 2 },
       });
 
       expect.assertions(1);

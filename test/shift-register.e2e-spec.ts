@@ -298,7 +298,7 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
   let adminAgent: SupertestAgent;
   let supervisorAgent: SupertestAgent;
   let supervisorBAgent: SupertestAgent;
-  let operadorAgent: SupertestAgent;
+  let mantenedorAgent: SupertestAgent;
 
   let supervisorAUserId: string;
   let supervisorBUserId: string;
@@ -347,7 +347,11 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
       'supervisor@smi.local',
       SEED_PASSWORD,
     );
-    operadorAgent = await loginAgent(app, 'operador@smi.local', SEED_PASSWORD);
+    mantenedorAgent = await loginAgent(
+      app,
+      'mantenedor@smi.local',
+      SEED_PASSWORD,
+    );
 
     const [supervisorAUser, adminUser] = await Promise.all([
       prisma.user.findUniqueOrThrow({
@@ -964,9 +968,9 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
     });
   });
 
-  describe('8) Rol OPERADOR — sin acceso', () => {
+  describe('8) Rol MANTENEDOR — sin acceso', () => {
     it('POST /api/shift-cards -> 403', async () => {
-      await operadorAgent
+      await mantenedorAgent
         .post('/api/shift-cards')
         .send({
           id: randomUUID(),
@@ -981,7 +985,7 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
     });
 
     it('POST /api/shift-reports -> 403', async () => {
-      await operadorAgent
+      await mantenedorAgent
         .post('/api/shift-reports')
         .send({
           id: randomUUID(),
@@ -991,6 +995,110 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
           requestedAt: new Date().toISOString(),
         })
         .expect(403);
+    });
+
+    it('POST /api/equipment -> 403', async () => {
+      await mantenedorAgent
+        .post('/api/equipment')
+        .send(baseEquipmentPayload(internalCode('MANTENEDOR')))
+        .expect(403);
+    });
+  });
+
+  describe('9) PATCH /api/equipment/:id/assignment — operadores del catálogo', () => {
+    let equipo: EquipmentData;
+    let operadorActivoId: string;
+    let operadorInactivoId: string;
+    const operadoresParaLimpiar: string[] = [];
+
+    it('crea el equipo y los operadores fresh para este flujo', async () => {
+      const response = await adminAgent
+        .post('/api/equipment')
+        .send(baseEquipmentPayload(internalCode('ASIGNACION')))
+        .expect(201);
+      equipo = (response.body as ApiEnvelope<EquipmentData>).data;
+      createdEquipmentIds.push(equipo.id);
+
+      const activoResponse = await adminAgent
+        .post('/api/operators')
+        .send({ name: `Operador Activo E2E ${RUN_ID}` })
+        .expect(201);
+      operadorActivoId = (activoResponse.body as ApiEnvelope<OperatorData>).data
+        .id;
+      operadoresParaLimpiar.push(operadorActivoId);
+
+      const inactivoResponse = await adminAgent
+        .post('/api/operators')
+        .send({ name: `Operador Inactivo E2E ${RUN_ID}`, isActive: false })
+        .expect(201);
+      operadorInactivoId = (inactivoResponse.body as ApiEnvelope<OperatorData>)
+        .data.id;
+      operadoresParaLimpiar.push(operadorInactivoId);
+    });
+
+    it('asigna un operador ACTIVO del catálogo -> 200 con {operator:{id,name}, inUse:true}', async () => {
+      const response = await supervisorAgent
+        .patch(`/api/equipment/${equipo.id}/assignment`)
+        .send({ operatorId: operadorActivoId })
+        .expect(200);
+      const data = (response.body as ApiEnvelope<EquipmentData>).data;
+
+      expect(data.operator).toMatchObject({ id: operadorActivoId });
+      expect(data.inUse).toBe(true);
+    });
+
+    it('asignar un operador INACTIVO -> 409 OPERATOR_INACTIVE', async () => {
+      const response = await supervisorAgent
+        .patch(`/api/equipment/${equipo.id}/assignment`)
+        .send({ operatorId: operadorInactivoId })
+        .expect(409);
+
+      expect((response.body as ErrorEnvelope).code).toBe('OPERATOR_INACTIVE');
+    });
+
+    it('asignar un id de USER (no de Operator) -> 404', async () => {
+      await supervisorAgent
+        .patch(`/api/equipment/${equipo.id}/assignment`)
+        .send({ operatorId: adminUserId })
+        .expect(404);
+    });
+
+    it('liberar con null -> inUse false', async () => {
+      const response = await supervisorAgent
+        .patch(`/api/equipment/${equipo.id}/assignment`)
+        .send({ operatorId: null })
+        .expect(200);
+      const data = (response.body as ApiEnvelope<EquipmentData>).data;
+
+      expect(data.operator).toBeNull();
+      expect(data.inUse).toBe(false);
+    });
+
+    it('borrar un operador ASIGNADO a un equipo -> 409 OPERATOR_IN_USE', async () => {
+      await supervisorAgent
+        .patch(`/api/equipment/${equipo.id}/assignment`)
+        .send({ operatorId: operadorActivoId })
+        .expect(200);
+
+      const response = await adminAgent
+        .delete(`/api/operators/${operadorActivoId}`)
+        .expect(409);
+
+      expect((response.body as ErrorEnvelope).code).toBe('OPERATOR_IN_USE');
+
+      // Desasigna para poder limpiar el operador en el afterAll de esta
+      // sección, siguiendo el mismo patrón "vía API real" del resto del
+      // archivo.
+      await supervisorAgent
+        .patch(`/api/equipment/${equipo.id}/assignment`)
+        .send({ operatorId: null })
+        .expect(200);
+    });
+
+    afterAll(async () => {
+      for (const idParaBorrar of operadoresParaLimpiar) {
+        await adminAgent.delete(`/api/operators/${idParaBorrar}`).expect(200);
+      }
     });
   });
 });

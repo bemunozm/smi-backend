@@ -7,8 +7,8 @@ import {
 import { EquipmentStatus, Prisma } from '@prisma/client';
 
 import { ROLES } from '../auth/roles';
-import type { Role } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { buildDocumentExpiryInfo } from './document-expiry';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
@@ -34,10 +34,14 @@ const ESTADOS: readonly EquipmentStatus[] = Object.values(EquipmentStatus);
  * `updateAssignment` para poder derivar `currentFuelLevel`: el último
  * `RegistroHorometro` del equipo CON `nivelCombustible` no nulo (`where` +
  * ordenado por fecha desc) — si la lectura más reciente vino sin combustible
- * cargado, no queremos perder el último nivel real conocido. `currentOperatorId`/
- * `currentSupervisorId` son columnas propias de `Equipment` (soft refs a
- * `user.id`, ver `schema.prisma`) — no necesitan `include`, se resuelven
- * aparte con `resolveAssignedUsers` porque NO son una relación Prisma.
+ * cargado, no queremos perder el último nivel real conocido.
+ *
+ * `currentOperator` SÍ es una relación Prisma real (`Operator`, catálogo
+ * propio — RFC Supervisión en Terreno, anexo "el operador deja de ser
+ * usuario de la plataforma") y se trae acá con `include`, `{id,name}` nomás.
+ * `currentSupervisorId` sigue siendo un soft ref a `user.id` (sin FK, ver
+ * `schema.prisma`) — se resuelve aparte con `resolveAssignedUsers` porque NO
+ * es una relación Prisma.
  */
 export const EQUIPMENT_USAGE_INCLUDE = {
   horometros: {
@@ -45,6 +49,9 @@ export const EQUIPMENT_USAGE_INCLUDE = {
     orderBy: { fecha: 'desc' as const },
     take: 1,
     select: { nivelCombustible: true },
+  },
+  currentOperator: {
+    select: { id: true, name: true },
   },
 } satisfies Prisma.EquipmentInclude;
 
@@ -79,6 +86,10 @@ export interface OpenShiftSummary {
 
 /** Campos que `findAll`/`findOne`/`updateAssignment` agregan a la ficha cruda de Prisma. */
 export interface EquipmentUsageFields {
+  /** `{id,name}` del `Operator` del catálogo (relación Prisma real, via
+   * `EQUIPMENT_USAGE_INCLUDE.currentOperator`) — se muestra igual aunque el
+   * operador esté `isActive: false` (la FK no filtra por eso; solo
+   * `updateAssignment` exige activo AL ASIGNAR, no al leer). */
   operator: AssignedUserSummary | null;
   supervisor: AssignedUserSummary | null;
   /** Derivado — NO es columna: `!!currentOperatorId`. */
@@ -120,6 +131,7 @@ export class EquipmentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly operators: OperatorsService,
   ) {}
 
   async findAll(filtros: QueryEquipmentDto) {
@@ -328,21 +340,32 @@ export class EquipmentService {
    * Asigna/libera la asignación de uso ACTUAL del equipo (operador +
    * supervisor a cargo ahora mismo — NO historial de sesiones). Cada campo es
    * independiente: `undefined` (propiedad omitida) deja esa asignación
-   * intacta, `null` explícito la libera, un id la reemplaza — previa
-   * validación de que el usuario existe y tiene el rol correspondiente, para
-   * que el listado ("en uso por…") nunca muestre a alguien con el rol
-   * equivocado.
+   * intacta, `null` explícito la libera, un id la reemplaza.
+   *
+   * `operatorId` valida contra el catálogo propio (`OperatorsService.
+   * assertActive` — 404 si no existe, 409 `OPERATOR_INACTIVE` si existe pero
+   * está dado de baja; un id de `user` en vez de `Operator` también da 404,
+   * porque son tablas distintas). `supervisorId` sigue validando contra
+   * `user` con `assertSupervisor` (rol SUPERVISOR, no baneado) — el
+   * supervisor SÍ es un usuario de la plataforma (RFC Supervisión en
+   * Terreno, anexo "el operador deja de ser usuario de la plataforma").
    */
   async updateAssignment(id: string, dto: UpdateEquipmentAssignmentDto) {
     await this.assertExiste(id);
 
-    const data: Prisma.EquipmentUpdateInput = {};
+    // `Unchecked`, no `EquipmentUpdateInput`: desde que `currentOperatorId`
+    // tiene una relación Prisma real (`currentOperator`), el input
+    // "checked" ya no expone el escalar FK directo (solo `connect`/
+    // `disconnect` vía `currentOperator`) — `currentSupervisorId` (soft ref
+    // sin relación) sí seguía admitiéndolo. `Unchecked` mantiene ambos como
+    // escalares planos, igual que el resto de este service.
+    const data: Prisma.EquipmentUncheckedUpdateInput = {};
 
     if (dto.operatorId !== undefined) {
       if (dto.operatorId === null) {
         data.currentOperatorId = null;
       } else {
-        await this.assertUserWithRole(dto.operatorId, ROLES.OPERADOR);
+        await this.operators.assertActive(dto.operatorId);
         data.currentOperatorId = dto.operatorId;
       }
     }
@@ -351,7 +374,7 @@ export class EquipmentService {
       if (dto.supervisorId === null) {
         data.currentSupervisorId = null;
       } else {
-        await this.assertUserWithRole(dto.supervisorId, ROLES.SUPERVISOR);
+        await this.assertSupervisor(dto.supervisorId);
         data.currentSupervisorId = dto.supervisorId;
       }
     }
@@ -440,31 +463,37 @@ export class EquipmentService {
 
   /**
    * Agrega `operator`/`supervisor`/`inUse`/`currentFuelLevel`/`openShift`/
-   * `documentsAlert` a cada fila cruda de Prisma. Resuelve los usuarios
-   * asignados, los turnos abiertos y la alerta de documentos con UNA consulta
-   * batch cada uno (no N+1): junta los ids de toda la lista y arma el mapa de
-   * vuelta — mismo patrón que `resolveAssignedUsers`.
+   * `documentsAlert` a cada fila cruda de Prisma. `operator` ya viene resuelto
+   * en `equipo.currentOperator` (relación Prisma, `EQUIPMENT_USAGE_INCLUDE`)
+   * — solo `supervisor` necesita una consulta batch aparte (soft ref a
+   * `user.id`, sin FK), junto con los turnos abiertos y la alerta de
+   * documentos (UNA consulta batch cada uno, no N+1) — mismo patrón que
+   * `resolveAssignedUsers`.
    */
   private async withUsageFields<
     T extends {
       id: string;
       currentOperatorId: string | null;
+      currentOperator: AssignedUserSummary | null;
       currentSupervisorId: string | null;
       photoKey: string | null;
       horometros: ReadonlyArray<{ nivelCombustible: number | null }>;
     },
   >(
     equipos: readonly T[],
-  ): Promise<Array<Omit<T, 'horometros' | 'photoKey'> & EquipmentUsageFields>> {
+  ): Promise<
+    Array<
+      Omit<T, 'horometros' | 'photoKey' | 'currentOperator'> &
+        EquipmentUsageFields
+    >
+  > {
     const [
-      usuariosPorId,
+      supervisoresPorId,
       turnosAbiertosPorEquipo,
       alertasPorEquipo,
       photoUrlsPorEquipo,
     ] = await Promise.all([
-      this.resolveAssignedUsers(
-        equipos.flatMap((e) => [e.currentOperatorId, e.currentSupervisorId]),
-      ),
+      this.resolveAssignedUsers(equipos.map((e) => e.currentSupervisorId)),
       this.resolveOpenShifts(equipos.map((e) => e.id)),
       this.resolveDocumentsAlerts(equipos.map((e) => e.id)),
       this.resolvePhotoUrls(equipos),
@@ -472,7 +501,7 @@ export class EquipmentService {
     return equipos.map((equipo) =>
       this.shapeUsage(
         equipo,
-        usuariosPorId,
+        supervisoresPorId,
         turnosAbiertosPorEquipo,
         alertasPorEquipo,
         photoUrlsPorEquipo,
@@ -484,20 +513,23 @@ export class EquipmentService {
     T extends {
       id: string;
       currentOperatorId: string | null;
+      currentOperator: AssignedUserSummary | null;
       currentSupervisorId: string | null;
       photoKey: string | null;
       horometros: ReadonlyArray<{ nivelCombustible: number | null }>;
     },
   >(
     equipo: T,
-    usuariosPorId: ReadonlyMap<string, AssignedUserSummary>,
+    supervisoresPorId: ReadonlyMap<string, AssignedUserSummary>,
     turnosAbiertosPorEquipo: ReadonlyMap<string, OpenShiftSummary>,
     alertasPorEquipo: ReadonlyMap<string, DocumentsAlert>,
     photoUrlsPorEquipo: ReadonlyMap<string, string | null>,
-  ): Omit<T, 'horometros' | 'photoKey'> & EquipmentUsageFields {
+  ): Omit<T, 'horometros' | 'photoKey' | 'currentOperator'> &
+    EquipmentUsageFields {
     const {
       horometros,
       currentOperatorId,
+      currentOperator,
       currentSupervisorId,
       photoKey,
       ...resto
@@ -506,18 +538,17 @@ export class EquipmentService {
       ...resto,
       currentOperatorId,
       currentSupervisorId,
-      operator: currentOperatorId
-        ? (usuariosPorId.get(currentOperatorId) ?? null)
-        : null,
+      operator: currentOperator ?? null,
       supervisor: currentSupervisorId
-        ? (usuariosPorId.get(currentSupervisorId) ?? null)
+        ? (supervisoresPorId.get(currentSupervisorId) ?? null)
         : null,
       inUse: currentOperatorId != null,
       currentFuelLevel: horometros[0]?.nivelCombustible ?? null,
       openShift: turnosAbiertosPorEquipo.get(equipo.id) ?? null,
       documentsAlert: alertasPorEquipo.get(equipo.id) ?? null,
       photoUrl: photoKey ? (photoUrlsPorEquipo.get(equipo.id) ?? null) : null,
-    } as Omit<T, 'horometros' | 'photoKey'> & EquipmentUsageFields;
+    } as Omit<T, 'horometros' | 'photoKey' | 'currentOperator'> &
+      EquipmentUsageFields;
   }
 
   /**
@@ -544,12 +575,16 @@ export class EquipmentService {
   }
 
   /**
-   * `{id,name}` de los usuarios asignados, en UNA consulta batch. Devuelve
-   * mapa vacío sin consultar si no hay ningún id (caso común: ningún equipo
-   * "en uso" en la página). `currentOperatorId`/`currentSupervisorId` son
-   * soft refs sin FK (ver `schema.prisma`) — un id sin fila en `user` (dato
-   * huérfano) simplemente no aparece en el mapa y `shapeUsage` lo trata como
-   * `null`, en vez de reventar la respuesta completa.
+   * `{id,name}` de usuarios (`user.id`), en UNA consulta batch. Devuelve mapa
+   * vacío sin consultar si no hay ningún id (caso común: ningún equipo "en
+   * uso" en la página). Usado para `currentSupervisorId` (`shapeUsage`) y
+   * para el `supervisorId` de la tarjeta abierta (`resolveOpenShifts`) — NO
+   * para `currentOperatorId`, que desde el anexo "el operador deja de ser
+   * usuario de la plataforma" se resuelve vía la relación Prisma
+   * `currentOperator` (`EQUIPMENT_USAGE_INCLUDE`), no acá. `user.id` sigue
+   * siendo soft ref sin FK (ver `schema.prisma`) — un id sin fila en `user`
+   * (dato huérfano) simplemente no aparece en el mapa y el caller lo trata
+   * como `null`, en vez de reventar la respuesta completa.
    */
   private async resolveAssignedUsers(
     ids: ReadonlyArray<string | null>,
@@ -658,16 +693,19 @@ export class EquipmentService {
   }
 
   /**
-   * Valida, para `updateAssignment`, que el usuario exista y tenga
-   * exactamente el rol esperado (OPERADOR para `operatorId`, SUPERVISOR para
-   * `supervisorId`) — sin esto, el listado "en uso por" podría mostrar a un
-   * ADMIN o MANTENEDOR como si estuviera operando la máquina. Tampoco admite
-   * un usuario BANEADO (mismo criterio `banned: { not: true }` que
-   * `UsersService.findByRole`, que alimenta el picker): sin este chequeo,
-   * un `PATCH :id/assignment` que mande el id directo (sin pasar por el
-   * picker) podía asignar a alguien baneado igual.
+   * Valida, para `updateAssignment`, que el `supervisorId` exista y tenga
+   * exactamente el rol SUPERVISOR — sin esto, el listado "en uso por" podría
+   * mostrar a un ADMIN o MANTENEDOR como si estuviera a cargo de la
+   * cuadrilla. Tampoco admite un usuario BANEADO (mismo criterio `banned: {
+   * not: true }` que `UsersService.findByRole`, que alimenta el picker): sin
+   * este chequeo, un `PATCH :id/assignment` que mande el id directo (sin
+   * pasar por el picker) podía asignar a alguien baneado igual. El operador
+   * ya NO pasa por acá — `updateAssignment` valida `operatorId` contra el
+   * catálogo con `OperatorsService.assertActive` (RFC Supervisión en
+   * Terreno, anexo "el operador deja de ser usuario de la plataforma"), sin
+   * `role` param: solo hay un rol posible para este chequeo.
    */
-  private async assertUserWithRole(userId: string, role: Role): Promise<void> {
+  private async assertSupervisor(userId: string): Promise<void> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, role: true, banned: true },
@@ -675,9 +713,9 @@ export class EquipmentService {
     if (!user) {
       throw new BadRequestException(`El usuario "${userId}" no existe`);
     }
-    if (user.role !== role) {
+    if (user.role !== ROLES.SUPERVISOR) {
       throw new BadRequestException(
-        `El usuario "${userId}" no tiene el rol ${role}`,
+        `El usuario "${userId}" no tiene el rol ${ROLES.SUPERVISOR}`,
       );
     }
     if (user.banned) {

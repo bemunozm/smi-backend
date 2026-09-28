@@ -131,8 +131,11 @@ export class UpdateEquipmentStatusDto {
  * Ambos campos son independientes: omitir la propiedad deja esa asignación
  * intacta; `null` explícito la libera (mismo criterio `@IsOptional()` +
  * ensanchar el tipo que el resto del DTO — ver comentario de `licensePlate`).
- * El `EquipmentService` valida que el usuario exista y tenga el rol
- * correspondiente (OPERADOR / SUPERVISOR) antes de guardar.
+ * El `EquipmentService` valida `operatorId` contra el catálogo propio
+ * (`OperatorsService.assertActive` — activo, existe) y `supervisorId` contra
+ * `user` (rol SUPERVISOR, no baneado) antes de guardar — el operador ya NO
+ * es un usuario (RFC Supervisión en Terreno, anexo "el operador deja de ser
+ * usuario de la plataforma").
  */
 export class UpdateEquipmentAssignmentDto {
   @IsOptional()
