@@ -4,18 +4,33 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { OperatorsService } from '../../operators/operators.service';
 import { CreateTrabajoExtraDto } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
 
 @Injectable()
 export class TrabajosExtraService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly operators: OperatorsService,
+  ) {}
 
   async create(dto: CreateTrabajoExtraDto) {
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },
     });
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
+
+    /**
+     * Operador del catálogo — obligatorio (RFC Supervisión en Terreno, Anexo
+     * 2). Se valida justo después del chequeo de equipo (la precondición más
+     * barata primero: un 404 de equipo no debería depender de resolver el
+     * operador) y ANTES de las reglas más caras de abajo (turno en curso,
+     * horómetro, actividades) — así un operador inactivo/inexistente falla
+     * rápido, sin gastar esas otras consultas. `operador` (snapshot) se arma
+     * acá con el nombre del catálogo — el cliente ya no lo manda.
+     */
+    const operator = await this.operators.assertActive(dto.operatorId);
 
     /**
      * Un equipo con turno en curso está **ocupado**: no se le puede cargar un
@@ -83,7 +98,8 @@ export class TrabajosExtraService {
     return this.prisma.trabajoExtraordinario.create({
       data: {
         equipoId: dto.equipoId,
-        operador: dto.operador,
+        operatorId: operator.id,
+        operador: operator.name,
         faena: dto.faena,
         turno: dto.turno,
         horometroInicial: dto.horometroInicial,

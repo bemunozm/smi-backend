@@ -310,6 +310,40 @@ describe('OperatorsService', () => {
       }
     });
 
+    // RFC Supervisión en Terreno, Anexo 2 ("operador del catálogo en
+    // Trabajos extra + snapshot único"): `TrabajoExtraordinario.operatorId`
+    // es FK real a `Operator` (`onDelete: SetNull`, igual que `horometros`)
+    // — un borrado físico dejaría ese historial sin operador de catálogo de
+    // forma silenciosa.
+    it('bloquea el borrado si tiene trabajos extraordinarios asociados', async () => {
+      findUnique.mockResolvedValue({
+        id: 'op_1',
+        name: 'Patricio Rojas',
+        _count: { horometros: 0, trabajosExtra: 2 },
+      });
+
+      await expect(service.remove('op_1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(deleteFn).not.toHaveBeenCalled();
+    });
+
+    it('el 409 por trabajos extra trae code OPERATOR_IN_USE en el body', async () => {
+      findUnique.mockResolvedValue({
+        id: 'op_1',
+        name: 'Patricio Rojas',
+        _count: { horometros: 0, trabajosExtra: 1 },
+      });
+
+      expect.assertions(1);
+      try {
+        await service.remove('op_1');
+      } catch (error: unknown) {
+        const response = (error as ConflictException).getResponse();
+        expect(response).toMatchObject({ code: 'OPERATOR_IN_USE' });
+      }
+    });
+
     // RFC Supervisión en Terreno, anexo "el operador deja de ser usuario de
     // la plataforma": `Equipment.currentOperatorId` es FK real a `Operator`
     // (`onDelete: SetNull`) — un borrado físico dejaría el equipo sin
@@ -319,7 +353,7 @@ describe('OperatorsService', () => {
       findUnique.mockResolvedValue({
         id: 'op_1',
         name: 'Patricio Rojas',
-        _count: { horometros: 0, assignedEquipment: 1 },
+        _count: { horometros: 0, trabajosExtra: 0, assignedEquipment: 1 },
       });
 
       await expect(service.remove('op_1')).rejects.toBeInstanceOf(
@@ -332,7 +366,7 @@ describe('OperatorsService', () => {
       findUnique.mockResolvedValue({
         id: 'op_1',
         name: 'Patricio Rojas',
-        _count: { horometros: 0, assignedEquipment: 2 },
+        _count: { horometros: 0, trabajosExtra: 0, assignedEquipment: 2 },
       });
 
       expect.assertions(1);

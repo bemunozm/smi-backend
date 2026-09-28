@@ -594,11 +594,27 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
     ],
   });
 
+  // RFC Supervisión en Terreno, Anexo 2 ("operador del catálogo en Trabajos
+  // extra + snapshot único"): los trabajos extra sembrados usan operadores
+  // REALES del catálogo — `seedOperators()` corre ANTES que esta función en
+  // `seed()` a propósito, para que estos dos ya existan. `operatorId` +
+  // `operador` = el mismo nombre, igual que arma el SERVIDOR en
+  // `TrabajosExtraService.create` (el cliente ya no manda `operador`).
+  const [trabajoExtraOperador1, trabajoExtraOperador2] = await Promise.all([
+    prismaClient.operator.findFirstOrThrow({
+      where: { name: OPERATOR_NAMES[0] },
+    }),
+    prismaClient.operator.findFirstOrThrow({
+      where: { name: OPERATOR_NAMES[1] },
+    }),
+  ]);
+
   await prismaClient.trabajoExtraordinario.createMany({
     data: [
       {
         equipoId: equipos[2].id,
-        operador: 'Juan Rojas',
+        operatorId: trabajoExtraOperador1.id,
+        operador: trabajoExtraOperador1.name,
         faena: 'Rajo Norte',
         turno: 'DIURNO',
         horometroInicial: 5388,
@@ -611,7 +627,8 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
       },
       {
         equipoId: equipos[5].id,
-        operador: 'Pedro Soto',
+        operatorId: trabajoExtraOperador2.id,
+        operador: trabajoExtraOperador2.name,
         faena: 'Rajo Sur',
         turno: 'NOCTURNO',
         horometroInicial: 3292,
@@ -804,8 +821,11 @@ async function seed(): Promise<void> {
     branches,
     categories,
   );
-  await seedTerreno(equipos);
+  // `seedOperators()` ANTES que `seedTerreno(equipos)` (RFC Supervisión en
+  // Terreno, Anexo 2): los trabajos extra sembrados ahora referencian
+  // operadores del catálogo, así que el catálogo tiene que existir primero.
   await seedOperators();
+  await seedTerreno(equipos);
 
   // Primer nombre de `OPERATOR_NAMES` — cualquiera del catálogo sirve para
   // la demo de "en uso" de Flota.

@@ -749,6 +749,11 @@ model Operator {
   /// plataforma") — inverso de la FK real agregada en esa migración.
   assignedEquipment Equipment[]
 
+  /// Trabajos extraordinarios asignados a este operador del catálogo (RFC
+  /// Supervisión en Terreno, Anexo 2 "operador del catálogo en Trabajos
+  /// extra") — inverso de `TrabajoExtraordinario.operatorId`.
+  trabajosExtra TrabajoExtraordinario[]
+
   @@map("operator")
 }
 
@@ -756,7 +761,19 @@ model TrabajoExtraordinario {
   id               String    @id @default(cuid())
   equipoId         String    @map("equipo_id")
   equipo           Equipment @relation(fields: [equipoId], references: [id])
-  operador         String
+  operador         String // nombre y apellido — snapshot armado por el SERVIDOR; ver `operatorId` para el catálogo
+  /// Operador del catálogo propio (`Operator`), aditivo sobre `operador`
+  /// (que se mantiene como snapshot de texto, igual que en `RegistroHorometro`
+  /// — el nombre no cambia con retroactividad si el operador se renombra o
+  /// desactiva después). Nullable por las filas legacy (texto libre sin match
+  /// determinístico en el catálogo, ver migración de backfill); para las
+  /// filas NUEVAS es obligatorio a nivel de servicio
+  /// (`CreateTrabajoExtraDto.operatorId`) — el cliente ya no puede mandar
+  /// `operador` directamente (RFC Supervisión en Terreno, Anexo 2). `SetNull`:
+  /// borrar/desactivar un operador no debe borrar el historial de trabajos
+  /// que lo referencian.
+  operatorId       String?   @map("operator_id")
+  operator         Operator? @relation(fields: [operatorId], references: [id], onDelete: SetNull)
   faena            String
   turno            String // DIURNO | NOCTURNO
   horometroInicial Float
@@ -775,6 +792,8 @@ model TrabajoExtraordinario {
   descripcion      String
   observaciones    String?
   fecha            DateTime  @default(now())
+
+  @@index([operatorId])
 }
 
 model Hallazgo {

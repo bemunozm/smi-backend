@@ -1,0 +1,330 @@
+/**
+ * Gate e2e de Trabajos extra (RFC "Supervisión en Terreno", Anexo 2:
+ * "operador del catálogo en Trabajos extra + snapshot único") — ejercita el
+ * contrato de `POST /api/trabajos-extra` contra una app Nest real (mismo
+ * pipeline que `main.ts`, vía `configureApp`) y Postgres REAL (sin mocks):
+ * operador del catálogo obligatorio, snapshot armado por el servidor, y la
+ * guarda de borrado de `OperatorsService.remove` cuando el operador tiene
+ * trabajos extra asociados.
+ *
+ * Solo necesita Postgres (a diferencia de `shift-register.e2e-spec.ts`):
+ * Trabajos extra no sube fotos, así que no hay dependencia de MinIO — mismo
+ * chequeo TCP crudo que usa ese archivo para Postgres, pero sin el chequeo
+ * de MinIO.
+ *
+ * Equipos/operadores: SIEMPRE creados frescos por el test (nunca sembrados)
+ * — así un rerun no choca con estado de una corrida anterior. Mismo patrón
+ * que `shift-register.e2e-spec.ts` (`RUN_ID`, agentes logueados vía
+ * `POST /api/auth/sign-in/email`).
+ *
+ * Se salta completo (`describe.skip`) si Postgres no está arriba — mismo
+ * patrón síncrono que el resto de los e2e del proyecto.
+ */
+import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+
+/** Chequeo TCP crudo — mismo patrón que `shift-register.e2e-spec.ts`. */
+function isPostgresReachable(): boolean {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      "const net=require('net');const s=net.createConnection({host:'localhost',port:5434},()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));s.setTimeout(3000,()=>{s.destroy();process.exit(1)});",
+    ],
+    { timeout: 5000 },
+  );
+  return result.status === 0;
+}
+
+const postgresReachable = isPostgresReachable();
+
+const maybeDescribe = postgresReachable ? describe : describe.skip;
+
+if (!postgresReachable) {
+  console.warn(
+    'trabajos-extra.e2e-spec: SALTEADO (Postgres reachable=false) — levantar con ' +
+      '"docker compose up -d smi-postgres"',
+  );
+}
+
+import { Test, TestingModule } from '@nestjs/testing';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import request from 'supertest';
+import { ControlUnit, EquipmentClass } from '@prisma/client';
+
+import { AppModule } from '../src/app.module';
+import { configureApp, NEST_APP_CREATE_OPTIONS } from '../src/app.setup';
+import { PrismaService } from '../src/common/prisma/prisma.service';
+import { env } from '../src/common/config/env';
+
+const SEED_PASSWORD = 'Smi123456!';
+type SupertestAgent = ReturnType<typeof request.agent>;
+
+interface ApiEnvelope<T> {
+  data: T;
+  message: string;
+}
+interface ErrorEnvelope {
+  data: null;
+  message: string;
+  code?: string;
+}
+interface OperatorData {
+  id: string;
+  name: string;
+  isActive: boolean;
+  [key: string]: unknown;
+}
+interface EquipmentData {
+  id: string;
+  internalCode: string;
+  [key: string]: unknown;
+}
+interface TrabajoExtraData {
+  id: string;
+  equipoId: string;
+  operatorId: string | null;
+  operador: string;
+  faena: string;
+  turno: string;
+  totalHoras: number;
+  [key: string]: unknown;
+}
+interface CreateEquipmentPayload {
+  internalCode: string;
+  equipmentClass: EquipmentClass;
+  type: string;
+  brand: string;
+  model: string;
+  controlUnit: ControlUnit;
+  [key: string]: unknown;
+}
+
+async function loginAgent(
+  app: NestExpressApplication,
+  email: string,
+  password: string,
+): Promise<SupertestAgent> {
+  const agent = request.agent(app.getHttpServer());
+  const response = await agent
+    .post('/api/auth/sign-in/email')
+    .set('Origin', env.frontendUrl)
+    .send({ email, password });
+  if (response.status !== 200) {
+    throw new Error(
+      `No se pudo iniciar sesión como "${email}": ${response.status} ` +
+        JSON.stringify(response.body),
+    );
+  }
+  return agent;
+}
+
+function baseEquipmentPayload(internalCode: string): CreateEquipmentPayload {
+  return {
+    internalCode,
+    equipmentClass: EquipmentClass.HEAVY,
+    type: 'Excavadora',
+    brand: 'Caterpillar',
+    model: '320',
+    controlUnit: ControlUnit.HOURS,
+  };
+}
+
+maybeDescribe('Trabajos extra — operador del catálogo (e2e)', () => {
+  jest.setTimeout(30_000);
+
+  let app: NestExpressApplication;
+  let prisma: PrismaService;
+
+  let adminAgent: SupertestAgent;
+  let supervisorAgent: SupertestAgent;
+  let mantenedorAgent: SupertestAgent;
+
+  // `internalCode` tiene @MaxLength(20) — "TX-" (3) + RUN_ID (5) + "-" (1) =
+  // 9 chars fijos, deja 11 para el sufijo.
+  const RUN_ID = randomUUID().slice(0, 5);
+  const internalCode = (suffix: string) => `TX-${RUN_ID}-${suffix}`;
+
+  const createdEquipmentIds: string[] = [];
+  const createdOperatorIds: string[] = [];
+
+  function baseTrabajoExtraPayload(
+    equipoId: string,
+    operatorId: string,
+  ): Record<string, unknown> {
+    return {
+      equipoId,
+      operatorId,
+      faena: 'Rajo Norte',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      actividades: ['REGULACION_CARGA'],
+      descripcion: 'Carga de material (e2e)',
+    };
+  }
+
+  async function createFreshEquipo(suffix: string): Promise<EquipmentData> {
+    const response = await adminAgent
+      .post('/api/equipment')
+      .send(baseEquipmentPayload(internalCode(suffix)))
+      .expect(201);
+    const equipo = (response.body as ApiEnvelope<EquipmentData>).data;
+    createdEquipmentIds.push(equipo.id);
+    return equipo;
+  }
+
+  async function createOperator(
+    name: string,
+    isActive = true,
+  ): Promise<OperatorData> {
+    const response = await adminAgent
+      .post('/api/operators')
+      .send({ name, isActive })
+      .expect(201);
+    const operator = (response.body as ApiEnvelope<OperatorData>).data;
+    createdOperatorIds.push(operator.id);
+    return operator;
+  }
+
+  beforeAll(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication<NestExpressApplication>(
+      NEST_APP_CREATE_OPTIONS,
+    );
+    configureApp(app);
+    await app.init();
+
+    prisma = app.get(PrismaService);
+
+    adminAgent = await loginAgent(app, 'admin@smi.local', SEED_PASSWORD);
+    supervisorAgent = await loginAgent(
+      app,
+      'supervisor@smi.local',
+      SEED_PASSWORD,
+    );
+    mantenedorAgent = await loginAgent(
+      app,
+      'mantenedor@smi.local',
+      SEED_PASSWORD,
+    );
+  });
+
+  afterAll(async () => {
+    if (createdEquipmentIds.length > 0) {
+      await prisma.trabajoExtraordinario.deleteMany({
+        where: { equipoId: { in: createdEquipmentIds } },
+      });
+      await prisma.equipment.deleteMany({
+        where: { id: { in: createdEquipmentIds } },
+      });
+    }
+    for (const operatorId of createdOperatorIds) {
+      // Puede seguir 409 OPERATOR_IN_USE si un test de la sección de borrado
+      // no alcanzó a limpiar el trabajo extra que lo referencia — best
+      // effort, no debe tumbar el afterAll de todo el archivo.
+      await adminAgent.delete(`/api/operators/${operatorId}`).catch(() => {
+        /* best effort */
+      });
+    }
+
+    await app.close();
+  });
+
+  describe('POST /api/trabajos-extra — operador del catálogo', () => {
+    let equipo: EquipmentData;
+    let operadorActivo: OperatorData;
+    let operadorInactivo: OperatorData;
+
+    it('crea el equipo y los operadores frescos para este flujo', async () => {
+      equipo = await createFreshEquipo('CREATE');
+      operadorActivo = await createOperator(`Operador Activo E2E ${RUN_ID}`);
+      operadorInactivo = await createOperator(
+        `Operador Inactivo E2E ${RUN_ID}`,
+        false,
+      );
+    });
+
+    it('crea con un operador del catálogo -> 201 y operador = nombre del catálogo', async () => {
+      const response = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(baseTrabajoExtraPayload(equipo.id, operadorActivo.id))
+        .expect(201);
+
+      const data = (response.body as ApiEnvelope<TrabajoExtraData>).data;
+      expect(data.operatorId).toBe(operadorActivo.id);
+      expect(data.operador).toBe(operadorActivo.name);
+    });
+
+    it('un operador INACTIVO -> 409 OPERATOR_INACTIVE', async () => {
+      const response = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(baseTrabajoExtraPayload(equipo.id, operadorInactivo.id))
+        .expect(409);
+
+      expect((response.body as ErrorEnvelope).code).toBe('OPERATOR_INACTIVE');
+    });
+
+    it('un operatorId inexistente -> 404', async () => {
+      await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(baseTrabajoExtraPayload(equipo.id, randomUUID()))
+        .expect(404);
+    });
+
+    it('un body con operador -> 400 (forbidNonWhitelisted)', async () => {
+      await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send({
+          ...baseTrabajoExtraPayload(equipo.id, operadorActivo.id),
+          operador: 'Juan Rojas',
+        })
+        .expect(400);
+    });
+
+    it('sin operatorId -> 400', async () => {
+      const payload = baseTrabajoExtraPayload(equipo.id, operadorActivo.id);
+      delete payload.operatorId;
+      await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(payload)
+        .expect(400);
+    });
+
+    it('MANTENEDOR -> 403', async () => {
+      await mantenedorAgent
+        .post('/api/trabajos-extra')
+        .send(baseTrabajoExtraPayload(equipo.id, operadorActivo.id))
+        .expect(403);
+    });
+  });
+
+  describe('borrar un operador con trabajos extra asociados', () => {
+    it('crea equipo + operador, un trabajo extra, y bloquea el borrado -> 409 OPERATOR_IN_USE', async () => {
+      const equipo = await createFreshEquipo('DELETE');
+      const operador = await createOperator(
+        `Operador Con Historial E2E ${RUN_ID}`,
+      );
+
+      await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(baseTrabajoExtraPayload(equipo.id, operador.id))
+        .expect(201);
+
+      const response = await adminAgent
+        .delete(`/api/operators/${operador.id}`)
+        .expect(409);
+      expect((response.body as ErrorEnvelope).code).toBe('OPERATOR_IN_USE');
+
+      // Desactivarlo SÍ debe seguir permitido — es el camino recomendado en
+      // vez del borrado físico.
+      await adminAgent
+        .patch(`/api/operators/${operador.id}`)
+        .send({ isActive: false })
+        .expect(200);
+    });
+  });
+});

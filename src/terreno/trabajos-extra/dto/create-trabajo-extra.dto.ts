@@ -2,6 +2,7 @@ import {
   ArrayNotEmpty,
   IsArray,
   IsIn,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -24,8 +25,17 @@ export class CreateTrabajoExtraDto {
   @IsString()
   equipoId!: string;
 
+  /**
+   * Operador del catálogo propio (`Operator`) — OBLIGATORIO (RFC Supervisión
+   * en Terreno, Anexo 2 "operador del catálogo en Trabajos extra + snapshot
+   * único"). `operador` YA NO se recibe acá: el servicio lo arma desde
+   * `OperatorsService.assertActive(operatorId).name`, nunca desde texto que
+   * mande el cliente. Con `forbidNonWhitelisted: true` global, mandar
+   * `operador` en el body ahora es un 400.
+   */
   @IsString()
-  operador!: string;
+  @IsNotEmpty()
+  operatorId!: string;
 
   @IsString()
   faena!: string;
@@ -45,7 +55,7 @@ export class CreateTrabajoExtraDto {
    */
   @IsArray()
   @ArrayNotEmpty({ message: 'Elegí al menos una actividad' })
-  @IsIn(ACTIVIDADES as unknown as string[], { each: true })
+  @IsIn(ACTIVIDADES, { each: true })
   actividades!: string[];
 
   /**

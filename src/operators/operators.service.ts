@@ -114,22 +114,29 @@ export class OperatorsService {
   }
 
   /**
-   * Baja física. Solo se permite si ningún `RegistroHorometro` lo referencia
-   * (histórico de tarjetas) NI ningún `Equipment` lo tiene como operador
-   * ACTUAL (`currentOperatorId`, FK real desde el anexo "el operador deja de
-   * ser usuario de la plataforma"): en ambos casos el FK es `SetNull`, así
-   * que un borrado físico dejaría esos registros/esa asignación sin operador
-   * de catálogo de forma silenciosa. Con historial o asignación vigente, se
-   * sugiere desactivarlo — mismo criterio que `BranchService.remove`. El
-   * `code` en el body de la excepción es el passthrough del filtro global
-   * (ver `HttpExceptionFilter`), para que un caller programático distinga
-   * este 409 de otros sin parsear el mensaje.
+   * Baja física. Solo se permite si ningún `RegistroHorometro` NI ningún
+   * `TrabajoExtraordinario` lo referencia (histórico) NI ningún `Equipment`
+   * lo tiene como operador ACTUAL (`currentOperatorId`, FK real desde el
+   * anexo "el operador deja de ser usuario de la plataforma"): en los tres
+   * casos el FK es `SetNull`, así que un borrado físico dejaría esos
+   * registros/esa asignación sin operador de catálogo de forma silenciosa.
+   * Con historial o asignación vigente, se sugiere desactivarlo — mismo
+   * criterio que `BranchService.remove`. El `code` en el body de la
+   * excepción es el passthrough del filtro global (ver
+   * `HttpExceptionFilter`), para que un caller programático distinga este
+   * 409 de otros sin parsear el mensaje.
    */
   async remove(id: string): Promise<void> {
     const operator = await this.prisma.operator.findUnique({
       where: { id },
       include: {
-        _count: { select: { horometros: true, assignedEquipment: true } },
+        _count: {
+          select: {
+            horometros: true,
+            trabajosExtra: true,
+            assignedEquipment: true,
+          },
+        },
       },
     });
 
@@ -140,6 +147,13 @@ export class OperatorsService {
     if (operator._count.horometros > 0) {
       throw new ConflictException({
         message: `El operador "${operator.name}" tiene ${operator._count.horometros} registro(s) asociados y no se puede eliminar. Desactívalo (isActive=false) para retirarlo de los selectores conservando la referencia de los registros.`,
+        code: 'OPERATOR_IN_USE',
+      });
+    }
+
+    if (operator._count.trabajosExtra > 0) {
+      throw new ConflictException({
+        message: `El operador "${operator.name}" tiene ${operator._count.trabajosExtra} trabajo(s) extraordinario(s) asociados y no se puede eliminar. Desactívalo (isActive=false) para retirarlo de los selectores conservando la referencia de los registros.`,
         code: 'OPERATOR_IN_USE',
       });
     }
@@ -156,11 +170,13 @@ export class OperatorsService {
 
   /**
    * Valida que el operador exista y esté activo — precondición compartida
-   * por los flujos que abren un turno con operador del catálogo
-   * (`ShiftsService.openCard` y `HorometroService.create` de Flota, RFC
-   * Supervisión en Terreno Fase 2): un operador desactivado no debe poder
-   * quedar asignado a una tarjeta nueva, aunque su historial pasado se
-   * conserve (`onDelete: SetNull`, ver schema). 404 si el id no existe
+   * por los flujos que asignan un operador del catálogo
+   * (`ShiftsService.openCard`, RFC Supervisión en Terreno Fase 2;
+   * `HorometroService.create` de Flota y `TrabajosExtraService.create`,
+   * Anexo 2 "operador del catálogo en Trabajos extra + snapshot único"): un
+   * operador desactivado no debe poder quedar asignado a un registro nuevo,
+   * aunque su historial pasado se conserve (`onDelete: SetNull`, ver
+   * schema). 404 si el id no existe
    * (typo); 409 `OPERATOR_INACTIVE` si existe pero está dado de baja — el
    * `code` es el passthrough del filtro global.
    */
