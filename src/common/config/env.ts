@@ -39,6 +39,8 @@ export interface AppEnv {
   storageRegion: string;
   storageForcePathStyle: boolean;
   storageSignedUrlTtlSeconds: number;
+  shiftReportExtraRecipients: readonly string[];
+  authRateLimitEnabled: boolean;
 }
 
 const MIN_SECRET_LENGTH = 32;
@@ -123,6 +125,25 @@ function parseBoolean(rawValue: string | undefined): boolean {
   return rawValue?.trim().toLowerCase() === 'true';
 }
 
+/**
+ * Info (auditoría de seguridad, prep para la prueba con túnel HTTPS):
+ * `true` por defecto en producción (SECURITY-NOTES.md, M2 — sign-in sin rate
+ * limit), `false` en cualquier otro `NODE_ENV` para no romper el e2e suite,
+ * que hace login muchas veces seguidas. `AUTH_RATE_LIMIT_ENABLED` explícito
+ * en el env SIEMPRE gana sobre el default (permite prender/apagar en
+ * cualquier ambiente, ej. para probar el rate limit en local antes de un
+ * túnel).
+ */
+export function parseAuthRateLimitEnabled(
+  rawValue: string | undefined,
+  defaultsToProduction: boolean = isProduction,
+): boolean {
+  if (rawValue === undefined || rawValue.trim().length === 0) {
+    return defaultsToProduction;
+  }
+  return parseBoolean(rawValue);
+}
+
 /** Igual que `parsePort` pero sin tope de 65535 (es un contador de hilos, no un puerto). */
 function parseOcrThreads(rawValue: string | undefined): number {
   if (rawValue === undefined || rawValue.trim().length === 0) {
@@ -177,6 +198,40 @@ export function parseStorageSignedUrlTtlSeconds(
     );
   }
   return parsed;
+}
+
+// Validación simple de forma (no exhaustiva RFC 5322 a propósito, mismo
+// criterio "suficiente para atrapar un typo" que el resto de este archivo)
+// — fail-fast al arrancar si alguien pega un valor que no es un correo.
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Lista de correos separada por comas — usada por `SHIFT_REPORT_EXTRA_RECIPIENTS`
+ * (RFC Supervisión en Terreno, Fase 3): destinatarios adicionales del PDF de
+ * reporte de salida de turno que NO tienen cuenta en el sistema (ej. Sergio
+ * Torres, del cliente). Vacía por defecto (nadie adicional) — cada entrada se
+ * valida como correo al arrancar, para fallar rápido ante un typo en vez de
+ * descubrirlo recién cuando un envío silencioso "funciona" pero no llega.
+ */
+export function parseEmailList(
+  name: string,
+  rawValue: string | undefined,
+): readonly string[] {
+  if (rawValue === undefined || rawValue.trim().length === 0) {
+    return [];
+  }
+  const emails = rawValue
+    .split(',')
+    .map((email) => email.trim())
+    .filter((email) => email.length > 0);
+  for (const email of emails) {
+    if (!EMAIL_REGEX.test(email)) {
+      throw new Error(
+        `Invalid ${name} env var: "${email}" no es un correo válido`,
+      );
+    }
+  }
+  return emails;
 }
 
 export const env: AppEnv = {
@@ -243,5 +298,15 @@ export const env: AppEnv = {
   ),
   storageSignedUrlTtlSeconds: parseStorageSignedUrlTtlSeconds(
     process.env.STORAGE_SIGNED_URL_TTL_SECONDS,
+  ),
+  // Reporte de salida de turno (RFC Supervisión en Terreno, Fase 3): correos
+  // extra (sin cuenta) que reciben el PDF por email — ver
+  // `NotificationsListener.onShiftExitReportSent`.
+  shiftReportExtraRecipients: parseEmailList(
+    'SHIFT_REPORT_EXTRA_RECIPIENTS',
+    process.env.SHIFT_REPORT_EXTRA_RECIPIENTS,
+  ),
+  authRateLimitEnabled: parseAuthRateLimitEnabled(
+    process.env.AUTH_RATE_LIMIT_ENABLED,
   ),
 };

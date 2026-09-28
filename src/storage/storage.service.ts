@@ -11,6 +11,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleInit,
   ServiceUnavailableException,
   UnsupportedMediaTypeException,
@@ -36,8 +37,11 @@ import { detectFileSignature } from './file-signature';
 import {
   assertOwnedTmpKey,
   buildFinalKey,
+  buildServerFileKey,
   buildTmpKey,
+  SERVER_FILE_KINDS,
   type FileKind,
+  type ServerFileKind,
 } from './storage-keys';
 
 const TMP_CACHE_CONTROL = 'private, max-age=31536000, immutable';
@@ -176,6 +180,73 @@ export class StorageService implements OnModuleInit {
   }
 
   /**
+   * Sube un archivo GENERADO POR EL SERVIDOR (ej. el PDF de reporte de salida
+   * de turno de `ShiftReportsService`) directo a su key final — sin pasar por
+   * `tmp/` ni `claimTmp` (ver `ServerFileKind` en `storage-keys.ts`): el
+   * servidor confía en sus propios bytes, no hace falta el ciclo de reclamo
+   * que sí necesita un archivo subido por un cliente.
+   */
+  async putServerFile(
+    kind: ServerFileKind,
+    buffer: Buffer,
+    opts: { readonly id: string; readonly date?: Date },
+  ): Promise<string> {
+    const key = buildServerFileKey(kind, opts.id, opts.date);
+    try {
+      await this.getClient().send(
+        new PutObjectCommand({
+          Bucket: env.storageBucket,
+          Key: key,
+          Body: buffer,
+          ContentType: SERVER_FILE_KINDS[kind].contentType,
+        }),
+      );
+    } catch (error) {
+      if (this.isNetworkError(error)) {
+        throw new ServiceUnavailableException(
+          'El almacenamiento de archivos no está disponible, intenta de nuevo',
+        );
+      }
+      throw error;
+    }
+    return key;
+  }
+
+  /**
+   * Baja el objeto completo a memoria — a diferencia de `sign()` (nunca
+   * descarga, solo firma una URL), esto SÍ trae los bytes al proceso. Uso
+   * acotado a propósito: hoy solo `NotificationsListener` la usa, para
+   * adjuntar el PDF de un reporte de salida de turno al correo (no hay forma
+   * de "adjuntar una URL firmada" a un email). Nunca usar para archivos de
+   * tamaño no acotado.
+   */
+  async getObjectBuffer(key: string): Promise<Buffer> {
+    let response;
+    try {
+      response = await this.getClient().send(
+        new GetObjectCommand({ Bucket: env.storageBucket, Key: key }),
+      );
+    } catch (error) {
+      if (this.isNoSuchKey(error)) {
+        throw new NotFoundException(
+          'El archivo no existe en el almacenamiento',
+        );
+      }
+      if (this.isNetworkError(error)) {
+        throw new ServiceUnavailableException(
+          'El almacenamiento de archivos no está disponible, intenta de nuevo',
+        );
+      }
+      throw error;
+    }
+    if (!response.Body) {
+      throw new NotFoundException('El archivo no existe en el almacenamiento');
+    }
+    const bytes = await response.Body.transformToByteArray();
+    return Buffer.from(bytes);
+  }
+
+  /**
    * Copia `tmp/<userId>/…` a una key final nueva bajo el prefijo de `kind`.
    * NO borra el tmp (lo limpia el lifecycle a 1 día) — el llamador (servicio
    * de dominio) decide si además hay que borrar una key vieja reemplazada.
@@ -198,9 +269,14 @@ export class StorageService implements OnModuleInit {
       );
     } catch (error) {
       if (this.isNoSuchKey(error)) {
-        throw new BadRequestException(
-          'El archivo temporal expiró o no existe, súbelo de nuevo',
-        );
+        // `code` (RFC Supervisión en Terreno, Fase 2) para que el outbox
+        // offline del front distinga ESTE 400 (hay que volver a subir el
+        // archivo desde el blob local) de cualquier otro 400 de negocio, sin
+        // parsear el mensaje.
+        throw new BadRequestException({
+          message: 'El archivo temporal expiró o no existe, súbelo de nuevo',
+          code: 'TMP_KEY_EXPIRED',
+        });
       }
       throw error;
     }

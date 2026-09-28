@@ -1,6 +1,10 @@
+import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
 import { ROLES } from '../auth/roles';
+import { PrismaService } from '../common/prisma/prisma.service';
+import { MailService } from '../mail/mail.service';
+import { StorageService } from '../storage/storage.service';
 import { NotificationsListener } from './notifications.listener';
 import { NotificationsService } from './notifications.service';
 
@@ -10,6 +14,10 @@ describe('NotificationsListener', () => {
   const createForRoles = jest.fn();
   const createForUser = jest.fn();
   const resolveEquipoId = jest.fn();
+  const notifyRolesWithAttachment = jest.fn();
+  const isConfigured = jest.fn();
+  const getObjectBuffer = jest.fn();
+  const shiftExitReportUpdate = jest.fn();
 
   beforeEach(async () => {
     createForRoles.mockReset().mockResolvedValue([]);
@@ -20,13 +28,30 @@ describe('NotificationsListener', () => {
     resolveEquipoId
       .mockReset()
       .mockImplementation((ref: string | null) => Promise.resolve(ref ?? null));
+    notifyRolesWithAttachment
+      .mockReset()
+      .mockResolvedValue({ recipientCount: 1, allEmailsSent: true });
+    isConfigured.mockReset().mockReturnValue(true);
+    getObjectBuffer.mockReset().mockResolvedValue(Buffer.from('%PDF-1.4'));
+    shiftExitReportUpdate.mockReset().mockResolvedValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         NotificationsListener,
         {
           provide: NotificationsService,
-          useValue: { createForRoles, createForUser, resolveEquipoId },
+          useValue: {
+            createForRoles,
+            createForUser,
+            resolveEquipoId,
+            notifyRolesWithAttachment,
+          },
+        },
+        { provide: MailService, useValue: { isConfigured } },
+        { provide: StorageService, useValue: { getObjectBuffer } },
+        {
+          provide: PrismaService,
+          useValue: { shiftExitReport: { update: shiftExitReportUpdate } },
         },
       ],
     }).compile();
@@ -178,5 +203,115 @@ describe('NotificationsListener', () => {
         cuerpo: 'Quedan 2 en Faena Norte (mínimo 5)',
       }),
     );
+  });
+
+  describe('shift.exit-report', () => {
+    const EVENT = {
+      reportId: 'report-1',
+      shiftId: 'shift-1',
+      fileKey: 'reports/shift-exit/2026/09/report-1.pdf',
+      fileName: 'reporte-salida-2026-09-28-diurno.pdf',
+      cardCount: 3,
+      supervisorName: 'Juan Pérez',
+      shiftDate: '2026-09-28',
+      shiftType: 'DIURNO',
+    };
+
+    it('baja el PDF, notifica a ADMIN con adjunto y marca emailStatus SENT', async () => {
+      await listener.onShiftExitReportSent(EVENT);
+
+      expect(getObjectBuffer).toHaveBeenCalledWith(EVENT.fileKey);
+      expect(notifyRolesWithAttachment).toHaveBeenCalledWith(
+        [ROLES.ADMIN],
+        expect.objectContaining({
+          tipo: 'shift.exit-report',
+          data: { reportId: 'report-1', shiftId: 'shift-1' },
+        }),
+        [
+          expect.objectContaining({
+            filename: EVENT.fileName,
+            contentType: 'application/pdf',
+          }),
+        ],
+        expect.anything(),
+      );
+      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
+        where: { id: 'report-1' },
+        data: { emailStatus: 'SENT', notifiedAt: expect.any(Date) as Date },
+      });
+    });
+
+    it('sin SMTP configurado, NO baja el PDF, igual crea la notificación in-app y marca SKIPPED', async () => {
+      isConfigured.mockReturnValue(false);
+
+      await listener.onShiftExitReportSent(EVENT);
+
+      expect(getObjectBuffer).not.toHaveBeenCalled();
+      expect(createForRoles).toHaveBeenCalledWith(
+        [ROLES.ADMIN],
+        expect.objectContaining({ tipo: 'shift.exit-report' }),
+      );
+      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
+        where: { id: 'report-1' },
+        data: { emailStatus: 'SKIPPED', notifiedAt: expect.any(Date) as Date },
+      });
+    });
+
+    it('sin destinatarios (recipientCount=0), marca SKIPPED', async () => {
+      notifyRolesWithAttachment.mockResolvedValue({
+        recipientCount: 0,
+        allEmailsSent: false,
+      });
+
+      await listener.onShiftExitReportSent(EVENT);
+
+      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
+        where: { id: 'report-1' },
+        data: { emailStatus: 'SKIPPED', notifiedAt: expect.any(Date) as Date },
+      });
+    });
+
+    it('si algún correo falla (allEmailsSent=false con destinatarios), marca FAILED', async () => {
+      notifyRolesWithAttachment.mockResolvedValue({
+        recipientCount: 2,
+        allEmailsSent: false,
+      });
+
+      await listener.onShiftExitReportSent(EVENT);
+
+      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
+        where: { id: 'report-1' },
+        data: { emailStatus: 'FAILED', notifiedAt: expect.any(Date) as Date },
+      });
+    });
+
+    it('si algo lanza (ej. storage caído), marca FAILED y NUNCA propaga la excepción', async () => {
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation();
+      getObjectBuffer.mockRejectedValue(new Error('bucket caído'));
+
+      await expect(
+        listener.onShiftExitReportSent(EVENT),
+      ).resolves.toBeUndefined();
+
+      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
+        where: { id: 'report-1' },
+        data: { emailStatus: 'FAILED', notifiedAt: expect.any(Date) as Date },
+      });
+      errorSpy.mockRestore();
+    });
+
+    it('si falla el update de emailStatus, tampoco propaga la excepción', async () => {
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation();
+      shiftExitReportUpdate.mockRejectedValue(new Error('db caída'));
+
+      await expect(
+        listener.onShiftExitReportSent(EVENT),
+      ).resolves.toBeUndefined();
+      errorSpy.mockRestore();
+    });
   });
 });

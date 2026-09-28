@@ -1,6 +1,7 @@
 import {
   MAX_STORAGE_SIGNED_URL_TTL_SECONDS,
   MIN_STORAGE_SIGNED_URL_TTL_SECONDS,
+  parseAuthRateLimitEnabled,
   parseStorageSignedUrlTtlSeconds,
 } from './env';
 
@@ -53,5 +54,33 @@ describe('parseStorageSignedUrlTtlSeconds', () => {
 
   it('rechaza un valor no entero', () => {
     expect(() => parseStorageSignedUrlTtlSeconds('3600.5')).toThrow();
+  });
+});
+
+/**
+ * Info (auditoría de seguridad, prep túnel HTTPS): `AUTH_RATE_LIMIT_ENABLED`
+ * gobierna el `rateLimit.enabled` de Better Auth (`auth.ts`) — sin valor
+ * explícito, cae al default de si el proceso corre en producción o no (para
+ * no romper el e2e suite, que hace login muchas veces seguidas).
+ */
+describe('parseAuthRateLimitEnabled', () => {
+  it('sin valor, usa el default de producción (true) cuando NODE_ENV=production', () => {
+    expect(parseAuthRateLimitEnabled(undefined, true)).toBe(true);
+  });
+
+  it('sin valor, usa el default (false) fuera de producción', () => {
+    expect(parseAuthRateLimitEnabled(undefined, false)).toBe(false);
+  });
+
+  it('un valor explícito "true" gana aunque el default sea false (fuera de producción)', () => {
+    expect(parseAuthRateLimitEnabled('true', false)).toBe(true);
+  });
+
+  it('un valor explícito "false" gana aunque el default sea true (producción)', () => {
+    expect(parseAuthRateLimitEnabled('false', true)).toBe(false);
+  });
+
+  it('string vacío se trata como "sin valor" (usa el default)', () => {
+    expect(parseAuthRateLimitEnabled('  ', true)).toBe(true);
   });
 });
