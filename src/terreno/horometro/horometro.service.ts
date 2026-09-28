@@ -56,12 +56,13 @@ export class HorometroService {
    * antes este flujo no dejaba rastro de quién abrió el turno.
    */
   async create(dto: CreateHorometroDto, session: UserSession) {
-    // Validación del operador de catálogo (si viene) ANTES de la
+    // Validación del operador de catálogo (RFC Supervisión en Terreno, Anexo
+    // 2: OBLIGATORIO, mismo patrón único que Trabajos extra) ANTES de la
     // transacción: es una precondición pura de la request, no depende de
-    // ningún estado que la tx necesite leer de forma consistente.
-    const operator = dto.operatorId
-      ? await this.operators.assertActive(dto.operatorId)
-      : undefined;
+    // ningún estado que la tx necesite leer de forma consistente. El
+    // snapshot `operador` se arma acá con el nombre del catálogo — el
+    // cliente ya no lo manda.
+    const operator = await this.operators.assertActive(dto.operatorId);
 
     // El registro de terreno y el write del contador de la ficha van en la
     // misma transacción: si el update del equipo fallara, no debe quedar un
@@ -111,8 +112,8 @@ export class HorometroService {
         registro = await tx.registroHorometro.create({
           data: {
             equipoId: dto.equipoId,
-            operador: dto.operador,
-            operatorId: operator?.id ?? null,
+            operador: operator.name,
+            operatorId: operator.id,
             turno: dto.turno,
             valorInicial: dto.valorInicial,
             nivelCombustible: dto.nivelCombustible ?? null,

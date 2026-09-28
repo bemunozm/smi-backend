@@ -137,6 +137,15 @@ describe('HorometroService', () => {
     prisma.$transaction.mockImplementation(
       (cb: (client: typeof tx) => unknown) => cb(tx),
     );
+
+    // Operador del catálogo por defecto — activo (RFC Supervisión en
+    // Terreno, Anexo 2: OBLIGATORIO). Los tests del describe
+    // `operatorId (catálogo)` sobreescriben esto.
+    assertActive.mockResolvedValue({
+      id: 'op_1',
+      name: 'Juan Rojas',
+      isActive: true,
+    });
   });
 
   describe('create (ENTRADA)', () => {
@@ -146,7 +155,7 @@ describe('HorometroService', () => {
       await service.create(
         {
           equipoId: 'e1',
-          operador: 'Juan Rojas',
+          operatorId: 'op_1',
           turno: 'NOCTURNO',
           valorInicial: 100,
         },
@@ -172,7 +181,7 @@ describe('HorometroService', () => {
         service.create(
           {
             equipoId: 'missing',
-            operador: 'Juan Rojas',
+            operatorId: 'op_1',
             turno: 'DIURNO',
             valorInicial: 100,
           },
@@ -199,7 +208,7 @@ describe('HorometroService', () => {
           await service.create(
             {
               equipoId: 'e1',
-              operador: 'Juan Rojas',
+              operatorId: 'op_1',
               turno: 'DIURNO',
               valorInicial: 100,
             },
@@ -222,7 +231,7 @@ describe('HorometroService', () => {
         service.create(
           {
             equipoId: 'e1',
-            operador: 'Juan Rojas',
+            operatorId: 'op_1',
             turno: 'DIURNO',
             valorInicial: 100,
           },
@@ -238,7 +247,7 @@ describe('HorometroService', () => {
       await service.create(
         {
           equipoId: 'e1',
-          operador: 'Juan Rojas',
+          operatorId: 'op_1',
           turno: 'DIURNO',
           valorInicial: 100,
         },
@@ -260,7 +269,7 @@ describe('HorometroService', () => {
         service.create(
           {
             equipoId: 'e1',
-            operador: 'Juan Rojas',
+            operatorId: 'op_1',
             turno: 'DIURNO',
             valorInicial: 100,
           },
@@ -281,7 +290,7 @@ describe('HorometroService', () => {
         service.create(
           {
             equipoId: 'e1',
-            operador: 'Juan Rojas',
+            operatorId: 'op_1',
             turno: 'DIURNO',
             valorInicial: 100,
           },
@@ -302,7 +311,7 @@ describe('HorometroService', () => {
       await service.create(
         {
           equipoId: 'e1',
-          operador: 'Juan Rojas',
+          operatorId: 'op_1',
           turno: 'DIURNO',
           valorInicial: 100,
         },
@@ -325,7 +334,7 @@ describe('HorometroService', () => {
       await service.create(
         {
           equipoId: 'e1',
-          operador: 'Juan Rojas',
+          operatorId: 'op_1',
           turno: 'DIURNO',
           valorInicial: 100,
         },
@@ -341,10 +350,14 @@ describe('HorometroService', () => {
       expect(prisma.equipment.findUnique).not.toHaveBeenCalled();
     });
 
+    // RFC Supervisión en Terreno, Anexo 2 ("operador del catálogo en
+    // Trabajos extra + snapshot único"): `operatorId` es OBLIGATORIO acá
+    // (dejó de ser opcional) y `operador` sale del DTO — el snapshot lo
+    // arma el SERVIDOR desde el catálogo, nunca desde texto del cliente.
     describe('operatorId (catálogo)', () => {
-      it('valida el operador vía OperatorsService.assertActive y graba operatorId', async () => {
+      it('valida el operador vía OperatorsService.assertActive y arma el snapshot desde el catálogo', async () => {
         assertActive.mockResolvedValue({
-          id: 'op_1',
+          id: 'op_9',
           name: 'Patricio Rojas',
           isActive: true,
         });
@@ -352,36 +365,42 @@ describe('HorometroService', () => {
         await service.create(
           {
             equipoId: 'e1',
-            operador: 'Patricio Rojas',
-            operatorId: 'op_1',
+            operatorId: 'op_9',
             turno: 'DIURNO',
             valorInicial: 100,
           },
           session,
         );
 
-        expect(assertActive).toHaveBeenCalledWith('op_1');
-        expect(lastCallData(tx.registroHorometro.create).operatorId).toBe(
-          'op_1',
-        );
+        expect(assertActive).toHaveBeenCalledWith('op_9');
+        const data = lastCallData(tx.registroHorometro.create);
+        expect(data.operatorId).toBe('op_9');
+        // El snapshot viene SIEMPRE del catálogo, nunca de texto que hubiera
+        // mandado el cliente — el DTO ni siquiera tiene un campo `operador`.
+        expect(data.operador).toBe('Patricio Rojas');
       });
 
-      it('sin operatorId no llama a OperatorsService y graba operatorId null', async () => {
-        await service.create(
-          {
-            equipoId: 'e1',
-            operador: 'Juan Rojas',
-            turno: 'DIURNO',
-            valorInicial: 100,
-          },
-          session,
+      it('propaga el 404 si el operador no existe, sin abrir la transacción', async () => {
+        assertActive.mockRejectedValue(
+          new NotFoundException('Operador "op_missing" no encontrado'),
         );
 
-        expect(assertActive).not.toHaveBeenCalled();
-        expect(lastCallData(tx.registroHorometro.create).operatorId).toBeNull();
+        await expect(
+          service.create(
+            {
+              equipoId: 'e1',
+              operatorId: 'op_missing',
+              turno: 'DIURNO',
+              valorInicial: 100,
+            },
+            session,
+          ),
+        ).rejects.toBeInstanceOf(NotFoundException);
+
+        expect(prisma.$transaction).not.toHaveBeenCalled();
       });
 
-      it('propaga el rechazo de OperatorsService (operador inactivo/inexistente) sin abrir la transacción', async () => {
+      it('propaga el 409 OPERATOR_INACTIVE si el operador existe pero está dado de baja, sin abrir la transacción', async () => {
         assertActive.mockRejectedValue(
           new ConflictException({
             message: 'El operador "Patricio Rojas" está inactivo',
@@ -389,20 +408,24 @@ describe('HorometroService', () => {
           }),
         );
 
-        await expect(
-          service.create(
+        expect.assertions(3);
+        try {
+          await service.create(
             {
               equipoId: 'e1',
-              operador: 'Patricio Rojas',
               operatorId: 'op_1',
               turno: 'DIURNO',
               valorInicial: 100,
             },
             session,
-          ),
-        ).rejects.toBeInstanceOf(ConflictException);
-
-        expect(prisma.$transaction).not.toHaveBeenCalled();
+          );
+        } catch (error: unknown) {
+          expect(error).toBeInstanceOf(ConflictException);
+          expect((error as ConflictException).getResponse()).toMatchObject({
+            code: 'OPERATOR_INACTIVE',
+          });
+          expect(prisma.$transaction).not.toHaveBeenCalled();
+        }
       });
     });
 
@@ -420,7 +443,7 @@ describe('HorometroService', () => {
           service.create(
             {
               equipoId: 'e1',
-              operador: 'Juan Rojas',
+              operatorId: 'op_1',
               turno: 'DIURNO',
               valorInicial: 60,
             },
@@ -444,7 +467,7 @@ describe('HorometroService', () => {
         await service.create(
           {
             equipoId: 'e1',
-            operador: 'Juan Rojas',
+            operatorId: 'op_1',
             turno: 'DIURNO',
             valorInicial: 500,
           },
@@ -464,7 +487,7 @@ describe('HorometroService', () => {
         await service.create(
           {
             equipoId: 'e1',
-            operador: 'Juan Rojas',
+            operatorId: 'op_1',
             turno: 'DIURNO',
             valorInicial: 8,
           },
@@ -493,7 +516,7 @@ describe('HorometroService', () => {
           service.create(
             {
               equipoId: 'e1',
-              operador: 'Juan Rojas',
+              operatorId: 'op_1',
               turno: 'DIURNO',
               valorInicial: 130,
             },
@@ -771,11 +794,13 @@ describe('HorometroService', () => {
 
 // O2 — límites (`@Min`/`@Max`) en los DTOs de horómetro: `nivelCombustible`
 // es un porcentaje (0-100), `valorInicial` no puede ser negativo. Mismo
-// patrón que `UpdateItemDto` en `items.service.spec.ts`.
+// patrón que `UpdateItemDto` en `items.service.spec.ts`. `operatorId` es
+// OBLIGATORIO (RFC Supervisión en Terreno, Anexo 2) y `operador` sale del
+// DTO — con `forbidNonWhitelisted: true` global, mandarlo es un 400.
 describe('CreateHorometroDto — límites', () => {
   const base = {
     equipoId: 'e1',
-    operador: 'Juan Rojas',
+    operatorId: 'op_1',
     turno: 'DIURNO',
     valorInicial: 100,
   };
@@ -809,12 +834,33 @@ describe('CreateHorometroDto — límites', () => {
     expect(await validate(sobreRango)).not.toHaveLength(0);
   });
 
-  it('acepta operatorId opcional', async () => {
+  it('rechaza si falta operatorId', async () => {
+    const dto = plainToInstance(CreateHorometroDto, {
+      equipoId: base.equipoId,
+      turno: base.turno,
+      valorInicial: base.valorInicial,
+    });
+    expect(await validate(dto)).not.toHaveLength(0);
+  });
+
+  it('rechaza operatorId vacío', async () => {
     const dto = plainToInstance(CreateHorometroDto, {
       ...base,
-      operatorId: 'op_1',
+      operatorId: '',
     });
-    expect(await validate(dto)).toHaveLength(0);
+    expect(await validate(dto)).not.toHaveLength(0);
+  });
+
+  it('rechaza el body si manda operador — forbidNonWhitelisted lo tumba', async () => {
+    const dto = plainToInstance(CreateHorometroDto, {
+      ...base,
+      operador: 'Juan Rojas',
+    });
+    const errors = await validate(dto, {
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    });
+    expect(errors.length).toBeGreaterThan(0);
   });
 
   it('rechaza valorFinal — el flujo de un paso se eliminó (Fase 2), forbidNonWhitelisted lo tumba', async () => {

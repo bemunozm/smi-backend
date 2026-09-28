@@ -1,5 +1,6 @@
 import {
   IsIn,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -11,18 +12,18 @@ export class CreateHorometroDto {
   @IsString()
   equipoId!: string;
 
+  /**
+   * Operador del catálogo propio (`Operator`) — OBLIGATORIO (RFC Supervisión
+   * en Terreno, Anexo 2 "operador del catálogo en Trabajos extra + snapshot
+   * único": mismo patrón único para Trabajos extra Y la entrada de Flota).
+   * `operador` YA NO se recibe acá: `HorometroService` arma el snapshot
+   * desde `OperatorsService.assertActive(operatorId).name`, nunca desde
+   * texto que mande el cliente. Con `forbidNonWhitelisted: true` global,
+   * mandar `operador` en el body ahora es un 400.
+   */
   @IsString()
-  operador!: string;
-
-  /** Operador del catálogo propio (`Operator`), ADITIVO sobre `operador`
-   * (snapshot de texto que el frontend ya envía desde el modal de entrada de
-   * Flota — RFC Supervisión en Terreno §Diseño). Opcional: sigue existiendo
-   * uso de Flota sin operador de catálogo hasta que el frontend migre por
-   * completo. Si viene, `HorometroService` valida que exista Y esté activo
-   * (404 / 409 `OPERATOR_INACTIVE`, ver `OperatorsService.assertActive`). */
-  @IsOptional()
-  @IsString()
-  operatorId?: string;
+  @IsNotEmpty()
+  operatorId!: string;
 
   @IsIn(['DIURNO', 'NOCTURNO'])
   turno!: string;
