@@ -22,7 +22,6 @@ describe('OpenShiftCardDto', () => {
     expect(await validate(dto)).toHaveLength(0);
   });
 
-  // B2(a)
   it('rechaza un shiftDate que no es una fecha real', async () => {
     const dto = plainToInstance(
       OpenShiftCardDto,
@@ -39,8 +38,7 @@ describe('OpenShiftCardDto', () => {
     expect(await validate(dto)).not.toHaveLength(0);
   });
 
-  // B3
-  describe('valorInicial — límites (B3)', () => {
+  describe('valorInicial — límites', () => {
     it('rechaza negativo', async () => {
       const dto = plainToInstance(OpenShiftCardDto, base({ valorInicial: -1 }));
       expect(await validate(dto)).not.toHaveLength(0);

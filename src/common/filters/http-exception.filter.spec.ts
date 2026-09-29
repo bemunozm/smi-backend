@@ -61,7 +61,7 @@ describe('HttpExceptionFilter', () => {
     expect(body).not.toHaveProperty('code');
   });
 
-  it('pasa "code" cuando el body de la excepción lo trae explícito', () => {
+  it('pasa "code" cuando el body de la excepción lo trae explícito (catálogo)', () => {
     filter.catch(
       new ConflictException({
         message: 'El equipo está ocupado',
@@ -75,6 +75,32 @@ describe('HttpExceptionFilter', () => {
       message: 'El equipo está ocupado',
       code: 'EQUIPMENT_BUSY',
     });
+  });
+
+  it('pasa un "code" bien formado aunque NO esté en el catálogo ERROR_CODES', () => {
+    filter.catch(
+      new ConflictException({
+        message: 'Caso nuevo sin registrar',
+        code: 'SOME_NEW_UNREGISTERED_CODE',
+      }),
+      buildHost(response),
+    );
+
+    expect(json).toHaveBeenCalledWith({
+      data: null,
+      message: 'Caso nuevo sin registrar',
+      code: 'SOME_NEW_UNREGISTERED_CODE',
+    });
+  });
+
+  it('ignora un "code" mal formado (no UPPER_SNAKE)', () => {
+    filter.catch(
+      new ConflictException({ message: 'x', code: 'not_upper_snake' }),
+      buildHost(response),
+    );
+
+    const body = json.mock.calls[0][0];
+    expect(body).toEqual({ data: null, message: 'x' });
   });
 
   it('ignora un "code" que no sea string (no lo pasa, no revienta)', () => {

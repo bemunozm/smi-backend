@@ -47,8 +47,8 @@ describe('normalizeRut', () => {
     expect(() => normalizeRut('12345678-9')).toThrow('RUT inválido');
   });
 
-  // B4(b) de la auditoría de seguridad: un cero a la izquierda en el cuerpo
-  // no cambia el dígito verificador (multiplica por 0 en el algoritmo módulo
+  // Un cero a la izquierda en el cuerpo no cambia el dígito verificador
+  // (multiplica por 0 en el algoritmo módulo
   // 11 — mismo caso real que "01234567-4" vs "1234567-4"), así que es el
   // MISMO RUT y debe normalizar al mismo canónico para chocar con el
   // `@unique` de `Operator.rut`.

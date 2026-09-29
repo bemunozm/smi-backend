@@ -5,35 +5,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { Prisma } from '@prisma/client';
-import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { PrismaService } from '../common/prisma/prisma.service';
+import { buildSession, prismaError } from '../common/testing/fixtures';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { ShiftsService } from './shifts.service';
-
-/** Construye un error de Prisma real (no un duck-type) — mismo patrón que
- * `horometro.service.spec.ts`/`equipment.service.spec.ts`. */
-function prismaError(
-  code: string,
-  meta?: Record<string, unknown>,
-): Prisma.PrismaClientKnownRequestError {
-  return new Prisma.PrismaClientKnownRequestError('mocked prisma error', {
-    code,
-    clientVersion: 'test',
-    meta,
-  });
-}
-
-function buildSession(userId: string, role = 'SUPERVISOR'): UserSession {
-  return {
-    user: { id: userId, role },
-    session: { id: 'session_1' },
-  } as unknown as UserSession;
-}
 
 /**
  * Captura el `data` de la ÚLTIMA llamada a un mock `jest.fn()` sin tipar.
@@ -59,7 +38,7 @@ function iso(offsetMs = 0): string {
 }
 
 /** `shiftDate` relativo a "hoy" (mismo motivo que `iso()`, pero para
- * `assertShiftDateWithinWindow`, B2(b) — compara contra `new Date()` real).
+ * `assertShiftDateWithinWindow` — compara contra `new Date()` real).
  * `offsetDays` en días de CALENDARIO, no ms. */
 function todayShiftDate(offsetDays = 0): string {
   const d = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
@@ -141,8 +120,8 @@ describe('ShiftsService', () => {
     },
     shift: { upsert: jest.fn(), findUnique: jest.fn(), findMany: jest.fn() },
     user: { findUnique: jest.fn(), findMany: jest.fn() },
-    // B2(c): pre-check de solo lectura del equipo, ANTES del upsert del
-    // `Shift` (que sí escribe) — ver `ShiftsService.openCard`.
+    // Pre-check de solo lectura del equipo, ANTES del upsert del `Shift`
+    // (que sí escribe) — ver `ShiftsService.openCard`.
     equipment: { findUnique: jest.fn() },
     $transaction: jest.fn(),
   };
@@ -188,7 +167,7 @@ describe('ShiftsService', () => {
       currentMileage: null,
     });
     tx.equipment.updateMany.mockResolvedValue({ count: 1 });
-    // B2(c): pre-check de solo lectura ANTES del upsert del `Shift`, ver
+    // Pre-check de solo lectura ANTES del upsert del `Shift`, ver
     // `ShiftsService.openCard` — por defecto pasa, los tests de R1/404 lo
     // sobreescriben.
     prisma.equipment.findUnique.mockResolvedValue({ status: 'OPERATIONAL' });
@@ -429,8 +408,7 @@ describe('ShiftsService', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
-    // B2(c) de la auditoría de seguridad.
-    describe('pre-check del equipo ANTES del upsert del Shift (B2c)', () => {
+    describe('pre-check del equipo ANTES del upsert del Shift', () => {
       it('404 si el equipo no existe — no llega a crear el Shift ni a la tx', async () => {
         prisma.equipment.findUnique.mockResolvedValue(null);
 
@@ -460,8 +438,7 @@ describe('ShiftsService', () => {
       });
     });
 
-    // B2(b) de la auditoría de seguridad.
-    describe('ventana de shiftDate (B2b)', () => {
+    describe('ventana de shiftDate', () => {
       it('rechaza un shiftDate de más de 8 días de antigüedad con INVALID_SHIFT_DATE, antes de crear el Shift', async () => {
         expect.assertions(4);
         try {
@@ -611,13 +588,13 @@ describe('ShiftsService', () => {
       });
     });
 
-    it('bug corregido en revisión: una tarjeta abierta por debajo del contador (modo warn) cierra OK con un final que SIGUE por debajo — 200, contador sin mover, belowPreviousReading true', async () => {
+    it('una tarjeta abierta por debajo del contador (modo warn) cierra OK con un final que SIGUE por debajo — 200, contador sin mover, belowPreviousReading true', async () => {
       // Se abrió con valorInicial 990 cuando el vigente ya era 1000
       // (`belowPreviousReading: true` desde la apertura). Cierra en 998:
       // pasa el `valorFinal >= valorInicial` (998 >= 990), pero SIGUE por
-      // debajo del vigente (1000) — antes del fix esto lanzaba `reject` DESPUÉS
-      // de reclamar la foto, la descartaba, y la tarjeta quedaba encallada
-      // para siempre (ver mensaje de revisión).
+      // debajo del vigente (1000) — el cierre debe reconciliar en modo
+      // `'warn'` (nunca `'reject'`), o esta tarjeta quedaría imposible de
+      // cerrar (ver comentario de cabecera de `ShiftsService.closeCard`).
       prisma.registroHorometro.findUnique.mockResolvedValue({
         id: 'card_1',
         equipoId: 'e1',
@@ -690,8 +667,7 @@ describe('ShiftsService', () => {
       expect(tx.registroCombustible.create).not.toHaveBeenCalled();
     });
 
-    // B2(d)/(e) de la auditoría de seguridad.
-    describe('photoCapturedAt (EXIF del dispositivo) — B2(d)/(e)', () => {
+    describe('photoCapturedAt (EXIF del dispositivo)', () => {
       it('un photoCapturedAt válido y dentro de rango se usa como fecha de la carga', async () => {
         const photoCapturedAt = iso(-60_000); // 1 minuto antes de "ahora"
 
@@ -820,8 +796,7 @@ describe('ShiftsService', () => {
       ).resolves.toBeDefined();
     });
 
-    // M1(a) de la auditoría de seguridad.
-    it('M1a: otro supervisor que reintenta (replay) el closeClientId de una tarjeta YA CERRADA ajena → 403 NOT_OWNER, NUNCA la tarjeta de A', async () => {
+    it('otro supervisor que reintenta (replay) el closeClientId de una tarjeta YA CERRADA ajena → 403 NOT_OWNER, NUNCA la tarjeta de A', async () => {
       // La tarjeta ya está cerrada, es de sup_1, y el closeClientId coincide
       // EXACTO con el del DTO (`dto.closeClientId === 'close_1'`) — el
       // escenario exacto del hallazgo: B "adivina"/reenvía el closeClientId
@@ -852,7 +827,7 @@ describe('ShiftsService', () => {
       expect(claimTmp).not.toHaveBeenCalled();
     });
 
-    it('M1a: ADMIN SÍ puede replayar el closeClientId de una tarjeta ya cerrada de otro supervisor (200)', async () => {
+    it('ADMIN SÍ puede replayar el closeClientId de una tarjeta ya cerrada de otro supervisor (200)', async () => {
       prisma.registroHorometro.findUnique.mockResolvedValue({
         id: 'card_1',
         equipoId: 'e1',
@@ -967,10 +942,10 @@ describe('ShiftsService', () => {
       expect(discard).toHaveBeenCalledWith('fuel-photos/final.jpg');
     });
 
-    // Info (auditoría de seguridad): antes, un `closeClientId` reusado en
-    // OTRA tarjeta (P2002 vía el `@unique` global, no `count === 0`) caía
-    // siempre en `ALREADY_CLOSED` ("la tarjeta ya fue cerrada") — mensaje
-    // engañoso cuando la tarjeta `id` en cuestión en realidad SIGUE abierta.
+    // Un `closeClientId` reusado en OTRA tarjeta (P2002 vía el `@unique`
+    // global, no `count === 0`) caía siempre en `ALREADY_CLOSED` ("la
+    // tarjeta ya fue cerrada") — mensaje engañoso cuando la tarjeta `id` en
+    // cuestión en realidad SIGUE abierta.
     it('P2002 por closeClientId reusado en OTRA tarjeta que sigue ABIERTA → 409 ID_CONFLICT (no ALREADY_CLOSED)', async () => {
       tx.registroHorometro.updateMany.mockImplementation(() => {
         throw prismaError('P2002', { target: ['close_client_id'] });

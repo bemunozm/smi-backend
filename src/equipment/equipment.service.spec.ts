@@ -4,15 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  ControlUnit,
-  EquipmentClass,
-  EquipmentStatus,
-  Prisma,
-} from '@prisma/client';
+import { ControlUnit, EquipmentClass, EquipmentStatus } from '@prisma/client';
 
 import { ROLES } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { prismaError } from '../common/testing/fixtures';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
@@ -28,19 +24,6 @@ const SIN_REGISTROS = {
   stockMovements: 0,
   documents: 0,
 };
-
-/** Construye un error de Prisma real (no un duck-type) para que el `instanceof`
- * que usa `EquipmentService` en el mapeo de errores lo reconozca. */
-function prismaError(
-  code: string,
-  meta?: Record<string, unknown>,
-): Prisma.PrismaClientKnownRequestError {
-  return new Prisma.PrismaClientKnownRequestError('mocked prisma error', {
-    code,
-    clientVersion: 'test',
-    meta,
-  });
-}
 
 const DTO_BASE: CreateEquipmentDto = {
   internalCode: 'EX-001',
@@ -349,6 +332,7 @@ describe('EquipmentService', () => {
           turno: 'DIURNO',
           fecha,
           supervisorId: 'sup_1',
+          shiftId: 'shift_1',
         },
       ]);
       userFindMany.mockResolvedValue([{ id: 'sup_1', name: 'Ana Torres' }]);
@@ -368,6 +352,7 @@ describe('EquipmentService', () => {
           turno: true,
           fecha: true,
           supervisorId: true,
+          shiftId: true,
         },
       });
       expect(conTurno).toMatchObject({
@@ -378,6 +363,7 @@ describe('EquipmentService', () => {
           turno: 'DIURNO',
           fecha,
           supervisorName: 'Ana Torres',
+          shiftId: 'shift_1',
         },
       });
       expect(sinTurno).toMatchObject({ openShift: null });
@@ -401,6 +387,7 @@ describe('EquipmentService', () => {
           turno: 'DIURNO',
           fecha: new Date('2026-09-15T08:00:00.000Z'),
           supervisorId: null,
+          shiftId: null,
         },
       ]);
 
@@ -408,6 +395,36 @@ describe('EquipmentService', () => {
 
       expect(conTurno).toMatchObject({
         openShift: { supervisorName: null },
+      });
+    });
+
+    it('openShift.shiftId es null si la tarjeta viene de la entrada legacy de Flota (sin turno de Supervisión en Terreno)', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      registroHorometroFindMany.mockResolvedValue([
+        {
+          id: 'r1',
+          equipoId: 'eq_1',
+          valorInicial: 100,
+          operador: 'Juan Rojas',
+          turno: 'DIURNO',
+          fecha: new Date('2026-09-15T08:00:00.000Z'),
+          supervisorId: 'sup_1',
+          shiftId: null,
+        },
+      ]);
+      userFindMany.mockResolvedValue([{ id: 'sup_1', name: 'Ana Torres' }]);
+
+      const [conTurno] = await service.findAll({});
+
+      expect(conTurno).toMatchObject({
+        openShift: { shiftId: null },
       });
     });
 
@@ -629,7 +646,7 @@ describe('EquipmentService', () => {
       expect(create).not.toHaveBeenCalled();
     });
 
-    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida (hallazgo BAJO B1)', async () => {
+    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida', async () => {
       claimTmp.mockResolvedValue('equipment-photos/final.jpg');
       create.mockResolvedValue({
         id: 'eq_1',
@@ -956,7 +973,7 @@ describe('EquipmentService', () => {
         expect(update).not.toHaveBeenCalled();
       });
 
-      it('si el shaping falla DESPUÉS de que la BD confirma el update, NO descarta la key nueva (hallazgo BAJO B1)', async () => {
+      it('si el shaping falla DESPUÉS de que la BD confirma el update, NO descarta la key nueva', async () => {
         findUnique.mockResolvedValue({ photoKey: 'equipment-photos/old.jpg' });
         claimTmp.mockResolvedValue('equipment-photos/new.jpg');
         update.mockResolvedValue({

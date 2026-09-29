@@ -1,6 +1,6 @@
 /**
  * Supervisión en Terreno, Módulo A (RFC "Supervisión en Terreno: Módulo A
- * real + offline + roles/operadores + cierre de R2", Fase 2). La "tarjeta de
+ * real + offline + roles/operadores + cierre de R2"). La "tarjeta de
  * turno" es `RegistroHorometro` reutilizado (ver comentario de cabecera del
  * modelo en `schema.prisma`) — este servicio NO es un dominio nuevo de datos,
  * es un segundo flujo (abrir/cerrar en dos pasos, con id de cliente e
@@ -29,9 +29,10 @@ import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
-import { reconcileEquipmentCounter } from '../terreno/horometro/equipment-counter';
+import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
 import {
   assertReasonableCapturedAt,
   computeClientClockSkewMs,
@@ -45,6 +46,7 @@ import {
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { QueryShiftDto } from './dto/query-shift.dto';
+import type { ShiftExitReportEmailStatus } from './shift-exit-report-email-status';
 
 // El tipo de combustible por defecto del cierre de tarjeta está PENDIENTE de
 // confirmar con el cliente (RFC Supervisión en Terreno, "Pedidos al
@@ -88,7 +90,7 @@ export interface ShiftCardExitReportResponse {
   id: string;
   requestedAt: Date;
   cardCount: number;
-  emailStatus: string;
+  emailStatus: ShiftExitReportEmailStatus;
 }
 
 /**
@@ -178,17 +180,17 @@ export class ShiftsService {
     const now = new Date();
     const capturedAt = new Date(dto.capturedAt);
     assertReasonableCapturedAt(capturedAt, now);
-    // B2(b): ventana razonable de `shiftDate` — antes de tocar cualquier
-    // estado (ni el operador, ni menos el `Shift`, que sí escribe).
+    // Ventana razonable de `shiftDate` — antes de tocar cualquier estado
+    // (ni el operador, ni menos el `Shift`, que sí escribe).
     assertShiftDateWithinWindow(dto.shiftDate, now);
     const clientClockSkewMs = computeClientClockSkewMs(clientTimeHeader, now);
 
     // Precondición pura de la request — antes de tocar el equipo/turno.
     const operator = await this.operators.assertActive(dto.operatorId);
 
-    // B2(c) (auditoría de seguridad): lectura del equipo ANTES del upsert
-    // del `Shift` (que sí escribe) — así una request con un `equipoId` que
-    // no existe, o un equipo fuera de servicio (R1), no alcanza a crear un
+    // Lectura del equipo ANTES del upsert del `Shift` (que sí escribe) —
+    // así una request con un `equipoId` que no existe, o un equipo fuera de
+    // servicio (R1), no alcanza a crear un
     // `Shift` para una fecha arbitraria. El chequeo DENTRO de la tx (más
     // abajo) se mantiene igual — repetido a propósito: cierra la ventana de
     // carrera contra un cambio de estado concurrente del equipo; este
@@ -201,7 +203,7 @@ export class ShiftsService {
     if (equipoPrecheck.status !== EquipmentStatus.OPERATIONAL) {
       throw new ConflictException({
         message: 'El equipo no está operativo',
-        code: 'EQUIPMENT_NOT_OPERATIONAL',
+        code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
       });
     }
 
@@ -236,7 +238,7 @@ export class ShiftsService {
           throw new ConflictException({
             message:
               'Ya existe una tarjeta con ese id para otro equipo o supervisor',
-            code: 'ID_CONFLICT',
+            code: ERROR_CODES.ID_CONFLICT,
           });
         }
 
@@ -255,7 +257,7 @@ export class ShiftsService {
         if (equipo.status !== EquipmentStatus.OPERATIONAL) {
           throw new ConflictException({
             message: 'El equipo no está operativo',
-            code: 'EQUIPMENT_NOT_OPERATIONAL',
+            code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
           });
         }
 
@@ -275,7 +277,7 @@ export class ShiftsService {
           );
           throw new ConflictException({
             message: this.buildBusyMessage(supervisorName, abierta.fecha),
-            code: 'EQUIPMENT_BUSY',
+            code: ERROR_CODES.EQUIPMENT_BUSY,
           });
         }
 
@@ -347,12 +349,12 @@ export class ShiftsService {
     if (!card) {
       throw new NotFoundException({
         message: 'Tarjeta no encontrada',
-        code: 'CARD_NOT_FOUND',
+        code: ERROR_CODES.CARD_NOT_FOUND,
       });
     }
 
-    // M1a (auditoría de seguridad): el chequeo de dueño va INMEDIATAMENTE
-    // después del 404, ANTES que el replay idempotente de abajo. Antes, un
+    // El chequeo de dueño va INMEDIATAMENTE después del 404, ANTES que el
+    // replay idempotente de abajo. Antes, un
     // supervisor B que reenviaba (adivinado, filtrado, o simplemente
     // reintentado a mano) el `closeClientId` de una tarjeta A ajena caía en
     // la rama de replay, que devolvía la tarjeta COMPLETA de A —incluida la
@@ -361,7 +363,7 @@ export class ShiftsService {
     if (card.supervisorId !== session.user.id && !isAdmin) {
       throw new ForbiddenException({
         message: 'No puedes cerrar la tarjeta de otro supervisor',
-        code: 'NOT_OWNER',
+        code: ERROR_CODES.NOT_OWNER,
       });
     }
 
@@ -373,21 +375,21 @@ export class ShiftsService {
       }
       throw new ConflictException({
         message: this.buildAlreadyClosedMessage(card.closedAt),
-        code: 'ALREADY_CLOSED',
+        code: ERROR_CODES.ALREADY_CLOSED,
       });
     }
 
     if (dto.valorFinal < card.valorInicial) {
       throw new BadRequestException({
         message: `La lectura final (${dto.valorFinal}) no puede ser menor que la inicial (${card.valorInicial})`,
-        code: 'HOURMETER_BELOW_INITIAL',
+        code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
       });
     }
 
     const capturedAt = new Date(dto.capturedAt);
     assertReasonableCapturedAt(capturedAt, now);
-    // B2(d)/(e): `photoCapturedAt` es EXIF del dispositivo (puede no
-    // parsear, ej. `"2026-W01"`, o venir con el reloj de la cámara mal
+    // `photoCapturedAt` es EXIF del dispositivo (puede no parsear, ej.
+    // `"2026-W01"`, o venir con el reloj de la cámara mal
     // configurado) — a diferencia de `capturedAt`, fuera de rango o
     // inválido se IGNORA (cae a `capturedAt`), nunca rechaza el cierre.
     const photoCapturedAt = resolveCapturedAtWithFallback(
@@ -406,8 +408,8 @@ export class ShiftsService {
       'fuel-photo',
     );
 
-    // Info (auditoría de seguridad): `closed` se declara AFUERA del `try` y
-    // `this.shapeCard(closed!)` (que llama `StorageService.sign`) corre
+    // `closed` se declara AFUERA del `try` y `this.shapeCard(closed!)` (que
+    // llama `StorageService.sign`) corre
     // DESPUÉS de él — antes, `shapeCard` vivía DENTRO del mismo `try` que el
     // `catch` de abajo descarta `pumpPhotoKey`. Si `sign()` fallaba (red al
     // bucket) DESPUÉS de que la transacción ya hizo commit, ese `catch`
@@ -436,9 +438,9 @@ export class ShiftsService {
           throw new ShiftCardCloseRaceError();
         }
 
-        // Reconciliación en modo `'warn'` (NUNCA `'reject'` acá — bug
-        // encontrado en revisión, corregido): el contador VIGENTE del
-        // equipo puede ser mayor que `valorInicial` (la tarjeta se abrió en
+        // Reconciliación en modo `'warn'` (NUNCA `'reject'` acá): el
+        // contador VIGENTE del equipo puede ser mayor que `valorInicial`
+        // (la tarjeta se abrió en
         // modo `'warn'` con una lectura por debajo del contador,
         // `belowPreviousReading`) y seguir siendo mayor que `valorFinal` en
         // el cierre — el ≥ inicial ya se validó arriba, pero eso NO
@@ -658,7 +660,7 @@ export class ShiftsService {
       message: abierta
         ? this.buildBusyMessage(supervisorName, abierta.fecha)
         : 'El equipo ya tiene una tarjeta de turno abierta',
-      code: 'EQUIPMENT_BUSY',
+      code: ERROR_CODES.EQUIPMENT_BUSY,
     });
   }
 
@@ -677,8 +679,8 @@ export class ShiftsService {
       return this.shapeCard(existing);
     }
 
-    // Info (auditoría de seguridad): `closeClientId` es `@unique` a nivel de
-    // TODA la tabla, no por tarjeta — si el P2002 vino de un `closeClientId`
+    // `closeClientId` es `@unique` a nivel de TODA la tabla, no por tarjeta
+    // — si el P2002 vino de un `closeClientId`
     // reusado en OTRA tarjeta, `existing` (la tarjeta `id`) puede seguir
     // abierta (`valorFinal == null`). Antes esto caía siempre en
     // `ALREADY_CLOSED` ("la tarjeta ya fue cerrada"), un mensaje engañoso
@@ -687,13 +689,13 @@ export class ShiftsService {
     if (existing && existing.valorFinal == null) {
       throw new ConflictException({
         message: 'El id de cierre ya fue usado por otra tarjeta',
-        code: 'ID_CONFLICT',
+        code: ERROR_CODES.ID_CONFLICT,
       });
     }
 
     throw new ConflictException({
       message: this.buildAlreadyClosedMessage(existing?.closedAt ?? null),
-      code: 'ALREADY_CLOSED',
+      code: ERROR_CODES.ALREADY_CLOSED,
     });
   }
 
@@ -705,7 +707,7 @@ export class ShiftsService {
     if (!card) {
       throw new NotFoundException({
         message: 'Tarjeta no encontrada',
-        code: 'CARD_NOT_FOUND',
+        code: ERROR_CODES.CARD_NOT_FOUND,
       });
     }
     return card;
@@ -774,7 +776,14 @@ export class ShiftsService {
               id: card.shift.id,
               date: formatDateOnly(card.shift.date),
               type: card.shift.type,
-              exitReports: card.shift.exitReports,
+              // La columna Prisma es `String` (ver
+              // `shift-exit-report-email-status.ts`) — `ShiftReportsService`
+              // es el único writer, siempre con uno de los 4 valores del
+              // union, así que el cast es seguro por construcción.
+              exitReports: card.shift.exitReports.map((report) => ({
+                ...report,
+                emailStatus: report.emailStatus as ShiftExitReportEmailStatus,
+              })),
             }
           : null,
         valorInicial: card.valorInicial,

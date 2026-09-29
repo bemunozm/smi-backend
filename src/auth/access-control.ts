@@ -1,6 +1,6 @@
 /**
- * BUG confirmado en auditoría (Tier 3 #11): sin `ac`/`roles` custom, el
- * plugin `admin` de Better Auth usa sus roles built-in en minúscula
+ * BUG: sin `ac`/`roles` custom, el plugin `admin` de Better Auth usa sus
+ * roles built-in en minúscula
  * (`admin`/`user`, ver `better-auth/plugins/admin/access/statement.mjs`) y
  * `hasPermission()` resuelve el rol con un lookup EXACTO por string
  * (`acRoles[role]`, ver `better-auth/plugins/admin/has-permission.mjs`).
@@ -46,9 +46,8 @@ const adminRole = ac.newRole({
  * roles inexistentes. Los permisos finos (qué puede hacer cada rol sobre
  * qué recurso) se afinan cuando lleguen los endpoints de dominio.
  *
- * OPERADOR ya NO es un rol de Better Auth (RFC Supervisión en Terreno,
- * anexo "el operador deja de ser usuario de la plataforma", 28/09): el
- * operador es un catálogo propio (`Operator`, `src/operators/*`), sin
+ * OPERADOR ya NO es un rol de Better Auth: el operador es un catálogo
+ * propio (`Operator`, `src/operators/*`), sin
  * acceso a la plataforma — no necesita (ni puede tener) un rol AC.
  */
 const supervisorRole = ac.newRole({

@@ -40,7 +40,7 @@ import { auth } from './auth/auth';
     EquipmentModule,
     // Plataforma (Benjamín): sucursales/bodegas base, las referencia Equipment.
     BranchModule,
-    // Catálogo de operadores (RFC Supervisión en Terreno, Fase 1) — lo
+    // Catálogo de operadores (RFC Supervisión en Terreno) — lo
     // referencia `RegistroHorometro.operatorId`.
     OperatorsModule,
     // Dominio Inventario (Joaquín) — RFC-3, modelo en inglés.
@@ -55,7 +55,7 @@ import { auth } from './auth/auth';
     // aparte de Flota.
     ShiftsModule,
     // Almacenamiento de archivos de Flota Y Terreno (RFC R2-storage +
-    // cierre de R2 en Supervisión en Terreno Fase 3): sube a `tmp/` vía
+    // cierre de R2 en Supervisión en Terreno): sube a `tmp/` vía
     // POST /api/files. El legacy `UploadsModule`/`/uploads` (servía
     // horómetro/hallazgos de Terreno sin autenticación) se retiró en esta
     // fase — ver SECURITY-NOTES.md.

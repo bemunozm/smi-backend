@@ -24,8 +24,8 @@ export class CreateHallazgoDto {
    * pertenencia vía `StorageService.claimTmp`.
    *
    * `fotoUrl` (legacy, URL servida por `/api/uploads`) YA NO es un campo de
-   * este DTO — se retiró en el cierre de R2 (RFC Supervisión en Terreno,
-   * Fase 3): `/api/uploads` se eliminó por completo. La columna y el mapeo
+   * este DTO — se retiró en el cierre de R2 (RFC Supervisión en Terreno):
+   * `/api/uploads` se eliminó por completo. La columna y el mapeo
    * de LECTURA (`FichaService.resolveHallazgoFotoUrls`,
    * `HallazgosService.shape`) siguen intactos para que los hallazgos viejos
    * con ese valor sigan renderizando (aunque el link quede roto). Cualquier

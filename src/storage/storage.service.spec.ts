@@ -420,8 +420,8 @@ describe('StorageService', () => {
   });
 
   describe('onModuleInit', () => {
-    // `warnIfUsingDevCredentials` (hallazgo BAJO B2 de la revisión de
-    // seguridad) dispara siempre que `NODE_ENV !== 'production'` — estos
+    // `warnIfUsingDevCredentials` dispara siempre que `NODE_ENV !==
+    // 'production'` — estos
     // tests fuerzan `NODE_ENV = 'production'` para aislar el warn del
     // `HeadBucket` (que es lo que ya cubrían antes de ese hallazgo) del warn
     // de credenciales dev, que se prueba aparte más abajo.
@@ -458,7 +458,7 @@ describe('StorageService', () => {
       );
     });
 
-    it('loguea warn de credenciales dev si NODE_ENV no es "production", aunque el bucket responda (hallazgo BAJO B2)', async () => {
+    it('loguea warn de credenciales dev si NODE_ENV no es "production", aunque el bucket responda', async () => {
       process.env.NODE_ENV = 'development';
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
       sendSpy.mockResolvedValue({});

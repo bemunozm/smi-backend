@@ -15,7 +15,6 @@ import {
 
 const NOW = new Date('2026-09-28T12:00:00.000Z');
 
-/** B2(a) de la auditoría de seguridad. */
 describe('isValidDateOnly', () => {
   it('acepta una fecha real', () => {
     expect(isValidDateOnly('2026-09-28')).toBe(true);
@@ -78,7 +77,7 @@ describe('@IsDateOnly()', () => {
   });
 });
 
-/** Fix de zona horaria (28/09): "hoy" debe ser el día de calendario en Chile,
+/** Fix de zona horaria: "hoy" debe ser el día de calendario en Chile,
  * no el día UTC del proceso — usa instantes fijos a ambos lados de la
  * medianoche UTC para no depender del TZ de la máquina que corre el test
  * (`Intl.DateTimeFormat` recibe `timeZone` explícito, nunca el del sistema). */
@@ -96,7 +95,6 @@ describe('todayInBusinessTimeZone', () => {
   });
 });
 
-/** B2(b) de la auditoría de seguridad. */
 describe('assertShiftDateWithinWindow', () => {
   it('acepta la fecha de hoy', () => {
     expect(() => assertShiftDateWithinWindow('2026-09-28', NOW)).not.toThrow();

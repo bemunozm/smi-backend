@@ -84,7 +84,7 @@ describe('CombustibleService', () => {
   });
 
   describe('fotoUrl legacy — solo LECTURA, ya no se puede crear con ella', () => {
-    it('findOne devuelve fotoUrl legacy tal cual cuando el registro no tiene fotoKey (dato histórico — el cierre de R2, RFC Supervisión en Terreno Fase 3, retiró fotoUrl del DTO de creación)', async () => {
+    it('findOne devuelve fotoUrl legacy tal cual cuando el registro no tiene fotoKey (dato histórico — el cierre de R2 retiró fotoUrl del DTO de creación)', async () => {
       prisma.registroCombustible.findUnique.mockResolvedValue({
         id: 'c1',
         equipoId: 'e1',
@@ -170,7 +170,7 @@ describe('CombustibleService', () => {
       expect(prisma.registroCombustible.create).not.toHaveBeenCalled();
     });
 
-    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida (hallazgo BAJO B1)', async () => {
+    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida', async () => {
       prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
       claimTmp.mockResolvedValue('fuel-photos/final.jpg');
       prisma.registroCombustible.create.mockResolvedValue({

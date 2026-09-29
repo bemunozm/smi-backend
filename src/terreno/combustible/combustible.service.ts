@@ -33,8 +33,8 @@ export class CombustibleService {
       ? await this.storage.claimTmp(dto.fotoKey, userId, 'fuel-photo')
       : undefined;
 
-    // El `try/catch` cubre SOLO la escritura en Prisma (hallazgo BAJO B1 de
-    // la revisión de seguridad, mismo patrón que `EquipmentService.create`):
+    // El `try/catch` cubre SOLO la escritura en Prisma (mismo patrón que
+    // `EquipmentService.create`):
     // antes acá `return this.shape(registro)` SIN `await` dentro del try
     // hacía que el rollback nunca se disparara igual por accidente — se deja
     // explícito para no depender de ese detalle.

@@ -52,7 +52,6 @@ describe('assertReasonableCapturedAt', () => {
   });
 });
 
-/** B1 de la auditoría de seguridad. */
 describe('computeClientClockSkewMs', () => {
   it('sin header, undefined (no se audita, no se rechaza)', () => {
     expect(computeClientClockSkewMs(undefined, NOW)).toBeUndefined();
@@ -93,7 +92,6 @@ describe('computeClientClockSkewMs', () => {
   });
 });
 
-/** B2(d)/(e) de la auditoría de seguridad. */
 describe('resolveCapturedAtWithFallback', () => {
   const fallback = NOW;
 

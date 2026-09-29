@@ -52,8 +52,8 @@ export function normalizeRut(raw: string): string {
     throw new Error(`RUT inválido: "${raw}"`);
   }
   const value = clean(raw);
-  // B4(b) de la auditoría de seguridad: un cero a la izquierda en el cuerpo
-  // ("01234567-K") no cambia el dígito verificador (multiplica por 0 en el
+  // Un cero a la izquierda en el cuerpo ("01234567-K") no cambia el dígito
+  // verificador (multiplica por 0 en el
   // algoritmo módulo 11) — sigue siendo el MISMO RUT que "1234567-K", pero
   // sin colapsar el cero, `clean()` a secas los deja como dos strings
   // DISTINTOS y el `@unique` de `Operator.rut` no los detecta como

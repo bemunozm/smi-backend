@@ -28,8 +28,8 @@ export class CreateCombustibleDto {
    * valida ownership vía `StorageService.claimTmp`.
    *
    * `fotoUrl` (legacy, URL servida por `/api/uploads`) YA NO es un campo de
-   * este DTO — se retiró en el cierre de R2 (RFC Supervisión en Terreno,
-   * Fase 3): `/api/uploads` se eliminó por completo, así que ya no hay forma
+   * este DTO — se retiró en el cierre de R2 (RFC Supervisión en Terreno):
+   * `/api/uploads` se eliminó por completo, así que ya no hay forma
    * de producir un `fotoUrl` válido. La columna y el mapeo de LECTURA en
    * `CombustibleService.shape` siguen intactos, para que las filas viejas
    * que ya tenían ese valor sigan renderizando (aunque el link en sí quede

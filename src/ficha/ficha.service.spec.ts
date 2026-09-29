@@ -379,7 +379,7 @@ describe('FichaService', () => {
     });
   });
 
-  describe('meta.fotoUrl del hallazgo — firmado ANTES de mapear (cierre de R2, RFC Supervisión en Terreno Fase 3)', () => {
+  describe('meta.fotoUrl del hallazgo — firmado ANTES de mapear (cierre de R2, RFC Supervisión en Terreno)', () => {
     it('con fotoKey, meta.fotoUrl trae la URL firmada (antes del fix devolvía siempre fotoUrl, ignorando fotoKey)', async () => {
       mockearOrigenesVacios();
       hallazgoFindMany.mockResolvedValue([

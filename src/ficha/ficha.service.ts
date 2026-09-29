@@ -124,7 +124,7 @@ export class FichaService {
     // "Combustible"): `mapCombustible`/`mapHallazgo` se mantienen síncronos,
     // consumiendo el mapa ya resuelto — mismo patrón batch que
     // `EquipmentService.resolvePhotoUrls`. `mapHallazgo` no firmaba `fotoKey`
-    // hasta el cierre de R2 (RFC Supervisión en Terreno, Fase 3) — devolvía
+    // hasta el cierre de R2 (RFC Supervisión en Terreno) — devolvía
     // `registro.fotoUrl` a secas, así que un hallazgo con foto nueva (subida
     // vía `/api/files`, con `fotoKey` y `fotoUrl: null`) mostraba la ficha
     // sin foto.

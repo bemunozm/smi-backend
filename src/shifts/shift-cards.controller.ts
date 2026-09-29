@@ -17,8 +17,8 @@ import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { ShiftsService } from './shifts.service';
 
 /**
- * Tarjetas de turno de Supervisión en Terreno, Módulo A (RFC Supervisión en
- * Terreno, Fase 2). Todo el módulo es SUPERVISOR/ADMIN — no hay lectura
+ * Tarjetas de turno de Supervisión en Terreno, Módulo A. Todo el módulo es
+ * SUPERVISOR/ADMIN — no hay lectura
  * abierta a otros roles (a diferencia de, por ejemplo, `EquipmentController`)
  * porque una tarjeta expone datos operativos de turno, no un catálogo.
  */

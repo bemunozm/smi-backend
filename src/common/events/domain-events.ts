@@ -62,8 +62,8 @@ export interface ItemLowStockEvent {
 }
 
 /**
- * Emitido por `ShiftReportsService` (RFC Supervisión en Terreno, Fase 3)
- * DESPUÉS de que la fila `ShiftExitReport` ya se confirmó en la base de
+ * Emitido por `ShiftReportsService` (RFC Supervisión en Terreno) DESPUÉS de
+ * que la fila `ShiftExitReport` ya se confirmó en la base de
  * datos — nunca antes (ver `ShiftReportsService.create`). `fileKey` es la
  * key privada en el bucket (el listener la usa con
  * `StorageService.getObjectBuffer` para adjuntar el PDF al correo); nunca se

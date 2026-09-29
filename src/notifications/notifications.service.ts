@@ -78,15 +78,7 @@ export class NotificationsService {
     userId: string,
     input: CreateNotificationInput,
   ): Promise<Notification> {
-    const notification = await this.prisma.notification.create({
-      data: {
-        userId,
-        tipo: input.tipo,
-        titulo: input.titulo,
-        cuerpo: input.cuerpo,
-        data: input.data,
-      },
-    });
+    const notification = await this.createNotificationRow(userId, input);
 
     const recipient = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -146,8 +138,7 @@ export class NotificationsService {
   }
 
   /**
-   * Fan-out CON adjunto + destinatarios "externos" sin cuenta (RFC
-   * Supervisión en Terreno, Fase 3 — usado por
+   * Fan-out CON adjunto + destinatarios "externos" sin cuenta (usado por
    * `NotificationsListener.onShiftExitReportSent`). A diferencia de
    * `createForRoles` (correo best-effort silencioso, sin adjunto, sin
    * reportar éxito): acá el caller necesita (a) adjuntar el PDF al correo, y
@@ -180,15 +171,7 @@ export class NotificationsService {
 
     const roleResults = await Promise.all(
       recipients.map(async (recipient) => {
-        await this.prisma.notification.create({
-          data: {
-            userId: recipient.id,
-            tipo: input.tipo,
-            titulo: input.titulo,
-            cuerpo: input.cuerpo,
-            data: input.data,
-          },
-        });
+        await this.createNotificationRow(recipient.id, input);
         return this.mail.sendMail({
           to: recipient.email,
           subject: input.titulo,
@@ -220,15 +203,7 @@ export class NotificationsService {
     recipient: UserResponseDto,
     input: CreateNotificationInput,
   ): Promise<Notification> {
-    const notification = await this.prisma.notification.create({
-      data: {
-        userId: recipient.id,
-        tipo: input.tipo,
-        titulo: input.titulo,
-        cuerpo: input.cuerpo,
-        data: input.data,
-      },
-    });
+    const notification = await this.createNotificationRow(recipient.id, input);
 
     await this.mail.sendMail({
       to: recipient.email,
@@ -237,6 +212,24 @@ export class NotificationsService {
     });
 
     return notification;
+  }
+
+  /** Único punto de escritura de una fila `Notification` — reusado por los 3
+   * caminos que crean una (`createForUser`, `notifyRolesWithAttachment`,
+   * `notifyRecipient`), antes duplicado con el mismo `data` en cada uno. */
+  private createNotificationRow(
+    userId: string,
+    input: CreateNotificationInput,
+  ): Promise<Notification> {
+    return this.prisma.notification.create({
+      data: {
+        userId,
+        tipo: input.tipo,
+        titulo: input.titulo,
+        cuerpo: input.cuerpo,
+        data: input.data,
+      },
+    });
   }
 
   private buildEmailHtml(titulo: string, cuerpo: string): string {

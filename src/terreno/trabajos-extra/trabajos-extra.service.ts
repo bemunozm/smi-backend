@@ -22,8 +22,8 @@ export class TrabajosExtraService {
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
     /**
-     * Operador del catálogo — obligatorio (RFC Supervisión en Terreno, Anexo
-     * 2). Se valida justo después del chequeo de equipo (la precondición más
+     * Operador del catálogo — obligatorio (RFC Supervisión en Terreno). Se
+     * valida justo después del chequeo de equipo (la precondición más
      * barata primero: un 404 de equipo no debería depender de resolver el
      * operador) y ANTES de las reglas más caras de abajo (turno en curso,
      * horómetro, actividades) — así un operador inactivo/inexistente falla

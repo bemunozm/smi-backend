@@ -1,30 +1,9 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { Prisma } from '@prisma/client';
-import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { PrismaService } from '../common/prisma/prisma.service';
+import { buildSession, prismaError } from '../common/testing/fixtures';
 import { OperatorsService } from './operators.service';
-
-function buildSession(role: string): UserSession {
-  return {
-    user: { id: 'u1', role },
-    session: { id: 'session_1' },
-  } as unknown as UserSession;
-}
-
-/** Construye un error de Prisma real (no un duck-type) para que el `instanceof`
- * que usa `OperatorsService` en el mapeo de errores lo reconozca. */
-function prismaError(
-  code: string,
-  meta?: Record<string, unknown>,
-): Prisma.PrismaClientKnownRequestError {
-  return new Prisma.PrismaClientKnownRequestError('mocked prisma error', {
-    code,
-    clientVersion: 'test',
-    meta,
-  });
-}
 
 describe('OperatorsService', () => {
   let service: OperatorsService;
@@ -84,8 +63,7 @@ describe('OperatorsService', () => {
       });
     });
 
-    // B4(a) de la auditoría de seguridad.
-    describe('B4(a) — rut solo para ADMIN/SUPERVISOR', () => {
+    describe('rut solo para ADMIN/SUPERVISOR', () => {
       it('sin session (uso interno, ej. assertActive), NO omite rut — comportamiento previo intacto', async () => {
         findMany.mockResolvedValue([]);
 
@@ -100,7 +78,7 @@ describe('OperatorsService', () => {
       it('ADMIN ve el rut (sin omit)', async () => {
         findMany.mockResolvedValue([]);
 
-        await service.findAll({}, buildSession('ADMIN'));
+        await service.findAll({}, buildSession('u1', 'ADMIN'));
 
         expect(findMany).toHaveBeenCalledWith({
           where: {},
@@ -111,7 +89,7 @@ describe('OperatorsService', () => {
       it('SUPERVISOR ve el rut (sin omit)', async () => {
         findMany.mockResolvedValue([]);
 
-        await service.findAll({}, buildSession('SUPERVISOR'));
+        await service.findAll({}, buildSession('u1', 'SUPERVISOR'));
 
         expect(findMany).toHaveBeenCalledWith({
           where: {},
@@ -122,7 +100,7 @@ describe('OperatorsService', () => {
       it('MANTENEDOR NO ve el rut (omit)', async () => {
         findMany.mockResolvedValue([]);
 
-        await service.findAll({}, buildSession('MANTENEDOR'));
+        await service.findAll({}, buildSession('u1', 'MANTENEDOR'));
 
         expect(findMany).toHaveBeenCalledWith(
           expect.objectContaining({ omit: { rut: true } }),
@@ -140,7 +118,6 @@ describe('OperatorsService', () => {
       );
     });
 
-    // B4(a) de la auditoría de seguridad.
     it('sin session, NO omite rut (uso interno de assertActive)', async () => {
       findUnique.mockResolvedValue({ id: 'op_1', name: 'X', rut: '1-9' });
 
@@ -152,7 +129,7 @@ describe('OperatorsService', () => {
     it('MANTENEDOR no ve rut vía findOne', async () => {
       findUnique.mockResolvedValue({ id: 'op_1', name: 'X' });
 
-      await service.findOne('op_1', buildSession('MANTENEDOR'));
+      await service.findOne('op_1', buildSession('u1', 'MANTENEDOR'));
 
       expect(findUnique).toHaveBeenCalledWith({
         where: { id: 'op_1' },
@@ -163,7 +140,7 @@ describe('OperatorsService', () => {
     it('ADMIN/SUPERVISOR sí ven rut vía findOne', async () => {
       findUnique.mockResolvedValue({ id: 'op_1', name: 'X', rut: '1-9' });
 
-      await service.findOne('op_1', buildSession('SUPERVISOR'));
+      await service.findOne('op_1', buildSession('u1', 'SUPERVISOR'));
 
       expect(findUnique).toHaveBeenCalledWith({ where: { id: 'op_1' } });
     });
@@ -172,7 +149,7 @@ describe('OperatorsService', () => {
       findUnique.mockResolvedValue(null);
 
       await expect(
-        service.findOne('missing', buildSession('MANTENEDOR')),
+        service.findOne('missing', buildSession('u1', 'MANTENEDOR')),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
@@ -310,9 +287,8 @@ describe('OperatorsService', () => {
       }
     });
 
-    // RFC Supervisión en Terreno, Anexo 2 ("operador del catálogo en
-    // Trabajos extra + snapshot único"): `TrabajoExtraordinario.operatorId`
-    // es FK real a `Operator` (`onDelete: SetNull`, igual que `horometros`)
+    // `TrabajoExtraordinario.operatorId` es FK real a `Operator`
+    // (`onDelete: SetNull`, igual que `horometros`)
     // — un borrado físico dejaría ese historial sin operador de catálogo de
     // forma silenciosa.
     it('bloquea el borrado si tiene trabajos extraordinarios asociados', async () => {
@@ -344,9 +320,8 @@ describe('OperatorsService', () => {
       }
     });
 
-    // RFC Supervisión en Terreno, anexo "el operador deja de ser usuario de
-    // la plataforma": `Equipment.currentOperatorId` es FK real a `Operator`
-    // (`onDelete: SetNull`) — un borrado físico dejaría el equipo sin
+    // `Equipment.currentOperatorId` es FK real a `Operator` (`onDelete:
+    // SetNull`) — un borrado físico dejaría el equipo sin
     // operador de forma silenciosa, así que se bloquea igual que con
     // `horometros`.
     it('bloquea el borrado si el operador está asignado a un equipo (currentOperatorId)', async () => {

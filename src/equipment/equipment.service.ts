@@ -37,8 +37,8 @@ const ESTADOS: readonly EquipmentStatus[] = Object.values(EquipmentStatus);
  * cargado, no queremos perder el último nivel real conocido.
  *
  * `currentOperator` SÍ es una relación Prisma real (`Operator`, catálogo
- * propio — RFC Supervisión en Terreno, anexo "el operador deja de ser
- * usuario de la plataforma") y se trae acá con `include`, `{id,name}` nomás.
+ * propio — el operador ya no es usuario de la plataforma) y se trae acá con
+ * `include`, `{id,name}` nomás.
  * `currentSupervisorId` sigue siendo un soft ref a `user.id` (sin FK, ver
  * `schema.prisma`) — se resuelve aparte con `resolveAssignedUsers` porque NO
  * es una relación Prisma.
@@ -77,11 +77,16 @@ export interface OpenShiftSummary {
   operador: string;
   turno: string;
   fecha: Date;
-  /** Nombre del supervisor que abrió la tarjeta (RFC Supervisión en Terreno,
-   * Fase 2 — `RegistroHorometro.supervisorId`), o `null` si el registro no
-   * tiene supervisor asociado (dato legacy, previo a Fase 1) o el usuario ya
-   * no existe (soft ref, ver comentario de cabecera del schema). */
+  /** Nombre del supervisor que abrió la tarjeta (`RegistroHorometro.supervisorId`),
+   * o `null` si el registro no tiene supervisor asociado (dato legacy) o el
+   * usuario ya no existe (soft ref, ver comentario de cabecera del schema). */
   supervisorName: string | null;
+  /** `RegistroHorometro.shiftId` — no-null cuando la tarjeta abierta viene del
+   * Registro de turno de Supervisión en Terreno (no de la entrada legacy de
+   * Flota). El front lo usa para avisarle a un ADMIN, antes de cerrar esta
+   * tarjeta desde Flota, que ese flujo omite litros y foto y puede dejar
+   * huérfano el cierre que el supervisor tenía encolado. */
+  shiftId: string | null;
 }
 
 /** Campos que `findAll`/`findOne`/`updateAssignment` agregan a la ficha cruda de Prisma. */
@@ -246,8 +251,8 @@ export class EquipmentService {
       ? await this.storage.claimTmp(photoKey, userId, 'equipment-photo')
       : undefined;
 
-    // El `try/catch` cubre SOLO la escritura en Prisma (hallazgo BAJO B1 de
-    // la revisión de seguridad): `withUsageFields` (shaping, que incluye
+    // El `try/catch` cubre SOLO la escritura en Prisma: `withUsageFields`
+    // (shaping, que incluye
     // `StorageService.sign`) queda AFUERA a propósito — si el `create` ya
     // confirmó en BD y el shaping falla después, `finalKey` YA está
     // persistido en la fila, así que descartarlo dejaría el equipo
@@ -298,8 +303,8 @@ export class EquipmentService {
       );
     }
 
-    // Mismo criterio que `create` (hallazgo BAJO B1): el `try/catch` cubre
-    // SOLO la escritura en Prisma. El borrado de la foto vieja y el shaping
+    // Mismo criterio que `create`: el `try/catch` cubre SOLO la escritura en
+    // Prisma. El borrado de la foto vieja y el shaping
     // van DESPUÉS, fuera del try — si fallan, la escritura en BD ya está
     // confirmada y no hay nada que descartar de `finalKey`.
     let equipment: EquipmentWithUsageRelations;
@@ -347,8 +352,7 @@ export class EquipmentService {
    * está dado de baja; un id de `user` en vez de `Operator` también da 404,
    * porque son tablas distintas). `supervisorId` sigue validando contra
    * `user` con `assertSupervisor` (rol SUPERVISOR, no baneado) — el
-   * supervisor SÍ es un usuario de la plataforma (RFC Supervisión en
-   * Terreno, anexo "el operador deja de ser usuario de la plataforma").
+   * supervisor SÍ es un usuario de la plataforma, a diferencia del operador.
    */
   async updateAssignment(id: string, dto: UpdateEquipmentAssignmentDto) {
     await this.assertExiste(id);
@@ -579,9 +583,9 @@ export class EquipmentService {
    * vacío sin consultar si no hay ningún id (caso común: ningún equipo "en
    * uso" en la página). Usado para `currentSupervisorId` (`shapeUsage`) y
    * para el `supervisorId` de la tarjeta abierta (`resolveOpenShifts`) — NO
-   * para `currentOperatorId`, que desde el anexo "el operador deja de ser
-   * usuario de la plataforma" se resuelve vía la relación Prisma
-   * `currentOperator` (`EQUIPMENT_USAGE_INCLUDE`), no acá. `user.id` sigue
+   * para `currentOperatorId`, que se resuelve vía la relación Prisma
+   * `currentOperator` (`EQUIPMENT_USAGE_INCLUDE`), no acá (el operador ya no
+   * es usuario de la plataforma). `user.id` sigue
    * siendo soft ref sin FK (ver `schema.prisma`) — un id sin fila en `user`
    * (dato huérfano) simplemente no aparece en el mapa y el caller lo trata
    * como `null`, en vez de reventar la respuesta completa.
@@ -628,11 +632,12 @@ export class EquipmentService {
         turno: true,
         fecha: true,
         supervisorId: true,
+        shiftId: true,
       },
     });
 
-    // `supervisorName` (RFC Supervisión en Terreno, Fase 2): UNA consulta
-    // batch extra, aparte de `resolveAssignedUsers` (que resuelve
+    // `supervisorName`: UNA consulta batch extra, aparte de
+    // `resolveAssignedUsers` (que resuelve
     // `currentOperatorId`/`currentSupervisorId`, campos DISTINTOS de la
     // asignación de uso — acá se necesita el `supervisorId` de la TARJETA,
     // que solo se conoce después de leer `turnos`). `resolveAssignedUsers` ya
@@ -653,6 +658,7 @@ export class EquipmentService {
           supervisorName: turno.supervisorId
             ? (supervisoresPorId.get(turno.supervisorId)?.name ?? null)
             : null,
+          shiftId: turno.shiftId,
         },
       ]),
     );
@@ -701,9 +707,9 @@ export class EquipmentService {
    * este chequeo, un `PATCH :id/assignment` que mande el id directo (sin
    * pasar por el picker) podía asignar a alguien baneado igual. El operador
    * ya NO pasa por acá — `updateAssignment` valida `operatorId` contra el
-   * catálogo con `OperatorsService.assertActive` (RFC Supervisión en
-   * Terreno, anexo "el operador deja de ser usuario de la plataforma"), sin
-   * `role` param: solo hay un rol posible para este chequeo.
+   * catálogo con `OperatorsService.assertActive` (el operador ya no es
+   * usuario de la plataforma), sin `role` param: solo hay un rol posible
+   * para este chequeo.
    */
   private async assertSupervisor(userId: string): Promise<void> {
     const user = await this.prisma.user.findUnique({

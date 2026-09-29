@@ -8,7 +8,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
 import { env } from '../common/config/env';
-import { PrismaService } from '../common/prisma/prisma.service';
 import {
   DOMAIN_EVENTS,
   type HallazgoCreatedEvent,
@@ -18,7 +17,8 @@ import {
   type ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
 import { MailService } from '../mail/mail.service';
-import { StorageService } from '../storage/storage.service';
+import { ShiftReportsService } from '../shifts/shift-reports.service';
+import type { ShiftExitReportEmailStatus } from '../shifts/shift-exit-report-email-status';
 import { NotificationsService } from './notifications.service';
 import {
   HALLAZGO_CREATED_ROLES,
@@ -33,10 +33,6 @@ import {
   buildShiftExitReportSentTemplate,
 } from './notifications.constants';
 
-/** `ShiftExitReport.emailStatus` — mismo vocabulario libre (string) que el
- * resto del schema de Terreno, ver `prisma/schema.prisma`. */
-type ShiftExitReportEmailStatus = 'SENT' | 'FAILED' | 'SKIPPED';
-
 @Injectable()
 export class NotificationsListener {
   private readonly logger = new Logger(NotificationsListener.name);
@@ -44,8 +40,7 @@ export class NotificationsListener {
   constructor(
     private readonly notifications: NotificationsService,
     private readonly mail: MailService,
-    private readonly storage: StorageService,
-    private readonly prisma: PrismaService,
+    private readonly shiftReports: ShiftReportsService,
   ) {}
 
   @OnEvent(DOMAIN_EVENTS.HALLAZGO_CREATED)
@@ -109,15 +104,16 @@ export class NotificationsListener {
   }
 
   /**
-   * `shift.exit-report` (RFC Supervisión en Terreno, Fase 3) — único lugar
-   * que envía la notificación in-app Y el correo con el PDF adjunto para
-   * este evento (ver docstring de `NotificationsService.notifyRolesWithAttachment`).
-   * SIEMPRE actualiza `ShiftExitReport.emailStatus`/`notifiedAt` al final,
-   * incluso si algo falla — nunca deja el `'PENDING'` inicial colgado, y
-   * nunca deja escapar la excepción (el evento se emite fire-and-forget
-   * DESPUÉS de que la fila ya se confirmó, así que un error acá no puede
-   * tumbar la request HTTP igual, pero dejarlo escapar generaría un unhandled
-   * rejection).
+   * `shift.exit-report` — único lugar que envía la notificación in-app Y el
+   * correo con el PDF adjunto para este evento (ver docstring de
+   * `NotificationsService.notifyRolesWithAttachment`). SIEMPRE actualiza
+   * `emailStatus` al final vía `ShiftReportsService.markEmailStatus`, incluso
+   * si algo falla — nunca deja el `'PENDING'` inicial colgado, y nunca deja
+   * escapar la excepción (el evento se emite fire-and-forget DESPUÉS de que
+   * la fila ya se confirmó, así que un error acá no puede tumbar la request
+   * HTTP igual, pero dejarlo escapar generaría un unhandled rejection). Solo
+   * orquesta: la escritura de `ShiftExitReport` y la lectura del PDF viven en
+   * `ShiftReportsService`, dueño de ese modelo.
    */
   @OnEvent(DOMAIN_EVENTS.SHIFT_EXIT_REPORT_SENT)
   async onShiftExitReportSent(event: ShiftExitReportSentEvent): Promise<void> {
@@ -134,10 +130,7 @@ export class NotificationsListener {
     }
 
     try {
-      await this.prisma.shiftExitReport.update({
-        where: { id: event.reportId },
-        data: { emailStatus, notifiedAt: new Date() },
-      });
+      await this.shiftReports.markEmailStatus(event.reportId, emailStatus);
     } catch (error) {
       this.logger.error(
         `No se pudo actualizar emailStatus del reporte "${event.reportId}"`,
@@ -164,18 +157,12 @@ export class NotificationsListener {
       return 'SKIPPED';
     }
 
-    const pdfBuffer = await this.storage.getObjectBuffer(event.fileKey);
+    const attachment = await this.shiftReports.getAttachment(event.reportId);
     const { recipientCount, allEmailsSent } =
       await this.notifications.notifyRolesWithAttachment(
         SHIFT_EXIT_REPORT_ROLES,
         { ...template, data },
-        [
-          {
-            filename: event.fileName,
-            content: pdfBuffer,
-            contentType: 'application/pdf',
-          },
-        ],
+        [attachment],
         env.shiftReportExtraRecipients,
       );
 

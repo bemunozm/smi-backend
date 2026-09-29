@@ -109,7 +109,7 @@ describe('HallazgosService', () => {
 
     /**
      * `fotoUrl` (legacy) ya no es un campo de `CreateHallazgoDto` — se
-     * retiró en el cierre de R2 (RFC Supervisión en Terreno, Fase 3): ya no
+     * retiró en el cierre de R2 (RFC Supervisión en Terreno): ya no
      * se puede CREAR un hallazgo con ella, pero los hallazgos viejos que ya
      * la tienen siguen mostrándola tal cual en lectura (`findOne`/`shape`).
      */

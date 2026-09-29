@@ -86,7 +86,7 @@ export function buildItemLowStockTemplate(
   };
 }
 
-/** `shift.exit-report` → solo ADMIN (RFC Supervisión en Terreno, Fase 3). */
+/** `shift.exit-report` → solo ADMIN (RFC Supervisión en Terreno). */
 export const SHIFT_EXIT_REPORT_ROLES: readonly Role[] = [ROLES.ADMIN];
 
 function pluralizeEquipo(cardCount: number): string {

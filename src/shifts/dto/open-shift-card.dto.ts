@@ -9,6 +9,7 @@ import {
 } from 'class-validator';
 
 import { IsDateOnly } from '../date-only';
+import { SHIFT_TYPES, type ShiftType } from '../shift-type';
 
 export class OpenShiftCardDto {
   /** UUID v4 generado por el CLIENTE — es el PK de `RegistroHorometro` (RFC
@@ -34,14 +35,14 @@ export class OpenShiftCardDto {
   valorInicial!: number;
 
   /** `YYYY-MM-DD`, sin hora — ver `date-only.ts`. Valida shape + calendario
-   * real (B2(a)); la ventana de fechas razonable (B2(b)) se valida aparte en
+   * real; la ventana de fechas razonable se valida aparte en
    * `ShiftsService.openCard` (necesita `code: 'INVALID_SHIFT_DATE'`, que un
    * decorador de class-validator no puede devolver). */
   @IsDateOnly()
   shiftDate!: string;
 
-  @IsIn(['DIURNO', 'NOCTURNO'])
-  shiftType!: string;
+  @IsIn(SHIFT_TYPES)
+  shiftType!: ShiftType;
 
   /** Hora del DISPOSITIVO al abrir la tarjeta (no la del servidor) — ver
    * `capture-time.ts`. */

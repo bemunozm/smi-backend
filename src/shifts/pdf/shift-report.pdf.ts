@@ -1,6 +1,6 @@
 /**
  * `docDefinition` del PDF de reporte de salida de turno (RFC Supervisión en
- * Terreno, Fase 3) — función PURA a propósito (sin tocar pdfmake ni el
+ * Terreno) — función PURA a propósito (sin tocar pdfmake ni el
  * storage): así es testeable sin renderizar un PDF real. `pdf-renderer.ts`
  * es quien la alimenta a pdfmake y devuelve el `Buffer` final.
  */
@@ -8,7 +8,10 @@ import type { Content, Table, TDocumentDefinitions } from 'pdfmake/interfaces';
 
 import { BUSINESS_TIME_ZONE } from '../date-only';
 
-const MASTHEAD = 'TRANSPORTES OPTIMIZA SPA';
+/** Encabezado de texto del PDF — la razón social del cliente hasta que llegue
+ * su logo. Si un segundo cliente aparece, esto se mueve a config (por ahora
+ * un único cliente, no vale la pena la indirección). */
+export const SHIFT_REPORT_MASTHEAD = 'TRANSPORTES OPTIMIZA SPA';
 const REPORT_TITLE = 'Reporte de salida de turno';
 
 export interface ShiftReportCardInput {
@@ -149,7 +152,7 @@ export function buildShiftExitReportDocDefinition(
       tableHeader: { fontSize: 9, bold: true, fillColor: '#eeeeee' },
     },
     content: [
-      { text: MASTHEAD, style: 'masthead' },
+      { text: SHIFT_REPORT_MASTHEAD, style: 'masthead' },
       { text: REPORT_TITLE, style: 'title' },
       {
         columns: [

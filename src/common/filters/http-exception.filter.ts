@@ -21,13 +21,31 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
+/** Forma válida de un `code` de negocio: UPPER_SNAKE_CASE, empieza con
+ * letra. El filtro pasa a la respuesta CUALQUIER `code` con esta forma, esté
+ * o no registrado en `ERROR_CODES` (ver `src/common/errors/error-codes.ts`):
+ * ese catálogo es el contrato tipado para los throw sites, no un gate del
+ * filtro. Si dependiera de estar en el inventario, un código de negocio
+ * nuevo lanzado sin registrarlo ahí desaparecería en silencio de la
+ * respuesta — y el outbox offline del front clasifica por `code`, así que
+ * esa desaparición sería invisible hasta reventar en producción. Un valor
+ * mal formado (minúsculas, espacios, no-string) sí se descarta: no
+ * parece un clasificador de negocio real. */
+const BUSINESS_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
+function isWellFormedErrorCode(value: unknown): value is string {
+  return typeof value === 'string' && BUSINESS_ERROR_CODE_PATTERN.test(value);
+}
+
 interface ErrorResponseBody {
   data: null;
   message: string;
   /** Opcional: clasificador estable para que el caller (ej. el outbox
    * offline del front) distinga casos de negocio sin parsear `message`. Solo
    * aparece cuando quien lanzó la excepción lo puso explícito, ej.
-   * `new ConflictException({ message, code: 'EQUIPMENT_BUSY' })`. */
+   * `new ConflictException({ message, code: ERROR_CODES.EQUIPMENT_BUSY })`,
+   * y tiene forma de código de negocio (UPPER_SNAKE) — no exige que esté
+   * registrado en `ERROR_CODES`. */
   code?: string;
 }
 
@@ -96,8 +114,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
   }
 
   /** `undefined` salvo que el body de la excepción sea un objeto con un
-   * `code` de tipo string explícito — nunca lo inventa a partir del
-   * `message` ni del nombre de la excepción. */
+   * `code` bien formado (UPPER_SNAKE) — nunca lo inventa a partir del
+   * `message` ni del nombre de la excepción, y nunca lo exige del inventario
+   * de `ERROR_CODES` (ver comentario de `BUSINESS_ERROR_CODE_PATTERN`). */
   private resolveCode(exception: unknown): string | undefined {
     if (!(exception instanceof HttpException)) return undefined;
 
@@ -107,6 +126,6 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     const code = (body as { code?: unknown }).code;
-    return typeof code === 'string' ? code : undefined;
+    return isWellFormedErrorCode(code) ? code : undefined;
   }
 }

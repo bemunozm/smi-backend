@@ -34,8 +34,8 @@ export function configureApp(app: NestExpressApplication): void {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
-  // SECURITY-NOTES.md #B1 (resuelto): con los primeros DTOs de dominio
-  // (UsersModule) ya hay body propio que validar fuera de Better Auth.
+  // Ver SECURITY-NOTES.md: con los primeros DTOs de dominio (UsersModule)
+  // ya hay body propio que validar fuera de Better Auth.
   // `whitelist` descarta props no declaradas en el DTO; `forbidNonWhitelisted`
   // rechaza la request si venían props extra (en vez de solo ignorarlas).
   app.useGlobalPipes(
@@ -51,7 +51,7 @@ export function configureApp(app: NestExpressApplication): void {
   // basePath ('/api/auth'), al margen del prefijo global de Nest.
   app.setGlobalPrefix('api');
 
-  // NOTA (cierre de R2, RFC Supervisión en Terreno Fase 3): acá vivía
+  // NOTA (cierre de R2): acá vivía
   // `app.useStaticAssets(...)`, que servía `/uploads/*` público y sin
   // autenticación (el `UploadsController`/`UploadsModule` legacy de Terreno)
   // — retirado en esta fase. Todo archivo (Flota Y Terreno) pasa ahora por

@@ -122,4 +122,5 @@ Rate limiting, bind de Postgres a `127.0.0.1`, helmet, cookies seguras, TTL de s
 - ❌ `any` en TypeScript · ❌ `console.log` para errores · ❌ `new PrismaClient()` suelto (usa `PrismaService`)
 - ❌ Hardcodear credenciales/URLs · ❌ push directo a `main` · ❌ co-autoría de IA en commits
 - ❌ Insertar/actualizar credenciales o rol con Prisma crudo → usa `auth.api` de Better Auth
+  - Excepción documentada: `scripts/set-password.ts` — `auth.api.setUserPassword` exige una sesión de admin ya autenticada, que un script de servidor no puede satisfacer (ver el docstring del archivo para el detalle).
 - ❌ Modelos de dominio en `schema.prisma` sin avisar al equipo

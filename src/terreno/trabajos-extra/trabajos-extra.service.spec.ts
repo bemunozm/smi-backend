@@ -66,7 +66,7 @@ describe('TrabajosExtraService', () => {
    * fallar, no inventar un cero.
    */
   it('rechaza el horómetro final menor que el inicial en vez de guardar cero', async () => {
-    const invertido = {
+    const invertido: CreateTrabajoExtraDto = {
       equipoId: 'e1',
       operatorId: 'op_1',
       faena: 'Patillo',
@@ -195,9 +195,8 @@ describe('TrabajosExtraService', () => {
     expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
   });
 
-  // RFC Supervisión en Terreno, Anexo 2 ("operador del catálogo en Trabajos
-  // extra + snapshot único"): `operador` sale del DTO — el cliente manda
-  // solo `operatorId`, y el servidor arma el snapshot desde el catálogo.
+  // `operador` sale del DTO — el cliente manda solo `operatorId`, y el
+  // servidor arma el snapshot desde el catálogo.
   describe('operatorId (catálogo)', () => {
     it('valida el operador vía OperatorsService.assertActive y arma el snapshot desde el catálogo', async () => {
       assertActive.mockResolvedValue({

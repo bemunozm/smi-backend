@@ -8,6 +8,7 @@ import {
 } from 'class-validator';
 
 import { IsDateOnly } from '../date-only';
+import { SHIFT_TYPES, type ShiftType } from '../shift-type';
 
 export class CreateShiftReportDto {
   /** UUID v4 generado por el CLIENTE — idempotencia (RFC Supervisión en
@@ -16,13 +17,13 @@ export class CreateShiftReportDto {
   id!: string;
 
   /** `YYYY-MM-DD`, sin hora — ver `date-only.ts`. Ver el mismo comentario en
-   * `OpenShiftCardDto.shiftDate` sobre por qué la ventana de fechas (B2(b))
-   * se valida aparte, en `ShiftReportsService.create`. */
+   * `OpenShiftCardDto.shiftDate` sobre por qué la ventana de fechas se
+   * valida aparte, en `ShiftReportsService.create`. */
   @IsDateOnly()
   shiftDate!: string;
 
-  @IsIn(['DIURNO', 'NOCTURNO'])
-  shiftType!: string;
+  @IsIn(SHIFT_TYPES)
+  shiftType!: ShiftType;
 
   /** Ids de tarjeta (`RegistroHorometro.id`) a incluir en el PDF. 1..100,
    * sin duplicados — algunos pueden no existir todavía en el servidor (una

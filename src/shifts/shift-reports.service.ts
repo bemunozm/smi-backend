@@ -1,5 +1,5 @@
 /**
- * Reporte de salida de turno (RFC Supervisión en Terreno, Fase 3): genera el
+ * Reporte de salida de turno (RFC Supervisión en Terreno): genera el
  * PDF con pdfmake, lo sube a storage privado y crea la fila `ShiftExitReport`
  * — idempotente por `dto.id` (UUID del cliente), mismo estilo que
  * `ShiftsService.openCard`/`closeCard` (ver el comentario de cabecera de
@@ -24,6 +24,7 @@ import { ROLES, sessionHasRole } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type { ShiftExitReportSentEvent } from '../common/events/domain-events';
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { StorageService } from '../storage/storage.service';
 import { assertReasonableCapturedAt } from './capture-time';
 import { assertShiftDateWithinWindow, parseDateOnlyUtc } from './date-only';
@@ -33,6 +34,10 @@ import {
   buildShiftExitReportDocDefinition,
   type ShiftReportCardInput,
 } from './pdf/shift-report.pdf';
+import {
+  SHIFT_EXIT_REPORT_EMAIL_STATUS_INITIAL,
+  type ShiftExitReportEmailStatus,
+} from './shift-exit-report-email-status';
 
 const CARDS_INCLUDE = {
   equipo: { select: { internalCode: true, type: true } },
@@ -49,24 +54,33 @@ export interface ShiftReportResponse {
   cardCount: number;
   requestedAt: Date;
   createdAt: Date;
-  emailStatus: string;
+  emailStatus: ShiftExitReportEmailStatus;
   /** Ids de `cardIds` que llegaron en la request pero NO se encontraron para
    * este turno (offline: pueden estar encoladas en el outbox del
    * dispositivo). El PDF se genera igual con las que SÍ se encontraron. */
   missingCardIds: string[];
 }
 
-// M2(a) de la auditoría de seguridad: tope de reportes por turno en una
-// ventana — cada reporte genera un PDF (CPU) + sube al bucket + potencialmente
+/** Adjunto de correo del reporte de salida — `NotificationsListener` lo pide
+ * por `reportId` en vez de leer storage directamente: el listener no debe
+ * conocer cómo se guarda un `ShiftExitReport`. */
+export interface ShiftReportAttachment {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+}
+
+// Tope de reportes por turno en una ventana — cada reporte genera un PDF
+// (CPU) + sube al bucket + potencialmente
 // dispara correos a ADMIN y a los destinatarios externos, así que un loop
 // (bug de cliente o abuso deliberado) reenviando el mismo turno sin id
 // repetido puede generar un aluvión de PDFs y correos.
 export const REPORT_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutos
 export const REPORT_RATE_LIMIT_MAX_PER_WINDOW = 3;
 
-// B5 (auditoría de seguridad): el nombre del supervisor (`session.user.name`)
-// viaja sin más validación que la de Better Auth hacia el PDF y el
-// asunto/cuerpo del correo — un nombre absurdamente largo podría deformar el
+// El nombre del supervisor (`session.user.name`) viaja sin más validación
+// que la de Better Auth hacia el PDF y el asunto/cuerpo del correo — un
+// nombre absurdamente largo podría deformar el
 // layout del PDF o el asunto del correo. 120 (no un valor más chico): mismo
 // tope que `CreateUserDto.name`/`CreateOperatorDto.name`.
 const SUPERVISOR_NAME_MAX_LENGTH = 120;
@@ -105,7 +119,7 @@ export class ShiftReportsService {
       if (existing.createdById !== session.user.id) {
         throw new ConflictException({
           message: 'Ya existe un reporte con ese id de otro supervisor',
-          code: 'ID_CONFLICT',
+          code: ERROR_CODES.ID_CONFLICT,
         });
       }
       // Reintento de la MISMA request (offline) — se devuelve tal cual, SIN
@@ -119,9 +133,8 @@ export class ShiftReportsService {
       );
     }
 
-    // B2(b): ventana razonable de `shiftDate` — DESPUÉS del replay (ver
-    // comentario de arriba), sobre una request que SÍ va a crear un reporte
-    // nuevo.
+    // Ventana razonable de `shiftDate` — DESPUÉS del replay (ver comentario
+    // de arriba), sobre una request que SÍ va a crear un reporte nuevo.
     assertShiftDateWithinWindow(dto.shiftDate, now);
 
     const shift = await this.prisma.shift.findUnique({
@@ -139,13 +152,13 @@ export class ShiftReportsService {
     if (!shift) {
       throw new NotFoundException({
         message: 'No hay un turno abierto para esa fecha y tipo',
-        code: 'SHIFT_NOT_FOUND',
+        code: ERROR_CODES.SHIFT_NOT_FOUND,
       });
     }
 
-    // M2(a) (auditoría de seguridad): tope de reportes NUEVOS por turno en
-    // una ventana — DESPUÉS del replay (un reintento del mismo id nunca
-    // cuenta ni se limita) y DESPUÉS de resolver el turno (necesita
+    // Tope de reportes NUEVOS por turno en una ventana — DESPUÉS del replay
+    // (un reintento del mismo id nunca cuenta ni se limita) y DESPUÉS de
+    // resolver el turno (necesita
     // `shift.id`), ANTES de renderizar el PDF (el trabajo caro).
     const recentReportsCount = await this.prisma.shiftExitReport.count({
       where: {
@@ -160,7 +173,7 @@ export class ShiftReportsService {
         {
           message:
             'Demasiados reportes seguidos para este turno. Espera unos minutos.',
-          code: 'REPORT_RATE_LIMITED',
+          code: ERROR_CODES.REPORT_RATE_LIMITED,
         },
         HttpStatus.TOO_MANY_REQUESTS,
       );
@@ -174,16 +187,16 @@ export class ShiftReportsService {
     if (cards.length === 0) {
       throw new ConflictException({
         message: 'Ninguna de las tarjetas indicadas pertenece a este turno',
-        code: 'NO_CARDS',
+        code: ERROR_CODES.NO_CARDS,
       });
     }
 
     const foundIds = new Set(cards.map((card) => card.id));
     const missingCardIds = dto.cardIds.filter((id) => !foundIds.has(id));
 
-    // B5 (auditoría de seguridad): `session.user.name` viaja sin más límite
-    // que el de Better Auth hacia el PDF y hacia el asunto/cuerpo del correo
-    // (vía el evento de abajo) — se trunca UNA vez acá y se reusa en ambos
+    // `session.user.name` viaja sin más límite que el de Better Auth hacia
+    // el PDF y hacia el asunto/cuerpo del correo (vía el evento de abajo) —
+    // se trunca UNA vez acá y se reusa en ambos
     // destinos, en vez de truncar cada uno por separado.
     const supervisorName = truncate(
       session.user.name,
@@ -222,7 +235,7 @@ export class ShiftReportsService {
           cardCount: cards.length,
           requestedAt: new Date(dto.requestedAt),
           createdById: session.user.id,
-          emailStatus: 'PENDING',
+          emailStatus: SHIFT_EXIT_REPORT_EMAIL_STATUS_INITIAL,
         },
       });
     } catch (error: unknown) {
@@ -243,7 +256,7 @@ export class ShiftReportsService {
         }
         throw new ConflictException({
           message: 'Ya existe un reporte con ese id de otro supervisor',
-          code: 'ID_CONFLICT',
+          code: ERROR_CODES.ID_CONFLICT,
         });
       }
       throw error;
@@ -283,11 +296,52 @@ export class ShiftReportsService {
     if (report.createdById !== session.user.id && !isAdmin) {
       throw new ForbiddenException({
         message: 'No puedes descargar el reporte de otro supervisor',
-        code: 'NOT_OWNER',
+        code: ERROR_CODES.NOT_OWNER,
       });
     }
 
     return this.storage.sign(report.fileKey, { fileName: report.fileName });
+  }
+
+  /**
+   * Actualiza `emailStatus`/`notifiedAt` tras procesar `shift.exit-report` —
+   * único punto de escritura de esta columna, para que `NotificationsListener`
+   * no dependa de Prisma directamente sobre un modelo que no le pertenece.
+   * Solo transiciona desde el `'PENDING'` inicial: si el evento se
+   * reprocesara (redelivery) no debe pisar un estado terminal ya guardado.
+   */
+  async markEmailStatus(
+    reportId: string,
+    status: ShiftExitReportEmailStatus,
+  ): Promise<void> {
+    await this.prisma.shiftExitReport.updateMany({
+      where: {
+        id: reportId,
+        emailStatus: SHIFT_EXIT_REPORT_EMAIL_STATUS_INITIAL,
+      },
+      data: { emailStatus: status, notifiedAt: new Date() },
+    });
+  }
+
+  /**
+   * Adjunto de correo del reporte: `NotificationsListener` no inyecta
+   * `StorageService` para bajar el PDF — se lo pide a este service, dueño de
+   * `ShiftExitReport` y de su `fileKey`.
+   */
+  async getAttachment(reportId: string): Promise<ShiftReportAttachment> {
+    const report = await this.prisma.shiftExitReport.findUnique({
+      where: { id: reportId },
+    });
+    if (!report) {
+      throw new NotFoundException('Reporte no encontrado');
+    }
+
+    const content = await this.storage.getObjectBuffer(report.fileKey);
+    return {
+      filename: report.fileName,
+      content,
+      contentType: 'application/pdf',
+    };
   }
 
   private toCardInput(card: CardWithEquipo): ShiftReportCardInput {
@@ -337,7 +391,11 @@ export class ShiftReportsService {
       cardCount: report.cardCount,
       requestedAt: report.requestedAt,
       createdAt: report.createdAt,
-      emailStatus: report.emailStatus,
+      // La columna Prisma es `String` (ver `shift-exit-report-email-status.ts`);
+      // este service es el ÚNICO que la escribe (`create`/`markEmailStatus`),
+      // siempre con uno de los 4 valores del union, así que el cast es seguro
+      // por construcción — no un `any` disfrazado.
+      emailStatus: report.emailStatus as ShiftExitReportEmailStatus,
       missingCardIds,
     };
   }

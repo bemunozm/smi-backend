@@ -6,8 +6,8 @@ import {
 } from './env';
 
 /**
- * Cubre el fix del punto 0 del plan de Fase 2 (RFC R2-storage): el máximo
- * de `STORAGE_SIGNED_URL_TTL_SECONDS` bajó de 604800 a 403200 porque
+ * Cubre el fix del máximo de `STORAGE_SIGNED_URL_TTL_SECONDS` (RFC
+ * R2-storage): bajó de 604800 a 403200 porque
  * `StorageService.sign` firma con `expiresIn = TTL + floor(TTL/2)` (ventana
  * estable, ver `storage.service.ts`) — con el máximo viejo (604800) eso daba
  * expiresIn=907200, por encima del límite real de SigV4 (604800), y
@@ -58,8 +58,8 @@ describe('parseStorageSignedUrlTtlSeconds', () => {
 });
 
 /**
- * Info (auditoría de seguridad, prep túnel HTTPS): `AUTH_RATE_LIMIT_ENABLED`
- * gobierna el `rateLimit.enabled` de Better Auth (`auth.ts`) — sin valor
+ * `AUTH_RATE_LIMIT_ENABLED` gobierna el `rateLimit.enabled` de Better Auth
+ * (`auth.ts`) — sin valor
  * explícito, cae al default de si el proceso corre en producción o no (para
  * no romper el e2e suite, que hace login muchas veces seguidas).
  */

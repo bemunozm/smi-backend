@@ -134,8 +134,7 @@ export class UpdateEquipmentStatusDto {
  * El `EquipmentService` valida `operatorId` contra el catálogo propio
  * (`OperatorsService.assertActive` — activo, existe) y `supervisorId` contra
  * `user` (rol SUPERVISOR, no baneado) antes de guardar — el operador ya NO
- * es un usuario (RFC Supervisión en Terreno, anexo "el operador deja de ser
- * usuario de la plataforma").
+ * es un usuario de la plataforma.
  */
 export class UpdateEquipmentAssignmentDto {
   @IsOptional()

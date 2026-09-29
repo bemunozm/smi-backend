@@ -32,6 +32,7 @@ import {
   DEFAULT_DEV_STORAGE_SECRET_ACCESS_KEY,
   env,
 } from '../common/config/env';
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { buildContentDisposition } from './content-disposition';
 import { detectFileSignature } from './file-signature';
 import {
@@ -113,7 +114,7 @@ export class StorageService implements OnModuleInit {
   /**
    * Aviso best-effort (nunca bloquea el boot) para que un despliegue real no
    * quede corriendo en silencio con las credenciales de desarrollo de MinIO
-   * — ver SECURITY-NOTES.md, hallazgo BAJO B2 de la revisión de seguridad.
+   * — ver SECURITY-NOTES.md.
    * Dispara si:
    *   (a) las credenciales efectivas son EXACTAMENTE las del MinIO de
    *       `docker-compose.yml` pero el endpoint NO es localhost (alguien
@@ -269,13 +270,13 @@ export class StorageService implements OnModuleInit {
       );
     } catch (error) {
       if (this.isNoSuchKey(error)) {
-        // `code` (RFC Supervisión en Terreno, Fase 2) para que el outbox
+        // `code` (RFC Supervisión en Terreno) para que el outbox
         // offline del front distinga ESTE 400 (hay que volver a subir el
         // archivo desde el blob local) de cualquier otro 400 de negocio, sin
         // parsear el mensaje.
         throw new BadRequestException({
           message: 'El archivo temporal expiró o no existe, súbelo de nuevo',
-          code: 'TMP_KEY_EXPIRED',
+          code: ERROR_CODES.TMP_KEY_EXPIRED,
         });
       }
       throw error;

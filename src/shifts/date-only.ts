@@ -16,6 +16,8 @@ import {
   type ValidationOptions,
 } from 'class-validator';
 
+import { ERROR_CODES } from '../common/errors/error-codes';
+
 export const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Huso horario de negocio del sistema (Chile continental, UTC-3/UTC-4 según
@@ -29,7 +31,7 @@ export const BUSINESS_TIME_ZONE = 'America/Santiago';
 /**
  * `YYYY-MM-DD` del día de calendario en `BUSINESS_TIME_ZONE` para el instante
  * `date` — NUNCA el calendario UTC del proceso que corre el servidor. Bug que
- * corrige (auditoría de seguridad, 28/09): entre ~20:00 y medianoche hora de
+ * corrige: entre ~20:00 y medianoche hora de
  * Santiago, el día UTC ya es el siguiente — `assertShiftDateWithinWindow`
  * calculaba "hoy" con el calendario UTC (vía `formatDateOnly`, que lee con
  * getters UTC) y corría la ventana un día completo justo en esa franja.
@@ -63,7 +65,7 @@ export function formatDateOnly(date: Date): string {
 
 /**
  * `true` solo si `value` tiene shape `YYYY-MM-DD` Y describe una fecha de
- * calendario real (B2(a) de la auditoría de seguridad). El shape solo
+ * calendario real. El shape solo
  * (`DATE_ONLY_REGEX`) NO alcanza: `new Date('2026-02-31T00:00:00.000Z')` no
  * da `Invalid Date`, la desborda silenciosamente a `2026-03-03` — así que
  * "2026-02-31" pasaba como shiftDate válido y corrompía la fecha guardada
@@ -82,7 +84,7 @@ export function isValidDateOnly(value: string): boolean {
 
 /**
  * Reemplaza `@Matches(DATE_ONLY_REGEX)` en todo `shiftDate`/`date` de
- * Supervisión en Terreno (B2(a)): valida shape Y calendario real
+ * Supervisión en Terreno: valida shape Y calendario real
  * (`isValidDateOnly`) en un solo decorador.
  */
 export function IsDateOnly(validationOptions?: ValidationOptions) {
@@ -104,7 +106,7 @@ export function IsDateOnly(validationOptions?: ValidationOptions) {
   };
 }
 
-/** Ventana de `shiftDate` (B2(b) de la auditoría de seguridad) — mismo
+/** Ventana de `shiftDate` — mismo
  * espíritu que `MAX_FUTURE_CAPTURE_SKEW_MS`/`MAX_PAST_CAPTURE_SKEW_MS` de
  * `capture-time.ts`, pero en DÍAS de calendario (no ms de reloj) porque
  * `shiftDate` es date-only. 8 días de pasado (un poco más que la ventana de
@@ -140,7 +142,7 @@ export function assertShiftDateWithinWindow(
   ) {
     throw new BadRequestException({
       message: `La fecha del turno (${shiftDate}) está fuera de rango (hasta ${SHIFT_DATE_MAX_PAST_DAYS} días de antigüedad o ${SHIFT_DATE_MAX_FUTURE_DAYS} día a futuro)`,
-      code: 'INVALID_SHIFT_DATE',
+      code: ERROR_CODES.INVALID_SHIFT_DATE,
     });
   }
 }

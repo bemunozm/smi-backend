@@ -2,9 +2,8 @@ import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
 import { ROLES } from '../auth/roles';
-import { PrismaService } from '../common/prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
-import { StorageService } from '../storage/storage.service';
+import { ShiftReportsService } from '../shifts/shift-reports.service';
 import { NotificationsListener } from './notifications.listener';
 import { NotificationsService } from './notifications.service';
 
@@ -16,8 +15,14 @@ describe('NotificationsListener', () => {
   const resolveEquipoId = jest.fn();
   const notifyRolesWithAttachment = jest.fn();
   const isConfigured = jest.fn();
-  const getObjectBuffer = jest.fn();
-  const shiftExitReportUpdate = jest.fn();
+  const getAttachment = jest.fn();
+  const markEmailStatus = jest.fn();
+
+  const PDF_ATTACHMENT = {
+    filename: 'reporte-salida-2026-09-28-diurno.pdf',
+    content: Buffer.from('%PDF-1.4'),
+    contentType: 'application/pdf',
+  };
 
   beforeEach(async () => {
     createForRoles.mockReset().mockResolvedValue([]);
@@ -32,8 +37,8 @@ describe('NotificationsListener', () => {
       .mockReset()
       .mockResolvedValue({ recipientCount: 1, allEmailsSent: true });
     isConfigured.mockReset().mockReturnValue(true);
-    getObjectBuffer.mockReset().mockResolvedValue(Buffer.from('%PDF-1.4'));
-    shiftExitReportUpdate.mockReset().mockResolvedValue(undefined);
+    getAttachment.mockReset().mockResolvedValue(PDF_ATTACHMENT);
+    markEmailStatus.mockReset().mockResolvedValue(undefined);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -48,10 +53,9 @@ describe('NotificationsListener', () => {
           },
         },
         { provide: MailService, useValue: { isConfigured } },
-        { provide: StorageService, useValue: { getObjectBuffer } },
         {
-          provide: PrismaService,
-          useValue: { shiftExitReport: { update: shiftExitReportUpdate } },
+          provide: ShiftReportsService,
+          useValue: { getAttachment, markEmailStatus },
         },
       ],
     }).compile();
@@ -217,44 +221,33 @@ describe('NotificationsListener', () => {
       shiftType: 'DIURNO',
     };
 
-    it('baja el PDF, notifica a ADMIN con adjunto y marca emailStatus SENT', async () => {
+    it('pide el adjunto, notifica a ADMIN con adjunto y marca emailStatus SENT', async () => {
       await listener.onShiftExitReportSent(EVENT);
 
-      expect(getObjectBuffer).toHaveBeenCalledWith(EVENT.fileKey);
+      expect(getAttachment).toHaveBeenCalledWith('report-1');
       expect(notifyRolesWithAttachment).toHaveBeenCalledWith(
         [ROLES.ADMIN],
         expect.objectContaining({
           tipo: 'shift.exit-report',
           data: { reportId: 'report-1', shiftId: 'shift-1' },
         }),
-        [
-          expect.objectContaining({
-            filename: EVENT.fileName,
-            contentType: 'application/pdf',
-          }),
-        ],
+        [PDF_ATTACHMENT],
         expect.anything(),
       );
-      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
-        where: { id: 'report-1' },
-        data: { emailStatus: 'SENT', notifiedAt: expect.any(Date) as Date },
-      });
+      expect(markEmailStatus).toHaveBeenCalledWith('report-1', 'SENT');
     });
 
-    it('sin SMTP configurado, NO baja el PDF, igual crea la notificación in-app y marca SKIPPED', async () => {
+    it('sin SMTP configurado, NO pide el adjunto, igual crea la notificación in-app y marca SKIPPED', async () => {
       isConfigured.mockReturnValue(false);
 
       await listener.onShiftExitReportSent(EVENT);
 
-      expect(getObjectBuffer).not.toHaveBeenCalled();
+      expect(getAttachment).not.toHaveBeenCalled();
       expect(createForRoles).toHaveBeenCalledWith(
         [ROLES.ADMIN],
         expect.objectContaining({ tipo: 'shift.exit-report' }),
       );
-      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
-        where: { id: 'report-1' },
-        data: { emailStatus: 'SKIPPED', notifiedAt: expect.any(Date) as Date },
-      });
+      expect(markEmailStatus).toHaveBeenCalledWith('report-1', 'SKIPPED');
     });
 
     it('sin destinatarios (recipientCount=0), marca SKIPPED', async () => {
@@ -265,10 +258,7 @@ describe('NotificationsListener', () => {
 
       await listener.onShiftExitReportSent(EVENT);
 
-      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
-        where: { id: 'report-1' },
-        data: { emailStatus: 'SKIPPED', notifiedAt: expect.any(Date) as Date },
-      });
+      expect(markEmailStatus).toHaveBeenCalledWith('report-1', 'SKIPPED');
     });
 
     it('si algún correo falla (allEmailsSent=false con destinatarios), marca FAILED', async () => {
@@ -279,34 +269,28 @@ describe('NotificationsListener', () => {
 
       await listener.onShiftExitReportSent(EVENT);
 
-      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
-        where: { id: 'report-1' },
-        data: { emailStatus: 'FAILED', notifiedAt: expect.any(Date) as Date },
-      });
+      expect(markEmailStatus).toHaveBeenCalledWith('report-1', 'FAILED');
     });
 
     it('si algo lanza (ej. storage caído), marca FAILED y NUNCA propaga la excepción', async () => {
       const errorSpy = jest
         .spyOn(Logger.prototype, 'error')
         .mockImplementation();
-      getObjectBuffer.mockRejectedValue(new Error('bucket caído'));
+      getAttachment.mockRejectedValue(new Error('bucket caído'));
 
       await expect(
         listener.onShiftExitReportSent(EVENT),
       ).resolves.toBeUndefined();
 
-      expect(shiftExitReportUpdate).toHaveBeenCalledWith({
-        where: { id: 'report-1' },
-        data: { emailStatus: 'FAILED', notifiedAt: expect.any(Date) as Date },
-      });
+      expect(markEmailStatus).toHaveBeenCalledWith('report-1', 'FAILED');
       errorSpy.mockRestore();
     });
 
-    it('si falla el update de emailStatus, tampoco propaga la excepción', async () => {
+    it('si falla markEmailStatus, tampoco propaga la excepción', async () => {
       const errorSpy = jest
         .spyOn(Logger.prototype, 'error')
         .mockImplementation();
-      shiftExitReportUpdate.mockRejectedValue(new Error('db caída'));
+      markEmailStatus.mockRejectedValue(new Error('db caída'));
 
       await expect(
         listener.onShiftExitReportSent(EVENT),

@@ -25,8 +25,8 @@ function assertNonEmptyId(id: string): void {
 }
 
 /**
- * Catálogo propio de operadores (RFC Supervisión en Terreno, Fase 1 —
- * reemplaza el arreglo `OPERADORES` hardcodeado del frontend). Clon de
+ * Catálogo propio de operadores (RFC Supervisión en Terreno — reemplaza el
+ * arreglo `OPERADORES` hardcodeado del frontend). Clon de
  * `BranchController`: la LECTURA queda abierta a cualquier sesión (la usa el
  * selector del Módulo A y, a futuro, el de Flota); la ESCRITURA es
  * ADMIN/SUPERVISOR; el BORRADO es solo ADMIN y queda guardado por uso en el

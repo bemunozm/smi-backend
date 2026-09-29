@@ -58,8 +58,7 @@ const isProduction = process.env.NODE_ENV === 'production';
 // para que el boot funcione en local sin tocar `.env`. Las credenciales se
 // exportan (no solo el endpoint/bucket) para que `StorageService.onModuleInit`
 // pueda comparar las credenciales EFECTIVAS contra estos defaults y avisar si
-// un despliegue real quedó corriendo con ellas (ver SECURITY-NOTES.md, hallazgo
-// BAJO B2 de la revisión de seguridad de R2-storage).
+// un despliegue real quedó corriendo con ellas (ver SECURITY-NOTES.md).
 const DEFAULT_DEV_STORAGE_ENDPOINT = 'http://localhost:9000';
 const DEFAULT_DEV_STORAGE_BUCKET = 'smi-files';
 export const DEFAULT_DEV_STORAGE_ACCESS_KEY_ID = 'smi_dev_admin';
@@ -126,8 +125,7 @@ function parseBoolean(rawValue: string | undefined): boolean {
 }
 
 /**
- * Info (auditoría de seguridad, prep para la prueba con túnel HTTPS):
- * `true` por defecto en producción (SECURITY-NOTES.md, M2 — sign-in sin rate
+ * `true` por defecto en producción (SECURITY-NOTES.md — sign-in sin rate
  * limit), `false` en cualquier otro `NODE_ENV` para no romper el e2e suite,
  * que hace login muchas veces seguidas. `AUTH_RATE_LIMIT_ENABLED` explícito
  * en el env SIEMPRE gana sobre el default (permite prender/apagar en
@@ -207,7 +205,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Lista de correos separada por comas — usada por `SHIFT_REPORT_EXTRA_RECIPIENTS`
- * (RFC Supervisión en Terreno, Fase 3): destinatarios adicionales del PDF de
+ * (RFC Supervisión en Terreno): destinatarios adicionales del PDF de
  * reporte de salida de turno que NO tienen cuenta en el sistema (ej. Sergio
  * Torres, del cliente). Vacía por defecto (nadie adicional) — cada entrada se
  * valida como correo al arrancar, para fallar rápido ante un typo en vez de
@@ -299,7 +297,7 @@ export const env: AppEnv = {
   storageSignedUrlTtlSeconds: parseStorageSignedUrlTtlSeconds(
     process.env.STORAGE_SIGNED_URL_TTL_SECONDS,
   ),
-  // Reporte de salida de turno (RFC Supervisión en Terreno, Fase 3): correos
+  // Reporte de salida de turno (RFC Supervisión en Terreno): correos
   // extra (sin cuenta) que reciben el PDF por email — ver
   // `NotificationsListener.onShiftExitReportSent`.
   shiftReportExtraRecipients: parseEmailList(

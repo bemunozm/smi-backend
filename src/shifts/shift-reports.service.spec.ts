@@ -1,11 +1,10 @@
 import { HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
-import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { buildSession, prismaError } from '../common/testing/fixtures';
 import { StorageService } from '../storage/storage.service';
 import { CreateShiftReportDto } from './dto/create-shift-report.dto';
 import {
@@ -23,7 +22,7 @@ const mockedRenderPdfBuffer = renderPdfBuffer as jest.MockedFunction<
   typeof renderPdfBuffer
 >;
 
-// B5: espía la construcción del docDefinition (sin perder el resto del
+// Espía la construcción del docDefinition (sin perder el resto del
 // módulo, que `pdf-renderer` NO usa acá — mock sigue siendo la implementación
 // REAL, solo envuelta para poder inspeccionar `supervisorName`).
 jest.mock('./pdf/shift-report.pdf', () => {
@@ -44,34 +43,12 @@ const mockedBuildShiftExitReportDocDefinition =
     typeof buildShiftExitReportDocDefinition
   >;
 
-function prismaError(
-  code: string,
-  meta?: Record<string, unknown>,
-): Prisma.PrismaClientKnownRequestError {
-  return new Prisma.PrismaClientKnownRequestError('mocked prisma error', {
-    code,
-    clientVersion: 'test',
-    meta,
-  });
-}
-
-function buildSession(
-  userId: string,
-  name = 'Ana Soto',
-  role = 'SUPERVISOR',
-): UserSession {
-  return {
-    user: { id: userId, name, role },
-    session: { id: 'session_1' },
-  } as unknown as UserSession;
-}
-
 function iso(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString();
 }
 
 /** `shiftDate` relativo a "hoy" — mismo motivo que `iso()`, pero para
- * `assertShiftDateWithinWindow` (B2(b), compara contra `new Date()` real). */
+ * `assertShiftDateWithinWindow` (compara contra `new Date()` real). */
 function todayShiftDate(offsetDays = 0): string {
   const d = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
   return d.toISOString().slice(0, 10);
@@ -97,6 +74,7 @@ describe('ShiftReportsService', () => {
       findUnique: jest.fn(),
       create: jest.fn(),
       count: jest.fn(),
+      updateMany: jest.fn(),
     },
     shift: { findUnique: jest.fn() },
     registroHorometro: { findMany: jest.fn() },
@@ -105,6 +83,7 @@ describe('ShiftReportsService', () => {
     putServerFile: jest.fn(),
     deleteBestEffort: jest.fn(),
     sign: jest.fn(),
+    getObjectBuffer: jest.fn(),
   };
   const eventEmitter = { emit: jest.fn() };
 
@@ -138,8 +117,8 @@ describe('ShiftReportsService', () => {
     service = mod.get(ShiftReportsService);
 
     prisma.shiftExitReport.findUnique.mockResolvedValue(null);
-    // M2(a): sin reportes recientes por defecto — los tests del rate limit
-    // lo sobreescriben.
+    // Sin reportes recientes por defecto — los tests del rate limit lo
+    // sobreescriben.
     prisma.shiftExitReport.count.mockResolvedValue(0);
     prisma.shift.findUnique.mockResolvedValue(SHIFT);
     prisma.registroHorometro.findMany.mockResolvedValue([CARD]);
@@ -157,7 +136,7 @@ describe('ShiftReportsService', () => {
 
   describe('create', () => {
     it('genera el PDF, sube al storage, crea la fila y emite el evento DESPUÉS del commit', async () => {
-      const session = buildSession('sup_1');
+      const session = buildSession('sup_1', 'SUPERVISOR', 'Ana Soto');
       const dto = baseDto();
 
       const res = await service.create(dto, session);
@@ -325,7 +304,6 @@ describe('ShiftReportsService', () => {
       expect(prisma.shiftExitReport.findUnique).not.toHaveBeenCalled();
     });
 
-    // B2(b) de la auditoría de seguridad.
     it('shiftDate de más de 8 días de antigüedad se rechaza con INVALID_SHIFT_DATE, ANTES de buscar el turno', async () => {
       const dto = baseDto({ shiftDate: '2020-01-01' });
       await expect(
@@ -334,8 +312,7 @@ describe('ShiftReportsService', () => {
       expect(prisma.shift.findUnique).not.toHaveBeenCalled();
     });
 
-    // M2(a) de la auditoría de seguridad.
-    describe('rate limit de reportes por turno (M2a)', () => {
+    describe('rate limit de reportes por turno', () => {
       it(`el ${REPORT_RATE_LIMIT_MAX_PER_WINDOW + 1}º reporte NUEVO en la ventana de ${REPORT_RATE_LIMIT_WINDOW_MS / 60_000} min → 429 REPORT_RATE_LIMITED, sin generar el PDF`, async () => {
         prisma.shiftExitReport.count.mockResolvedValue(
           REPORT_RATE_LIMIT_MAX_PER_WINDOW,
@@ -401,11 +378,10 @@ describe('ShiftReportsService', () => {
       });
     });
 
-    // B5 de la auditoría de seguridad.
-    describe('supervisorName truncado a 120 chars (B5)', () => {
+    describe('supervisorName truncado a 120 chars', () => {
       it('un nombre de más de 120 chars se trunca en el PDF y en el evento (correo)', async () => {
         const nombreLargo = 'A'.repeat(150);
-        const session = buildSession('sup_1', nombreLargo);
+        const session = buildSession('sup_1', 'SUPERVISOR', nombreLargo);
 
         await service.create(baseDto(), session);
 
@@ -421,7 +397,7 @@ describe('ShiftReportsService', () => {
       });
 
       it('un nombre de 120 chars o menos no se toca', async () => {
-        const session = buildSession('sup_1', 'Ana Soto');
+        const session = buildSession('sup_1', 'SUPERVISOR', 'Ana Soto');
 
         await service.create(baseDto(), session);
 
@@ -460,7 +436,7 @@ describe('ShiftReportsService', () => {
       await expect(
         service.getSignedFileUrl(
           'r1',
-          buildSession('admin_1', 'Admin', 'ADMIN'),
+          buildSession('admin_1', 'ADMIN', 'Admin'),
         ),
       ).resolves.toBe('https://minio.local/signed/r1.pdf');
     });
@@ -479,6 +455,61 @@ describe('ShiftReportsService', () => {
       await expect(
         service.getSignedFileUrl('no-existe', buildSession('sup_1')),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('markEmailStatus', () => {
+    it('transiciona desde PENDING al status final y setea notifiedAt', async () => {
+      prisma.shiftExitReport.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.markEmailStatus('r1', 'SENT');
+
+      expect(prisma.shiftExitReport.updateMany).toHaveBeenCalledWith({
+        where: { id: 'r1', emailStatus: 'PENDING' },
+        data: { emailStatus: 'SENT', notifiedAt: expect.any(Date) as Date },
+      });
+    });
+
+    it('el `where` exige emailStatus=PENDING — un evento reprocesado no pisa un estado terminal ya guardado', async () => {
+      // count=0: la fila ya no está en PENDING (otro procesamiento del mismo
+      // evento ya la dejó en un estado terminal) — `updateMany` no hace nada,
+      // sin lanzar.
+      prisma.shiftExitReport.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.markEmailStatus('r1', 'FAILED'),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('getAttachment', () => {
+    it('devuelve filename/content/contentType leyendo storage por fileKey', async () => {
+      prisma.shiftExitReport.findUnique.mockResolvedValue({
+        id: 'r1',
+        fileKey: 'reports/shift-exit/2026/09/r1.pdf',
+        fileName: 'reporte-salida-2026-09-28-diurno.pdf',
+      });
+      storage.getObjectBuffer.mockResolvedValue(Buffer.from('%PDF-1.4'));
+
+      const attachment = await service.getAttachment('r1');
+
+      expect(storage.getObjectBuffer).toHaveBeenCalledWith(
+        'reports/shift-exit/2026/09/r1.pdf',
+      );
+      expect(attachment).toEqual({
+        filename: 'reporte-salida-2026-09-28-diurno.pdf',
+        content: Buffer.from('%PDF-1.4'),
+        contentType: 'application/pdf',
+      });
+    });
+
+    it('reporte inexistente -> 404', async () => {
+      prisma.shiftExitReport.findUnique.mockResolvedValue(null);
+
+      await expect(service.getAttachment('no-existe')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(storage.getObjectBuffer).not.toHaveBeenCalled();
     });
   });
 });

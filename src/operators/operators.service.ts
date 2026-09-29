@@ -8,6 +8,7 @@ import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { normalizeRut } from './rut';
 import { CreateOperatorDto } from './dto/create-operator.dto';
 import { QueryOperatorDto } from './dto/query-operator.dto';
@@ -18,7 +19,7 @@ export class OperatorsService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * B4(a) de la auditoría de seguridad: `rut` es PII y `GET /api/operators`
+   * `rut` es PII y `GET /api/operators`
    * está abierto a CUALQUIER sesión (lectura sin `@Roles()`, ver
    * `OperatorsController`) — un MANTENEDOR no necesita ver el RUT de los
    * operadores del catálogo para elegir uno en el selector del Módulo A.
@@ -116,8 +117,8 @@ export class OperatorsService {
   /**
    * Baja física. Solo se permite si ningún `RegistroHorometro` NI ningún
    * `TrabajoExtraordinario` lo referencia (histórico) NI ningún `Equipment`
-   * lo tiene como operador ACTUAL (`currentOperatorId`, FK real desde el
-   * anexo "el operador deja de ser usuario de la plataforma"): en los tres
+   * lo tiene como operador ACTUAL (`currentOperatorId`, FK real ahora que el
+   * operador dejó de ser usuario de la plataforma): en los tres
    * casos el FK es `SetNull`, así que un borrado físico dejaría esos
    * registros/esa asignación sin operador de catálogo de forma silenciosa.
    * Con historial o asignación vigente, se sugiere desactivarlo — mismo
@@ -147,21 +148,21 @@ export class OperatorsService {
     if (operator._count.horometros > 0) {
       throw new ConflictException({
         message: `El operador "${operator.name}" tiene ${operator._count.horometros} registro(s) asociados y no se puede eliminar. Desactívalo (isActive=false) para retirarlo de los selectores conservando la referencia de los registros.`,
-        code: 'OPERATOR_IN_USE',
+        code: ERROR_CODES.OPERATOR_IN_USE,
       });
     }
 
     if (operator._count.trabajosExtra > 0) {
       throw new ConflictException({
         message: `El operador "${operator.name}" tiene ${operator._count.trabajosExtra} trabajo(s) extraordinario(s) asociados y no se puede eliminar. Desactívalo (isActive=false) para retirarlo de los selectores conservando la referencia de los registros.`,
-        code: 'OPERATOR_IN_USE',
+        code: ERROR_CODES.OPERATOR_IN_USE,
       });
     }
 
     if (operator._count.assignedEquipment > 0) {
       throw new ConflictException({
         message: `El operador "${operator.name}" está asignado a ${operator._count.assignedEquipment} equipo(s) y no se puede eliminar. Desasígnalo o desactívalo (isActive=false) en vez de borrarlo.`,
-        code: 'OPERATOR_IN_USE',
+        code: ERROR_CODES.OPERATOR_IN_USE,
       });
     }
 
@@ -171,9 +172,8 @@ export class OperatorsService {
   /**
    * Valida que el operador exista y esté activo — precondición compartida
    * por los flujos que asignan un operador del catálogo
-   * (`ShiftsService.openCard`, RFC Supervisión en Terreno Fase 2;
-   * `HorometroService.create` de Flota y `TrabajosExtraService.create`,
-   * Anexo 2 "operador del catálogo en Trabajos extra + snapshot único"): un
+   * (`ShiftsService.openCard`, RFC Supervisión en Terreno;
+   * `HorometroService.create` de Flota y `TrabajosExtraService.create`): un
    * operador desactivado no debe poder quedar asignado a un registro nuevo,
    * aunque su historial pasado se conserve (`onDelete: SetNull`, ver
    * schema). 404 si el id no existe
@@ -185,7 +185,7 @@ export class OperatorsService {
     if (!operator.isActive) {
       throw new ConflictException({
         message: `El operador "${operator.name}" está inactivo`,
-        code: 'OPERATOR_INACTIVE',
+        code: ERROR_CODES.OPERATOR_INACTIVE,
       });
     }
     return operator;

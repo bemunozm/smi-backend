@@ -34,7 +34,7 @@ export class HorometroController {
   }
 
   // `PATCH /horometro/:id` genérico (`update`) se ELIMINÓ (RFC Supervisión
-  // en Terreno, Fase 2): no validaba nada — podía cerrar una tarjeta en
+  // en Terreno): no validaba nada — podía cerrar una tarjeta en
   // silencio (`valorFinal` sin pasar por `salida()`) sin cuadrar el contador
   // del equipo ni respetar el gate de `shiftId`. Ningún uso en el frontend
   // (grep de `PATCH .../horometro/:id` y `updateHorometro` en

@@ -22,8 +22,7 @@ describe('CloseShiftCardDto', () => {
     expect(await validate(dto)).toHaveLength(0);
   });
 
-  // B3
-  describe('valorFinal — límites (B3)', () => {
+  describe('valorFinal — límites', () => {
     it('rechaza negativo', async () => {
       const dto = plainToInstance(CloseShiftCardDto, base({ valorFinal: -1 }));
       expect(await validate(dto)).not.toHaveLength(0);
@@ -59,8 +58,7 @@ describe('CloseShiftCardDto', () => {
     });
   });
 
-  // B3
-  describe('fuelLiters — límite (B3)', () => {
+  describe('fuelLiters — límite', () => {
     it('acepta 0', async () => {
       const dto = plainToInstance(CloseShiftCardDto, base({ fuelLiters: 0 }));
       expect(await validate(dto)).toHaveLength(0);
@@ -83,8 +81,7 @@ describe('CloseShiftCardDto', () => {
     });
   });
 
-  // M2(b)
-  describe('observaciones — normalización + límite (M2(b))', () => {
+  describe('observaciones — normalización + límite', () => {
     it('normaliza CRLF y colapsa saltos de línea antes de validar', async () => {
       const dto = plainToInstance(
         CloseShiftCardDto,

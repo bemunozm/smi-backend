@@ -7,8 +7,8 @@ import { EquipmentController } from './equipment.controller';
 import { EquipmentService } from './equipment.service';
 
 @Module({
-  // `OperatorsModule` (RFC Supervisión en Terreno, anexo "el operador deja
-  // de ser usuario de la plataforma"): `EquipmentService.updateAssignment`
+  // `OperatorsModule` (el operador ya no es usuario de la plataforma):
+  // `EquipmentService.updateAssignment`
   // valida el operador con `OperatorsService.assertActive` en vez de
   // `assertUserWithRole` — no hay ciclo, `OperatorsModule` no importa Flota.
   imports: [StorageModule, EquipmentDocumentModule, OperatorsModule],

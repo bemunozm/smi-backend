@@ -9,19 +9,20 @@ import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../../auth/roles';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { ERROR_CODES } from '../../common/errors/error-codes';
 import { OperatorsService } from '../../operators/operators.service';
-import { reconcileEquipmentCounter } from './equipment-counter';
+import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
 import { SalidaHorometroDto } from './dto/salida-horometro.dto';
 
 /**
- * M1(b) de la auditoría de seguridad: estas 3 columnas nunca deben viajar
- * crudas hacia un cliente. `pumpPhotoKey` es la KEY interna del bucket (la
- * URL firmada se resuelve aparte, `ShiftsService.shapeCard`) — Flota nunca
- * la firma, así que exponerla acá era simplemente una fuga sin contrapartida.
- * `closeClientId` es la clave de idempotencia interna del cierre (Supervisión
- * en Terreno) — filtrarla permite reproducir el 403 que M1(a) cierra por
- * otro camino (adivinar/copiar el id y reintentar el cierre de otro).
+ * Estas 3 columnas nunca deben viajar crudas hacia un cliente. `pumpPhotoKey`
+ * es la KEY interna del bucket (la URL firmada se resuelve aparte,
+ * `ShiftsService.shapeCard`) — Flota nunca la firma, así que exponerla acá
+ * era simplemente una fuga sin contrapartida. `closeClientId` es la clave de
+ * idempotencia interna del cierre (Supervisión en Terreno) — filtrarla
+ * permite reproducir el 403 de dueño de tarjeta por otro camino
+ * (adivinar/copiar el id y reintentar el cierre de otro).
  * `clientClockSkewMs` es auditoría interna del desfase de reloj del
  * dispositivo, sin valor para el cliente.
  */
@@ -52,12 +53,12 @@ export class HorometroService {
    * este chequeo, la SALIDA posterior no sabría a cuál de los dos registros
    * abiertos cerrar.
    *
-   * `session` (RFC Supervisión en Terreno, Fase 2) graba `supervisorId` —
-   * antes este flujo no dejaba rastro de quién abrió el turno.
+   * `session` (RFC Supervisión en Terreno) graba `supervisorId` — antes
+   * este flujo no dejaba rastro de quién abrió el turno.
    */
   async create(dto: CreateHorometroDto, session: UserSession) {
-    // Validación del operador de catálogo (RFC Supervisión en Terreno, Anexo
-    // 2: OBLIGATORIO, mismo patrón único que Trabajos extra) ANTES de la
+    // Validación del operador de catálogo (RFC Supervisión en Terreno,
+    // OBLIGATORIO, mismo patrón único que Trabajos extra) ANTES de la
     // transacción: es una precondición pura de la request, no depende de
     // ningún estado que la tx necesite leer de forma consistente. El
     // snapshot `operador` se arma acá con el nombre del catálogo — el
@@ -89,7 +90,7 @@ export class HorometroService {
       if (equipo.status !== EquipmentStatus.OPERATIONAL) {
         throw new ConflictException({
           message: 'El equipo no está operativo',
-          code: 'EQUIPMENT_NOT_OPERATIONAL',
+          code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
         });
       }
 
@@ -153,7 +154,7 @@ export class HorometroService {
    * SALIDA del flujo de dos pasos (Flota): cierra el turno que `create()`
    * abrió. Vuelve a cuadrar el contador del equipo, esta vez a `valorFinal`.
    *
-   * `session` (RFC Supervisión en Terreno, Fase 2): si la tarjeta pertenece a
+   * `session` (RFC Supervisión en Terreno): si la tarjeta pertenece a
    * un turno de Supervisión en Terreno (`shiftId != null`), este endpoint
    * legacy de Flota YA NO la cierra — se cierra desde
    * `POST /api/shift-cards/:id/close`, que además exige litros y foto. Salvo
@@ -180,7 +181,7 @@ export class HorometroService {
         throw new ConflictException({
           message:
             'Esta tarjeta se cierra desde el Registro de equipo, con litros y foto',
-          code: 'SHIFT_CARD_CLOSE_ELSEWHERE',
+          code: ERROR_CODES.SHIFT_CARD_CLOSE_ELSEWHERE,
         });
       }
 
@@ -195,8 +196,8 @@ export class HorometroService {
         data: {
           valorFinal: dto.valorFinal,
           fechaSalida: now,
-          // Info (auditoría de seguridad): antes NO se seteaba acá —
-          // `closedAt` quedaba `null` para una tarjeta de Supervisión en
+          // Antes NO se seteaba acá — `closedAt` quedaba `null` para una
+          // tarjeta de Supervisión en
           // Terreno que un ADMIN cierra por este flujo legacy de Flota, así
           // que jamás entraba a la ventana de "cerradas en las últimas 48h"
           // de `ShiftsService.mine` (que filtra por `closedAt >= cutoff`).

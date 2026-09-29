@@ -6,35 +6,12 @@ import {
 import { Test } from '@nestjs/testing';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { Prisma } from '@prisma/client';
-import type { UserSession } from '@thallesp/nestjs-better-auth';
 import { HorometroService } from './horometro.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { buildSession, prismaError } from '../../common/testing/fixtures';
 import { OperatorsService } from '../../operators/operators.service';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
 import { SalidaHorometroDto } from './dto/salida-horometro.dto';
-
-/** Construye un error de Prisma real (no un duck-type) para que el `instanceof`
- * que usa `HorometroService` en la traducción del P2002 lo reconozca (mismo
- * patrón que `equipment.service.spec.ts`). */
-function prismaError(
-  code: string,
-  meta?: Record<string, unknown>,
-): Prisma.PrismaClientKnownRequestError {
-  return new Prisma.PrismaClientKnownRequestError('mocked prisma error', {
-    code,
-    clientVersion: 'test',
-    meta,
-  });
-}
-
-/** Mock mínimo de `UserSession` — mismo patrón que `users.controller.spec.ts`. */
-function buildSession(userId: string, role = 'SUPERVISOR'): UserSession {
-  return {
-    user: { id: userId, role },
-    session: { id: 'session_1' },
-  } as unknown as UserSession;
-}
 
 /**
  * Captura el `data` de la ÚLTIMA llamada a un mock `jest.fn()` sin tipar.
@@ -120,9 +97,9 @@ describe('HorometroService', () => {
     );
     // Usado por los dos métodos (create/salida) dentro de la transacción.
     // `currentHourmeter`/`currentMileage` en `null` = sin lectura previa, sin
-    // piso para la guarda monotónica (B1) — así los tests que no le apuntan a
-    // B1 no se ven afectados por ella. `status: OPERATIONAL` por defecto —
-    // los tests de R1 lo sobreescriben.
+    // piso para la guarda monotónica del contador — así los tests que no la
+    // ejercitan no se ven afectados por ella. `status: OPERATIONAL` por
+    // defecto — los tests de R1 lo sobreescriben.
     tx.equipment.findUnique.mockResolvedValue({
       id: 'e1',
       status: 'OPERATIONAL',
@@ -130,7 +107,7 @@ describe('HorometroService', () => {
       currentHourmeter: null,
       currentMileage: null,
     });
-    // B6: por defecto la guarda atómica "gana" (count 1) — los tests de la
+    // Por defecto la guarda atómica "gana" (count 1) — los tests de la
     // carrera concurrente (ver equipment-counter.spec.ts) sobreescriben esto.
     tx.equipment.updateMany.mockResolvedValue({ count: 1 });
 
@@ -138,9 +115,9 @@ describe('HorometroService', () => {
       (cb: (client: typeof tx) => unknown) => cb(tx),
     );
 
-    // Operador del catálogo por defecto — activo (RFC Supervisión en
-    // Terreno, Anexo 2: OBLIGATORIO). Los tests del describe
-    // `operatorId (catálogo)` sobreescriben esto.
+    // Operador del catálogo por defecto — activo (obligatorio, RFC
+    // Supervisión en Terreno). Los tests del describe `operatorId
+    // (catálogo)` sobreescriben esto.
     assertActive.mockResolvedValue({
       id: 'op_1',
       name: 'Juan Rojas',
@@ -350,10 +327,9 @@ describe('HorometroService', () => {
       expect(prisma.equipment.findUnique).not.toHaveBeenCalled();
     });
 
-    // RFC Supervisión en Terreno, Anexo 2 ("operador del catálogo en
-    // Trabajos extra + snapshot único"): `operatorId` es OBLIGATORIO acá
-    // (dejó de ser opcional) y `operador` sale del DTO — el snapshot lo
-    // arma el SERVIDOR desde el catálogo, nunca desde texto del cliente.
+    // `operatorId` es OBLIGATORIO acá (dejó de ser opcional) y `operador`
+    // sale del DTO — el snapshot lo arma el SERVIDOR desde el catálogo,
+    // nunca desde texto del cliente (mismo patrón único que Trabajos extra).
     describe('operatorId (catálogo)', () => {
       it('valida el operador vía OperatorsService.assertActive y arma el snapshot desde el catálogo', async () => {
         assertActive.mockResolvedValue({
@@ -429,7 +405,7 @@ describe('HorometroService', () => {
       });
     });
 
-    describe('B1 — el contador del equipo no puede retroceder', () => {
+    describe('el contador del equipo no puede retroceder', () => {
       it('rechaza con 400 si valorInicial es menor que el currentHourmeter vigente', async () => {
         tx.equipment.findUnique.mockResolvedValue({
           id: 'e1',
@@ -556,9 +532,9 @@ describe('HorometroService', () => {
         nivelCombustible: 80,
       });
       expect(closeData.fechaSalida).toBeInstanceOf(Date);
-      // Info (auditoría de seguridad): antes NO se seteaba acá — una tarjeta
-      // de Supervisión en Terreno cerrada por un ADMIN desde este flujo
-      // legacy de Flota nunca entraba a la ventana de "cerradas en las
+      // Antes NO se seteaba acá — una tarjeta de Supervisión en Terreno
+      // cerrada por un ADMIN desde este flujo legacy de Flota nunca entraba
+      // a la ventana de "cerradas en las
       // últimas 48h" de `ShiftsService.mine` (filtra por `closedAt`).
       expect(closeData.closedAt).toBeInstanceOf(Date);
       expect(tx.equipment.updateMany).toHaveBeenCalledWith({
@@ -690,7 +666,7 @@ describe('HorometroService', () => {
       });
     });
 
-    describe('B1 — el contador del equipo no puede retroceder', () => {
+    describe('el contador del equipo no puede retroceder', () => {
       it('rechaza con 400 si valorFinal es menor que el currentHourmeter vigente del equipo', async () => {
         tx.equipment.findUnique.mockResolvedValue({
           id: 'e1',
@@ -749,8 +725,7 @@ describe('HorometroService', () => {
     });
   });
 
-  // M1(b) de la auditoría de seguridad.
-  describe('findAll / findOne — M1(b), sin fugar columnas internas', () => {
+  describe('findAll / findOne — sin fugar columnas internas', () => {
     it('findAll omite pumpPhotoKey, closeClientId y clientClockSkewMs', async () => {
       prisma.registroHorometro.findMany.mockResolvedValue([]);
 
@@ -795,7 +770,7 @@ describe('HorometroService', () => {
 // O2 — límites (`@Min`/`@Max`) en los DTOs de horómetro: `nivelCombustible`
 // es un porcentaje (0-100), `valorInicial` no puede ser negativo. Mismo
 // patrón que `UpdateItemDto` en `items.service.spec.ts`. `operatorId` es
-// OBLIGATORIO (RFC Supervisión en Terreno, Anexo 2) y `operador` sale del
+// OBLIGATORIO (RFC Supervisión en Terreno) y `operador` sale del
 // DTO — con `forbidNonWhitelisted: true` global, mandarlo es un 400.
 describe('CreateHorometroDto — límites', () => {
   const base = {
@@ -863,7 +838,7 @@ describe('CreateHorometroDto — límites', () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
-  it('rechaza valorFinal — el flujo de un paso se eliminó (Fase 2), forbidNonWhitelisted lo tumba', async () => {
+  it('rechaza valorFinal — el flujo de un paso se eliminó, forbidNonWhitelisted lo tumba', async () => {
     const dto = plainToInstance(CreateHorometroDto, {
       ...base,
       valorFinal: 130,

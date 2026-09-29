@@ -17,8 +17,7 @@ function assertNonEmptyId(id: string): void {
  * equipo en el día a día — los 3 roles de plataforma (ADMIN, SUPERVISOR,
  * MANTENEDOR). El operador no entra en este chequeo porque ya no es un rol
  * de usuario: es un catálogo propio (`Operator`, `src/operators/*`) sin
- * acceso a la plataforma (RFC Supervisión en Terreno, anexo "el operador
- * deja de ser usuario de la plataforma", 28/09).
+ * acceso a la plataforma.
  */
 @Controller('equipos')
 export class FichaController {
