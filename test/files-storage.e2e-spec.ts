@@ -1,10 +1,10 @@
 /**
- * Gate e2e completo de Flota en Cloudflare R2 (Fase 5 del RFC R2-storage):
- * ejercita, contra una app Nest real (mismo pipeline que `main.ts`, vía
+ * Gate e2e completo de Flota en Cloudflare R2 (RFC R2-storage): ejercita,
+ * contra una app Nest real (mismo pipeline que `main.ts`, vía
  * `configureApp`) y contra Postgres + MinIO REALES (sin mocks), los 3 usos
  * de Flota — foto de equipo, documento de equipo, foto de carga de
  * combustible — más la ficha consolidada. El legacy `/api/uploads` se
- * retiró por completo (RFC Supervisión en Terreno, Fase 3 — ver
+ * retiró por completo (RFC Supervisión en Terreno — ver
  * SECURITY-NOTES.md), así que ya no se ejercita acá.
  *
  * Bucket DEDICADO (`smi-files-e2e`, no el `smi-files` de dev/otros tests) —
@@ -706,7 +706,7 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
         .expect(403);
     });
 
-    it('20) combustible con fotoUrl en el body -> 400 (campo retirado en el cierre de R2, RFC Supervisión en Terreno Fase 3)', async () => {
+    it('20) combustible con fotoUrl en el body -> 400 (campo retirado en el cierre de R2)', async () => {
       // `fotoUrl` ya no es un campo de `CreateCombustibleDto` — con
       // `forbidNonWhitelisted` global, cualquier body que lo incluya se
       // rechaza entero, sin importar si viene solo o junto a `fotoKey`.
@@ -812,7 +812,7 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
     });
   });
 
-  describe('Legacy (retirado en el cierre de R2, RFC Supervisión en Terreno Fase 3)', () => {
+  describe('Legacy (retirado en el cierre de R2)', () => {
     it('25) POST /api/uploads ya no existe -> 404', async () => {
       await supervisorAgent
         .post('/api/uploads')

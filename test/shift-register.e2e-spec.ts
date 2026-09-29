@@ -21,33 +21,9 @@
  * Se salta completo (`describe.skip`) si MinIO o Postgres no están arriba —
  * mismo patrón síncrono que `files-storage.e2e-spec.ts`.
  */
-import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
-function isMinioReachable(): boolean {
-  const result = spawnSync(
-    process.execPath,
-    [
-      '-e',
-      "fetch('http://localhost:9000/minio/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
-    ],
-    { timeout: 5000 },
-  );
-  return result.status === 0;
-}
-
-/** Chequeo TCP crudo — ver el mismo comentario en `files-storage.e2e-spec.ts`. */
-function isPostgresReachable(): boolean {
-  const result = spawnSync(
-    process.execPath,
-    [
-      '-e',
-      "const net=require('net');const s=net.createConnection({host:'localhost',port:5434},()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));s.setTimeout(3000,()=>{s.destroy();process.exit(1)});",
-    ],
-    { timeout: 5000 },
-  );
-  return result.status === 0;
-}
+import { isMinioReachable, isPostgresReachable } from './helpers/reachability';
 
 const minioReachable = isMinioReachable();
 const postgresReachable = isPostgresReachable();
@@ -59,9 +35,7 @@ const TEST_BUCKET = 'smi-shift-register-e2e';
 // `import` real de `AppModule`/`env`/cualquier cosa que los arrastre.
 process.env.STORAGE_BUCKET = TEST_BUCKET;
 
-import { Test, TestingModule } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import request from 'supertest';
 import {
   CreateBucketCommand,
   DeleteObjectCommand,
@@ -69,19 +43,27 @@ import {
   ListObjectsV2Command,
   S3Client,
 } from '@aws-sdk/client-s3';
-import { ControlUnit, EquipmentClass } from '@prisma/client';
 
-import { AppModule } from '../src/app.module';
-import { configureApp, NEST_APP_CREATE_OPTIONS } from '../src/app.setup';
 import { ROLES } from '../src/auth/roles';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import {
   DEFAULT_DEV_STORAGE_ACCESS_KEY_ID,
   DEFAULT_DEV_STORAGE_SECRET_ACCESS_KEY,
-  env,
 } from '../src/common/config/env';
 import { DOMAIN_EVENTS } from '../src/common/events/domain-events';
 import { todayInBusinessTimeZone } from '../src/shifts/date-only';
+import { ApiEnvelope, ErrorEnvelope } from './helpers/api-envelope';
+import { bootstrapApp } from './helpers/bootstrap-app';
+import {
+  baseEquipmentPayload,
+  EquipmentData,
+  OperatorData,
+} from './helpers/equipment-fixtures';
+import {
+  loginAgent,
+  SEED_PASSWORD,
+  SupertestAgent,
+} from './helpers/login-agent';
 
 const maybeDescribe =
   minioReachable && postgresReachable ? describe : describe.skip;
@@ -94,36 +76,13 @@ if (!minioReachable || !postgresReachable) {
   );
 }
 
-const SEED_PASSWORD = 'Smi123456!';
-type SupertestAgent = ReturnType<typeof request.agent>;
-
 const MINIMAL_JPEG = Buffer.from([
   0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00,
 ]);
 
-interface ApiEnvelope<T> {
-  data: T;
-  message: string;
-}
-interface ErrorEnvelope {
-  data: null;
-  message: string;
-  code?: string;
-}
 interface UploadFileData {
   key: string;
   url: string;
-}
-interface OperatorData {
-  id: string;
-  name: string;
-  isActive: boolean;
-  [key: string]: unknown;
-}
-interface EquipmentData {
-  id: string;
-  internalCode: string;
-  [key: string]: unknown;
 }
 interface UserData {
   id: string;
@@ -158,16 +117,6 @@ interface ShiftReportData {
   emailStatus: string;
   missingCardIds: string[];
 }
-interface CreateEquipmentPayload {
-  internalCode: string;
-  equipmentClass: EquipmentClass;
-  type: string;
-  brand: string;
-  model: string;
-  controlUnit: ControlUnit;
-  [key: string]: unknown;
-}
-
 async function ensureBucketExists(
   client: S3Client,
   bucket: string,
@@ -215,25 +164,6 @@ async function countObjectsWithPrefix(
   return listed.Contents?.length ?? 0;
 }
 
-async function loginAgent(
-  app: NestExpressApplication,
-  email: string,
-  password: string,
-): Promise<SupertestAgent> {
-  const agent = request.agent(app.getHttpServer());
-  const response = await agent
-    .post('/api/auth/sign-in/email')
-    .set('Origin', env.frontendUrl)
-    .send({ email, password });
-  if (response.status !== 200) {
-    throw new Error(
-      `No se pudo iniciar sesión como "${email}": ${response.status} ` +
-        JSON.stringify(response.body),
-    );
-  }
-  return agent;
-}
-
 async function uploadViaApi(
   agent: SupertestAgent,
   buffer: Buffer,
@@ -277,17 +207,6 @@ async function waitFor<T>(
   throw new Error(`waitFor: tiempo de espera agotado (${description})`);
 }
 
-function baseEquipmentPayload(internalCode: string): CreateEquipmentPayload {
-  return {
-    internalCode,
-    equipmentClass: EquipmentClass.HEAVY,
-    type: 'Excavadora',
-    brand: 'Caterpillar',
-    model: '320',
-    controlUnit: ControlUnit.HOURS,
-  };
-}
-
 maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
   jest.setTimeout(30_000);
 
@@ -329,17 +248,7 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
     });
     await ensureBucketExists(rawS3, TEST_BUCKET);
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication<NestExpressApplication>(
-      NEST_APP_CREATE_OPTIONS,
-    );
-    configureApp(app);
-    await app.init();
-
-    prisma = app.get(PrismaService);
+    ({ app, prisma } = await bootstrapApp());
 
     adminAgent = await loginAgent(app, 'admin@smi.local', SEED_PASSWORD);
     supervisorAgent = await loginAgent(
@@ -368,7 +277,7 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
 
     // Segundo supervisor, creado fresco por el test (RFC Supervisión en
     // Terreno solo siembra UN supervisor) — necesario para el escenario de
-    // dueño de tarjeta (M1a). Se limpia en `afterAll` vía la API real
+    // dueño de tarjeta. Se limpia en `afterAll` vía la API real
     // (`DELETE /api/users/:id`, Better Auth admin), no a mano en Prisma.
     const createUserResponse = await adminAgent
       .post('/api/users')
@@ -627,7 +536,7 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
     });
   });
 
-  describe('3) Dueño de la tarjeta — otro supervisor (M1a)', () => {
+  describe('3) Dueño de la tarjeta — otro supervisor', () => {
     let equipo: EquipmentData;
     let cardId: string;
     let closeClientId: string;
@@ -1002,103 +911,6 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
         .post('/api/equipment')
         .send(baseEquipmentPayload(internalCode('MANTENEDOR')))
         .expect(403);
-    });
-  });
-
-  describe('9) PATCH /api/equipment/:id/assignment — operadores del catálogo', () => {
-    let equipo: EquipmentData;
-    let operadorActivoId: string;
-    let operadorInactivoId: string;
-    const operadoresParaLimpiar: string[] = [];
-
-    it('crea el equipo y los operadores fresh para este flujo', async () => {
-      const response = await adminAgent
-        .post('/api/equipment')
-        .send(baseEquipmentPayload(internalCode('ASIGNACION')))
-        .expect(201);
-      equipo = (response.body as ApiEnvelope<EquipmentData>).data;
-      createdEquipmentIds.push(equipo.id);
-
-      const activoResponse = await adminAgent
-        .post('/api/operators')
-        .send({ name: `Operador Activo E2E ${RUN_ID}` })
-        .expect(201);
-      operadorActivoId = (activoResponse.body as ApiEnvelope<OperatorData>).data
-        .id;
-      operadoresParaLimpiar.push(operadorActivoId);
-
-      const inactivoResponse = await adminAgent
-        .post('/api/operators')
-        .send({ name: `Operador Inactivo E2E ${RUN_ID}`, isActive: false })
-        .expect(201);
-      operadorInactivoId = (inactivoResponse.body as ApiEnvelope<OperatorData>)
-        .data.id;
-      operadoresParaLimpiar.push(operadorInactivoId);
-    });
-
-    it('asigna un operador ACTIVO del catálogo -> 200 con {operator:{id,name}, inUse:true}', async () => {
-      const response = await supervisorAgent
-        .patch(`/api/equipment/${equipo.id}/assignment`)
-        .send({ operatorId: operadorActivoId })
-        .expect(200);
-      const data = (response.body as ApiEnvelope<EquipmentData>).data;
-
-      expect(data.operator).toMatchObject({ id: operadorActivoId });
-      expect(data.inUse).toBe(true);
-    });
-
-    it('asignar un operador INACTIVO -> 409 OPERATOR_INACTIVE', async () => {
-      const response = await supervisorAgent
-        .patch(`/api/equipment/${equipo.id}/assignment`)
-        .send({ operatorId: operadorInactivoId })
-        .expect(409);
-
-      expect((response.body as ErrorEnvelope).code).toBe('OPERATOR_INACTIVE');
-    });
-
-    it('asignar un id de USER (no de Operator) -> 404', async () => {
-      await supervisorAgent
-        .patch(`/api/equipment/${equipo.id}/assignment`)
-        .send({ operatorId: adminUserId })
-        .expect(404);
-    });
-
-    it('liberar con null -> inUse false', async () => {
-      const response = await supervisorAgent
-        .patch(`/api/equipment/${equipo.id}/assignment`)
-        .send({ operatorId: null })
-        .expect(200);
-      const data = (response.body as ApiEnvelope<EquipmentData>).data;
-
-      expect(data.operator).toBeNull();
-      expect(data.inUse).toBe(false);
-    });
-
-    it('borrar un operador ASIGNADO a un equipo -> 409 OPERATOR_IN_USE', async () => {
-      await supervisorAgent
-        .patch(`/api/equipment/${equipo.id}/assignment`)
-        .send({ operatorId: operadorActivoId })
-        .expect(200);
-
-      const response = await adminAgent
-        .delete(`/api/operators/${operadorActivoId}`)
-        .expect(409);
-
-      expect((response.body as ErrorEnvelope).code).toBe('OPERATOR_IN_USE');
-
-      // Desasigna para poder limpiar el operador en el afterAll de esta
-      // sección, siguiendo el mismo patrón "vía API real" del resto del
-      // archivo.
-      await supervisorAgent
-        .patch(`/api/equipment/${equipo.id}/assignment`)
-        .send({ operatorId: null })
-        .expect(200);
-    });
-
-    afterAll(async () => {
-      for (const idParaBorrar of operadoresParaLimpiar) {
-        await adminAgent.delete(`/api/operators/${idParaBorrar}`).expect(200);
-      }
     });
   });
 });

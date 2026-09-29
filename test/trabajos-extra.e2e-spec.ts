@@ -1,6 +1,6 @@
 /**
- * Gate e2e de Trabajos extra (RFC "Supervisión en Terreno", Anexo 2:
- * "operador del catálogo en Trabajos extra + snapshot único") — ejercita el
+ * Gate e2e de Trabajos extra (RFC "Supervisión en Terreno": operador del
+ * catálogo en Trabajos extra + snapshot único) — ejercita el
  * contrato de `POST /api/trabajos-extra` contra una app Nest real (mismo
  * pipeline que `main.ts`, vía `configureApp`) y Postgres REAL (sin mocks):
  * operador del catálogo obligatorio, snapshot armado por el servidor, y la
@@ -20,21 +20,9 @@
  * Se salta completo (`describe.skip`) si Postgres no está arriba — mismo
  * patrón síncrono que el resto de los e2e del proyecto.
  */
-import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
-/** Chequeo TCP crudo — mismo patrón que `shift-register.e2e-spec.ts`. */
-function isPostgresReachable(): boolean {
-  const result = spawnSync(
-    process.execPath,
-    [
-      '-e',
-      "const net=require('net');const s=net.createConnection({host:'localhost',port:5434},()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));s.setTimeout(3000,()=>{s.destroy();process.exit(1)});",
-    ],
-    { timeout: 5000 },
-  );
-  return result.status === 0;
-}
+import { isPostgresReachable } from './helpers/reachability';
 
 const postgresReachable = isPostgresReachable();
 
@@ -47,39 +35,22 @@ if (!postgresReachable) {
   );
 }
 
-import { Test, TestingModule } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import request from 'supertest';
-import { ControlUnit, EquipmentClass } from '@prisma/client';
 
-import { AppModule } from '../src/app.module';
-import { configureApp, NEST_APP_CREATE_OPTIONS } from '../src/app.setup';
 import { PrismaService } from '../src/common/prisma/prisma.service';
-import { env } from '../src/common/config/env';
+import { ApiEnvelope, ErrorEnvelope } from './helpers/api-envelope';
+import { bootstrapApp } from './helpers/bootstrap-app';
+import {
+  baseEquipmentPayload,
+  EquipmentData,
+  OperatorData,
+} from './helpers/equipment-fixtures';
+import {
+  loginAgent,
+  SEED_PASSWORD,
+  SupertestAgent,
+} from './helpers/login-agent';
 
-const SEED_PASSWORD = 'Smi123456!';
-type SupertestAgent = ReturnType<typeof request.agent>;
-
-interface ApiEnvelope<T> {
-  data: T;
-  message: string;
-}
-interface ErrorEnvelope {
-  data: null;
-  message: string;
-  code?: string;
-}
-interface OperatorData {
-  id: string;
-  name: string;
-  isActive: boolean;
-  [key: string]: unknown;
-}
-interface EquipmentData {
-  id: string;
-  internalCode: string;
-  [key: string]: unknown;
-}
 interface TrabajoExtraData {
   id: string;
   equipoId: string;
@@ -89,45 +60,6 @@ interface TrabajoExtraData {
   turno: string;
   totalHoras: number;
   [key: string]: unknown;
-}
-interface CreateEquipmentPayload {
-  internalCode: string;
-  equipmentClass: EquipmentClass;
-  type: string;
-  brand: string;
-  model: string;
-  controlUnit: ControlUnit;
-  [key: string]: unknown;
-}
-
-async function loginAgent(
-  app: NestExpressApplication,
-  email: string,
-  password: string,
-): Promise<SupertestAgent> {
-  const agent = request.agent(app.getHttpServer());
-  const response = await agent
-    .post('/api/auth/sign-in/email')
-    .set('Origin', env.frontendUrl)
-    .send({ email, password });
-  if (response.status !== 200) {
-    throw new Error(
-      `No se pudo iniciar sesión como "${email}": ${response.status} ` +
-        JSON.stringify(response.body),
-    );
-  }
-  return agent;
-}
-
-function baseEquipmentPayload(internalCode: string): CreateEquipmentPayload {
-  return {
-    internalCode,
-    equipmentClass: EquipmentClass.HEAVY,
-    type: 'Excavadora',
-    brand: 'Caterpillar',
-    model: '320',
-    controlUnit: ControlUnit.HOURS,
-  };
 }
 
 maybeDescribe('Trabajos extra — operador del catálogo (e2e)', () => {
@@ -188,17 +120,7 @@ maybeDescribe('Trabajos extra — operador del catálogo (e2e)', () => {
   }
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication<NestExpressApplication>(
-      NEST_APP_CREATE_OPTIONS,
-    );
-    configureApp(app);
-    await app.init();
-
-    prisma = app.get(PrismaService);
+    ({ app, prisma } = await bootstrapApp());
 
     adminAgent = await loginAgent(app, 'admin@smi.local', SEED_PASSWORD);
     supervisorAgent = await loginAgent(
