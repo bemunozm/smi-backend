@@ -83,47 +83,27 @@ describe('CombustibleService', () => {
     expect('fecha' in res).toBe(false);
   });
 
-  describe('fotoUrl legacy — sigue pasando tal cual', () => {
-    it('persiste fotoUrl legacy y la devuelve tal cual (sin fotoKey, no llama a storage)', async () => {
-      prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+  describe('fotoUrl legacy — solo LECTURA, ya no se puede crear con ella', () => {
+    it('findOne devuelve fotoUrl legacy tal cual cuando el registro no tiene fotoKey (dato histórico — el cierre de R2 retiró fotoUrl del DTO de creación)', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        id: 'c1',
+        equipoId: 'e1',
+        litros: 30,
+        tipo: 'BENCINA',
+        fotoUrl: '/uploads/carga-123.jpg',
+        fotoKey: null,
+        fecha: new Date(),
+      });
 
-      const res = await service.create(
-        {
-          equipoId: 'e1',
-          litros: 30,
-          tipo: 'BENCINA',
-          fotoUrl: '/uploads/carga-123.jpg',
-        },
-        USER_ID,
-      );
+      const res = await service.findOne('c1');
 
-      expect(claimTmp).not.toHaveBeenCalled();
       expect(sign).not.toHaveBeenCalled();
       expect(res.fotoUrl).toBe('/uploads/carga-123.jpg');
       expect(res).not.toHaveProperty('fotoKey');
     });
   });
 
-  describe('fotoKey — R2/MinIO, aditivo sobre fotoUrl legacy', () => {
-    it('rechaza con 400 si llegan fotoUrl y fotoKey juntos, sin llamar a storage ni crear', async () => {
-      prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
-
-      await expect(
-        service.create(
-          {
-            equipoId: 'e1',
-            litros: 30,
-            tipo: 'BENCINA',
-            fotoUrl: '/uploads/x.jpg',
-            fotoKey: 'tmp/user1234567890123456/x.jpg',
-          },
-          USER_ID,
-        ),
-      ).rejects.toBeInstanceOf(BadRequestException);
-      expect(claimTmp).not.toHaveBeenCalled();
-      expect(prisma.registroCombustible.create).not.toHaveBeenCalled();
-    });
-
+  describe('fotoKey — R2/MinIO', () => {
     it('con fotoKey reclama la key tmp y la respuesta trae fotoUrl firmada (nunca fotoKey)', async () => {
       prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
       claimTmp.mockResolvedValue('fuel-photos/final.jpg');
@@ -190,7 +170,7 @@ describe('CombustibleService', () => {
       expect(prisma.registroCombustible.create).not.toHaveBeenCalled();
     });
 
-    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida (hallazgo BAJO B1)', async () => {
+    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida', async () => {
       prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
       claimTmp.mockResolvedValue('fuel-photos/final.jpg');
       prisma.registroCombustible.create.mockResolvedValue({
@@ -265,7 +245,7 @@ describe('CombustibleService', () => {
       expect(res).not.toHaveProperty('fotoKey');
     });
 
-    it('update no toca fotoKey (fuera de alcance del DTO de update) y re-shapea la salida', async () => {
+    it('update no toca fotoKey (UpdateCombustibleDto ya no tiene campos propios, ver el cierre de R2) y re-shapea la salida', async () => {
       prisma.registroCombustible.update.mockResolvedValue({
         id: 'c1',
         equipoId: 'e1',
@@ -276,14 +256,15 @@ describe('CombustibleService', () => {
         fecha: new Date(),
       });
 
-      const res = await service.update('c1', {
-        fotoUrl: '/uploads/legacy.jpg',
-      });
+      const res = await service.update('c1', {});
 
       expect(prisma.registroCombustible.update).toHaveBeenCalledWith({
         where: { id: 'c1' },
-        data: { fotoUrl: '/uploads/legacy.jpg' },
+        data: {},
       });
+      // El registro YA tenía fotoUrl legacy antes de este update (dato
+      // histórico) — se sigue devolviendo tal cual, aunque el DTO de update
+      // no tenga forma de escribirlo.
       expect(res.fotoUrl).toBe('/uploads/legacy.jpg');
       expect(res).not.toHaveProperty('fotoKey');
     });

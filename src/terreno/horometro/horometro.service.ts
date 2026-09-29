@@ -4,12 +4,33 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ControlUnit, Prisma } from '@prisma/client';
+import { EquipmentStatus, Prisma } from '@prisma/client';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
+import { ROLES, sessionHasRole } from '../../auth/roles';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { ERROR_CODES } from '../../common/errors/error-codes';
+import { OperatorsService } from '../../operators/operators.service';
+import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
 import { SalidaHorometroDto } from './dto/salida-horometro.dto';
-import { UpdateHorometroDto } from './dto/update-horometro.dto';
+
+/**
+ * Estas 3 columnas nunca deben viajar crudas hacia un cliente. `pumpPhotoKey`
+ * es la KEY interna del bucket (la URL firmada se resuelve aparte,
+ * `ShiftsService.shapeCard`) — Flota nunca la firma, así que exponerla acá
+ * era simplemente una fuga sin contrapartida. `closeClientId` es la clave de
+ * idempotencia interna del cierre (Supervisión en Terreno) — filtrarla
+ * permite reproducir el 403 de dueño de tarjeta por otro camino
+ * (adivinar/copiar el id y reintentar el cierre de otro).
+ * `clientClockSkewMs` es auditoría interna del desfase de reloj del
+ * dispositivo, sin valor para el cliente.
+ */
+const HOROMETRO_INTERNAL_FIELDS_OMIT = {
+  pumpPhotoKey: true,
+  closeClientId: true,
+  clientClockSkewMs: true,
+} as const;
 
 /** Reusado por el chequeo aplicativo (fast-path) y por la traducción del
  * P2002 que dispara el índice único parcial (garantía dura, ver migración
@@ -18,17 +39,12 @@ import { UpdateHorometroDto } from './dto/update-horometro.dto';
 const TURNO_ABIERTO_MSG =
   'El equipo ya tiene un turno en curso; registrá la salida antes de una nueva entrada.';
 
-/** Contadores vigentes de la ficha del equipo que gobiernan la reconciliación
- * (guía §4): solo uno de los dos aplica, según `controlUnit`. */
-type EquipoContador = {
-  controlUnit: ControlUnit;
-  currentHourmeter: number | null;
-  currentMileage: number | null;
-};
-
 @Injectable()
 export class HorometroService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly operators: OperatorsService,
+  ) {}
 
   /**
    * ENTRADA del flujo de dos pasos (Flota): abre el turno del equipo. Un
@@ -36,8 +52,19 @@ export class HorometroService {
    * `valorFinal == null`), así que se rechaza si ya hay uno en curso — sin
    * este chequeo, la SALIDA posterior no sabría a cuál de los dos registros
    * abiertos cerrar.
+   *
+   * `session` (RFC Supervisión en Terreno) graba `supervisorId` — antes
+   * este flujo no dejaba rastro de quién abrió el turno.
    */
-  async create(dto: CreateHorometroDto) {
+  async create(dto: CreateHorometroDto, session: UserSession) {
+    // Validación del operador de catálogo (RFC Supervisión en Terreno,
+    // OBLIGATORIO, mismo patrón único que Trabajos extra) ANTES de la
+    // transacción: es una precondición pura de la request, no depende de
+    // ningún estado que la tx necesite leer de forma consistente. El
+    // snapshot `operador` se arma acá con el nombre del catálogo — el
+    // cliente ya no lo manda.
+    const operator = await this.operators.assertActive(dto.operatorId);
+
     // El registro de terreno y el write del contador de la ficha van en la
     // misma transacción: si el update del equipo fallara, no debe quedar un
     // `RegistroHorometro` huérfano que la ficha muestre sin haber movido el
@@ -50,12 +77,22 @@ export class HorometroService {
       const equipo = await tx.equipment.findUnique({
         where: { id: dto.equipoId },
         select: {
+          status: true,
           controlUnit: true,
           currentHourmeter: true,
           currentMileage: true,
         },
       });
       if (!equipo) throw new NotFoundException('Equipo no encontrado');
+
+      // R1 (RFC Supervisión en Terreno §Diseño): un equipo fuera de servicio
+      // o en taller no puede iniciar un turno nuevo.
+      if (equipo.status !== EquipmentStatus.OPERATIONAL) {
+        throw new ConflictException({
+          message: 'El equipo no está operativo',
+          code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
+        });
+      }
 
       const turnoAbierto = await tx.registroHorometro.findFirst({
         where: { equipoId: dto.equipoId, valorFinal: null },
@@ -76,12 +113,12 @@ export class HorometroService {
         registro = await tx.registroHorometro.create({
           data: {
             equipoId: dto.equipoId,
-            operador: dto.operador,
+            operador: operator.name,
+            operatorId: operator.id,
             turno: dto.turno,
             valorInicial: dto.valorInicial,
-            valorFinal: dto.valorFinal ?? null,
             nivelCombustible: dto.nivelCombustible ?? null,
-            fotoUrl: dto.fotoUrl ?? null,
+            supervisorId: session.user.id,
           },
         });
       } catch (error) {
@@ -96,17 +133,17 @@ export class HorometroService {
 
       // El write del valor actual solo aplica al contador que gobierna la
       // unidad (RFC T01 §2, MEJORA-3): HOURS pisa `currentHourmeter`, KM pisa
-      // `currentMileage` — nunca los dos a la vez. El contador se cuadra a la
-      // lectura más reciente que se conoce del equipo: `valorFinal` si el
-      // caller lo mandó (flujo de un paso de Terreno, que cierra el turno al
-      // toque), o si no `valorInicial` (flujo de dos pasos de Flota, que solo
-      // abre el turno acá).
+      // `currentMileage` — nunca los dos a la vez. Flota SIEMPRE en modo
+      // `'reject'` (RFC Supervisión en Terreno §Diseño: "Flota keeps using
+      // reject") — el modo `'warn'` es exclusivo de la apertura de tarjeta de
+      // turno (`ShiftsService.openCard`).
       // TODO(motor-preventivo): disparar el umbral de Mantenimiento (Joaquín, guía §5).
-      await this.reconcileEquipmentCounter(
+      await reconcileEquipmentCounter(
         tx,
         dto.equipoId,
         equipo,
-        dto.valorFinal ?? dto.valorInicial,
+        dto.valorInicial,
+        'reject',
       );
 
       return registro;
@@ -116,8 +153,17 @@ export class HorometroService {
   /**
    * SALIDA del flujo de dos pasos (Flota): cierra el turno que `create()`
    * abrió. Vuelve a cuadrar el contador del equipo, esta vez a `valorFinal`.
+   *
+   * `session` (RFC Supervisión en Terreno): si la tarjeta pertenece a
+   * un turno de Supervisión en Terreno (`shiftId != null`), este endpoint
+   * legacy de Flota YA NO la cierra — se cierra desde
+   * `POST /api/shift-cards/:id/close`, que además exige litros y foto. Salvo
+   * ADMIN, que puede cerrar cualquier tarjeta desde cualquiera de los dos
+   * flujos (respuesta a Q5 del RFC: "tarjetas sin cerrar, las cierra el
+   * ADMIN").
    */
-  async salida(id: string, dto: SalidaHorometroDto) {
+  async salida(id: string, dto: SalidaHorometroDto, session: UserSession) {
+    const now = new Date();
     return this.prisma.$transaction(async (tx) => {
       const registro = await tx.registroHorometro.findUnique({
         where: { id },
@@ -127,6 +173,18 @@ export class HorometroService {
       if (registro.valorFinal != null) {
         throw new ConflictException('El turno ya está cerrado');
       }
+
+      if (
+        registro.shiftId != null &&
+        !sessionHasRole(session.user.role, ROLES.ADMIN)
+      ) {
+        throw new ConflictException({
+          message:
+            'Esta tarjeta se cierra desde el Registro de equipo, con litros y foto',
+          code: ERROR_CODES.SHIFT_CARD_CLOSE_ELSEWHERE,
+        });
+      }
+
       if (dto.valorFinal < registro.valorInicial) {
         throw new BadRequestException(
           'La lectura final no puede ser menor que la inicial',
@@ -137,8 +195,13 @@ export class HorometroService {
         where: { id },
         data: {
           valorFinal: dto.valorFinal,
-          fotoUrlSalida: dto.fotoUrlSalida ?? null,
-          fechaSalida: new Date(),
+          fechaSalida: now,
+          // Antes NO se seteaba acá — `closedAt` quedaba `null` para una
+          // tarjeta de Supervisión en
+          // Terreno que un ADMIN cierra por este flujo legacy de Flota, así
+          // que jamás entraba a la ventana de "cerradas en las últimas 48h"
+          // de `ShiftsService.mine` (que filtra por `closedAt >= cutoff`).
+          closedAt: now,
           ...(dto.nivelCombustible != null
             ? { nivelCombustible: dto.nivelCombustible }
             : {}),
@@ -154,11 +217,12 @@ export class HorometroService {
         },
       });
       if (equipo) {
-        await this.reconcileEquipmentCounter(
+        await reconcileEquipmentCounter(
           tx,
           registro.equipoId,
           equipo,
           dto.valorFinal,
+          'reject',
         );
       }
 
@@ -170,89 +234,16 @@ export class HorometroService {
     return this.prisma.registroHorometro.findMany({
       orderBy: { fecha: 'desc' },
       include: { equipo: { select: { internalCode: true } } },
+      omit: HOROMETRO_INTERNAL_FIELDS_OMIT,
     });
   }
 
   async findOne(id: string) {
     const reg = await this.prisma.registroHorometro.findUnique({
       where: { id },
+      omit: HOROMETRO_INTERNAL_FIELDS_OMIT,
     });
     if (!reg) throw new NotFoundException('Registro no encontrado');
     return reg;
-  }
-
-  async update(id: string, dto: UpdateHorometroDto) {
-    // Mismo criterio de atomicidad que `create()`: el registro editado y el
-    // write del contador (si `valorFinal` cambia) van en la misma transacción.
-    return this.prisma.$transaction(async (tx) => {
-      const reg = await tx.registroHorometro.update({
-        where: { id },
-        data: dto,
-      });
-
-      if (dto.valorFinal != null) {
-        const equipo = await tx.equipment.findUnique({
-          where: { id: reg.equipoId },
-          select: {
-            controlUnit: true,
-            currentHourmeter: true,
-            currentMileage: true,
-          },
-        });
-        if (equipo) {
-          await this.reconcileEquipmentCounter(
-            tx,
-            reg.equipoId,
-            equipo,
-            dto.valorFinal,
-          );
-        }
-      }
-
-      return reg;
-    });
-  }
-
-  /**
-   * Único punto donde se lee/escribe el contador de uso de la ficha del
-   * equipo (`currentHourmeter`/`currentMileage`), reusado por `create()`,
-   * `salida()` y `update()` — antes triplicado con un `if/else` por método.
-   *
-   * Guarda monotónica (decisión de producto, hallazgo B1): el contador de un
-   * equipo NUNCA retrocede. Una lectura menor que la vigente es casi siempre
-   * un typo o un OCR mal leído; el reemplazo físico de horómetro (el único
-   * caso legítimo de una lectura menor) se maneja como flujo aparte a
-   * futuro, no acá. Si el contador vigente es `null` (equipo sin lectura
-   * previa) no hay piso: se acepta cualquier valor ≥ 0 (ya validado por el
-   * DTO con `@Min(0)`).
-   */
-  private async reconcileEquipmentCounter(
-    tx: Prisma.TransactionClient,
-    equipoId: string,
-    equipo: EquipoContador,
-    nuevoValor: number,
-  ): Promise<void> {
-    const esHoras = equipo.controlUnit === ControlUnit.HOURS;
-    const vigente = esHoras ? equipo.currentHourmeter : equipo.currentMileage;
-    const unidad = esHoras ? 'h' : 'km';
-    const nombreContador = esHoras ? 'horómetro' : 'kilometraje';
-
-    if (vigente != null && nuevoValor < vigente) {
-      throw new BadRequestException(
-        `La lectura (${nuevoValor} ${unidad}) no puede ser menor que el ${nombreContador} actual del equipo (${vigente} ${unidad})`,
-      );
-    }
-
-    if (esHoras) {
-      await tx.equipment.update({
-        where: { id: equipoId },
-        data: { currentHourmeter: nuevoValor },
-      });
-    } else if (equipo.controlUnit === ControlUnit.KM) {
-      await tx.equipment.update({
-        where: { id: equipoId },
-        data: { currentMileage: nuevoValor },
-      });
-    }
   }
 }

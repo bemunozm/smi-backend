@@ -3,6 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import {
   assertOwnedTmpKey,
   buildFinalKey,
+  buildServerFileKey,
   buildTmpKey,
   FILE_KINDS,
   TMP_KEY_REGEX,
@@ -38,6 +39,23 @@ describe('storage-keys', () => {
       const docKey = buildFinalKey('equipment-document', 'jpg');
       expect(photoKey.startsWith('equipment-photos/')).toBe(true);
       expect(docKey.startsWith('equipment-documents/')).toBe(true);
+    });
+  });
+
+  /** M3 de la auditoría de seguridad. */
+  describe('buildServerFileKey', () => {
+    const date = new Date('2026-09-28T12:00:00.000Z');
+
+    it('incluye prefijo, fecha e id', () => {
+      const key = buildServerFileKey('shift-exit-report', 'report-1', date);
+      expect(key.startsWith('reports/shift-exit/2026/09/report-1-')).toBe(true);
+      expect(key.endsWith('.pdf')).toBe(true);
+    });
+
+    it('dos llamadas con el MISMO id dan keys DISTINTAS (sufijo aleatorio por intento)', () => {
+      const first = buildServerFileKey('shift-exit-report', 'report-1', date);
+      const second = buildServerFileKey('shift-exit-report', 'report-1', date);
+      expect(first).not.toBe(second);
     });
   });
 

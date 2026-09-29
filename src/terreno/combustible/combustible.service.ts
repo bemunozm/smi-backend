@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 
 import type { RegistroCombustible } from '@prisma/client';
 
@@ -26,12 +22,6 @@ export class CombustibleService {
   ) {}
 
   async create(dto: CreateCombustibleDto, userId: string) {
-    if (dto.fotoUrl && dto.fotoKey) {
-      throw new BadRequestException(
-        'No se puede enviar "fotoUrl" y "fotoKey" juntos',
-      );
-    }
-
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },
     });
@@ -43,8 +33,8 @@ export class CombustibleService {
       ? await this.storage.claimTmp(dto.fotoKey, userId, 'fuel-photo')
       : undefined;
 
-    // El `try/catch` cubre SOLO la escritura en Prisma (hallazgo BAJO B1 de
-    // la revisión de seguridad, mismo patrón que `EquipmentService.create`):
+    // El `try/catch` cubre SOLO la escritura en Prisma (mismo patrón que
+    // `EquipmentService.create`):
     // antes acá `return this.shape(registro)` SIN `await` dentro del try
     // hacía que el rollback nunca se disparara igual por accidente — se deja
     // explícito para no depender de ese detalle.
@@ -55,7 +45,10 @@ export class CombustibleService {
           equipoId: dto.equipoId,
           litros: dto.litros,
           tipo: dto.tipo,
-          fotoUrl: dto.fotoUrl ?? null,
+          // `fotoUrl` (legacy) ya no es un campo de creación — ver
+          // `CreateCombustibleDto`. Se omite la key: Prisma inserta NULL
+          // (mismo resultado que antes con `dto.fotoUrl ?? null`, ahora
+          // siempre `null` para filas nuevas).
           fotoKey: finalKey ?? null,
           // Sin `fecha` en el DTO, se omite la key y Prisma aplica el
           // `@default(now())` del schema — comportamiento previo intacto.

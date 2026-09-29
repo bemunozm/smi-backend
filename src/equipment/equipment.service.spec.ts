@@ -4,15 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  ControlUnit,
-  EquipmentClass,
-  EquipmentStatus,
-  Prisma,
-} from '@prisma/client';
+import { ControlUnit, EquipmentClass, EquipmentStatus } from '@prisma/client';
 
 import { ROLES } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { prismaError } from '../common/testing/fixtures';
+import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { EQUIPMENT_USAGE_INCLUDE, EquipmentService } from './equipment.service';
@@ -27,19 +24,6 @@ const SIN_REGISTROS = {
   stockMovements: 0,
   documents: 0,
 };
-
-/** Construye un error de Prisma real (no un duck-type) para que el `instanceof`
- * que usa `EquipmentService` en el mapeo de errores lo reconozca. */
-function prismaError(
-  code: string,
-  meta?: Record<string, unknown>,
-): Prisma.PrismaClientKnownRequestError {
-  return new Prisma.PrismaClientKnownRequestError('mocked prisma error', {
-    code,
-    clientVersion: 'test',
-    meta,
-  });
-}
 
 const DTO_BASE: CreateEquipmentDto = {
   internalCode: 'EX-001',
@@ -68,6 +52,7 @@ describe('EquipmentService', () => {
   const discard = jest.fn();
   const deleteBestEffort = jest.fn();
   const sign = jest.fn();
+  const assertActive = jest.fn();
 
   beforeEach(async () => {
     [
@@ -86,6 +71,7 @@ describe('EquipmentService', () => {
       discard,
       deleteBestEffort,
       sign,
+      assertActive,
     ].forEach((m) => m.mockReset());
     userFindMany.mockResolvedValue([]);
     // Sin turno abierto por defecto — los tests de `openShift` lo sobreescriben.
@@ -124,6 +110,10 @@ describe('EquipmentService', () => {
         {
           provide: StorageService,
           useValue: { claimTmp, discard, deleteBestEffort, sign },
+        },
+        {
+          provide: OperatorsService,
+          useValue: { assertActive },
         },
       ],
     }).compile();
@@ -181,40 +171,45 @@ describe('EquipmentService', () => {
   });
 
   describe('findAll — asignación, inUse y combustible', () => {
-    it('resuelve operator/supervisor con UNA sola consulta batch, deriva inUse y toma el nivel del último horómetro', async () => {
+    it('operator viene de la relación currentOperator (sin query aparte); supervisor resuelve con UNA consulta batch; deriva inUse y toma el nivel del último horómetro', async () => {
       findMany.mockResolvedValue([
         {
           id: 'eq_1',
-          currentOperatorId: 'user_op',
+          currentOperatorId: 'op_1',
+          currentOperator: { id: 'op_1', name: 'Patricio Rojas' },
           currentSupervisorId: 'user_sup',
           horometros: [{ nivelCombustible: 62 }],
         },
         {
           id: 'eq_2',
           currentOperatorId: null,
+          currentOperator: null,
           currentSupervisorId: null,
           horometros: [],
         },
       ]);
       userFindMany.mockResolvedValue([
-        { id: 'user_op', name: 'Juan Operador' },
         { id: 'user_sup', name: 'Marcela Supervisora' },
       ]);
 
       const [enUso, disponible] = await service.findAll({});
 
+      // Solo el supervisor pasa por `user.findMany` — el operador ya viene
+      // resuelto en `currentOperator` (relación Prisma, ver
+      // `EQUIPMENT_USAGE_INCLUDE`).
       expect(userFindMany).toHaveBeenCalledTimes(1);
       expect(userFindMany).toHaveBeenCalledWith({
-        where: { id: { in: ['user_op', 'user_sup'] } },
+        where: { id: { in: ['user_sup'] } },
         select: { id: true, name: true },
       });
       expect(enUso).toMatchObject({
-        operator: { id: 'user_op', name: 'Juan Operador' },
+        operator: { id: 'op_1', name: 'Patricio Rojas' },
         supervisor: { id: 'user_sup', name: 'Marcela Supervisora' },
         inUse: true,
         currentFuelLevel: 62,
       });
       expect(enUso).not.toHaveProperty('horometros');
+      expect(enUso).not.toHaveProperty('currentOperator');
       expect(disponible).toMatchObject({
         operator: null,
         supervisor: null,
@@ -223,11 +218,12 @@ describe('EquipmentService', () => {
       });
     });
 
-    it('no consulta usuarios si ningún equipo tiene asignación (evita una query vacía)', async () => {
+    it('no consulta usuarios si ningún equipo tiene supervisor asignado (evita una query vacía)', async () => {
       findMany.mockResolvedValue([
         {
           id: 'eq_1',
           currentOperatorId: null,
+          currentOperator: null,
           currentSupervisorId: null,
           horometros: [],
         },
@@ -238,12 +234,13 @@ describe('EquipmentService', () => {
       expect(userFindMany).not.toHaveBeenCalled();
     });
 
-    it('un id asignado sin usuario correspondiente (dato huérfano) se resuelve como null', async () => {
+    it('un supervisorId sin usuario correspondiente (dato huérfano, soft ref sin FK) se resuelve como null', async () => {
       findMany.mockResolvedValue([
         {
           id: 'eq_1',
-          currentOperatorId: 'user_borrado',
-          currentSupervisorId: null,
+          currentOperatorId: null,
+          currentOperator: null,
+          currentSupervisorId: 'user_borrado',
           horometros: [],
         },
       ]);
@@ -251,7 +248,26 @@ describe('EquipmentService', () => {
 
       const [equipo] = await service.findAll({});
 
-      expect(equipo).toMatchObject({ operator: null, inUse: true });
+      expect(equipo).toMatchObject({ supervisor: null, inUse: false });
+    });
+
+    it('un operador ASIGNADO pero INACTIVO igual se muestra con su nombre (la FK no filtra por isActive)', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: 'op_inactivo',
+          currentOperator: { id: 'op_inactivo', name: 'Operador Dado de Baja' },
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+
+      const [equipo] = await service.findAll({});
+
+      expect(equipo).toMatchObject({
+        operator: { id: 'op_inactivo', name: 'Operador Dado de Baja' },
+        inUse: true,
+      });
     });
   });
 
@@ -315,8 +331,11 @@ describe('EquipmentService', () => {
           operador: 'Juan Rojas',
           turno: 'DIURNO',
           fecha,
+          supervisorId: 'sup_1',
+          shiftId: 'shift_1',
         },
       ]);
+      userFindMany.mockResolvedValue([{ id: 'sup_1', name: 'Ana Torres' }]);
 
       const [conTurno, sinTurno] = await service.findAll({});
 
@@ -332,6 +351,8 @@ describe('EquipmentService', () => {
           operador: true,
           turno: true,
           fecha: true,
+          supervisorId: true,
+          shiftId: true,
         },
       });
       expect(conTurno).toMatchObject({
@@ -341,9 +362,70 @@ describe('EquipmentService', () => {
           operador: 'Juan Rojas',
           turno: 'DIURNO',
           fecha,
+          supervisorName: 'Ana Torres',
+          shiftId: 'shift_1',
         },
       });
       expect(sinTurno).toMatchObject({ openShift: null });
+    });
+
+    it('openShift.supervisorName es null si la tarjeta no tiene supervisorId (dato legacy)', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      registroHorometroFindMany.mockResolvedValue([
+        {
+          id: 'r1',
+          equipoId: 'eq_1',
+          valorInicial: 100,
+          operador: 'Juan Rojas',
+          turno: 'DIURNO',
+          fecha: new Date('2026-09-15T08:00:00.000Z'),
+          supervisorId: null,
+          shiftId: null,
+        },
+      ]);
+
+      const [conTurno] = await service.findAll({});
+
+      expect(conTurno).toMatchObject({
+        openShift: { supervisorName: null },
+      });
+    });
+
+    it('openShift.shiftId es null si la tarjeta viene de la entrada legacy de Flota (sin turno de Supervisión en Terreno)', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      registroHorometroFindMany.mockResolvedValue([
+        {
+          id: 'r1',
+          equipoId: 'eq_1',
+          valorInicial: 100,
+          operador: 'Juan Rojas',
+          turno: 'DIURNO',
+          fecha: new Date('2026-09-15T08:00:00.000Z'),
+          supervisorId: 'sup_1',
+          shiftId: null,
+        },
+      ]);
+      userFindMany.mockResolvedValue([{ id: 'sup_1', name: 'Ana Torres' }]);
+
+      const [conTurno] = await service.findAll({});
+
+      expect(conTurno).toMatchObject({
+        openShift: { shiftId: null },
+      });
     });
 
     it('no consulta turnos abiertos si no hay equipos', async () => {
@@ -564,7 +646,7 @@ describe('EquipmentService', () => {
       expect(create).not.toHaveBeenCalled();
     });
 
-    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida (hallazgo BAJO B1)', async () => {
+    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida', async () => {
       claimTmp.mockResolvedValue('equipment-photos/final.jpg');
       create.mockResolvedValue({
         id: 'eq_1',
@@ -619,13 +701,11 @@ describe('EquipmentService', () => {
       update.mockResolvedValue({
         id: 'eq_1',
         brand: 'Komatsu',
-        currentOperatorId: 'user_op',
+        currentOperatorId: 'op_1',
+        currentOperator: { id: 'op_1', name: 'Patricio Rojas' },
         currentSupervisorId: null,
         horometros: [{ nivelCombustible: 45 }],
       });
-      userFindMany.mockResolvedValue([
-        { id: 'user_op', name: 'Juan Operador' },
-      ]);
 
       const result = await service.update(
         'eq_1',
@@ -634,7 +714,7 @@ describe('EquipmentService', () => {
       );
 
       expect(result).toMatchObject({
-        operator: { id: 'user_op', name: 'Juan Operador' },
+        operator: { id: 'op_1', name: 'Patricio Rojas' },
         supervisor: null,
         inUse: true,
         currentFuelLevel: 45,
@@ -893,7 +973,7 @@ describe('EquipmentService', () => {
         expect(update).not.toHaveBeenCalled();
       });
 
-      it('si el shaping falla DESPUÉS de que la BD confirma el update, NO descarta la key nueva (hallazgo BAJO B1)', async () => {
+      it('si el shaping falla DESPUÉS de que la BD confirma el update, NO descarta la key nueva', async () => {
         findUnique.mockResolvedValue({ photoKey: 'equipment-photos/old.jpg' });
         claimTmp.mockResolvedValue('equipment-photos/new.jpg');
         update.mockResolvedValue({
@@ -988,34 +1068,41 @@ describe('EquipmentService', () => {
   });
 
   describe('updateAssignment', () => {
-    it('asigna operador y supervisor cuando ambos tienen el rol correcto', async () => {
+    it('asigna un operador ACTIVO del catálogo y un supervisor válido', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' }); // assertExiste
-      userFindUnique
-        .mockResolvedValueOnce({ id: 'user_op', role: ROLES.OPERADOR })
-        .mockResolvedValueOnce({ id: 'user_sup', role: ROLES.SUPERVISOR });
+      assertActive.mockResolvedValue({
+        id: 'op_1',
+        name: 'Patricio Rojas',
+        isActive: true,
+      });
+      userFindUnique.mockResolvedValue({
+        id: 'user_sup',
+        role: ROLES.SUPERVISOR,
+      });
       update.mockResolvedValue({
         id: 'eq_1',
-        currentOperatorId: 'user_op',
+        currentOperatorId: 'op_1',
+        currentOperator: { id: 'op_1', name: 'Patricio Rojas' },
         currentSupervisorId: 'user_sup',
         horometros: [],
       });
       userFindMany.mockResolvedValue([
-        { id: 'user_op', name: 'Juan Operador' },
         { id: 'user_sup', name: 'Marcela Supervisora' },
       ]);
 
       const result = await service.updateAssignment('eq_1', {
-        operatorId: 'user_op',
+        operatorId: 'op_1',
         supervisorId: 'user_sup',
       });
 
+      expect(assertActive).toHaveBeenCalledWith('op_1');
       expect(update).toHaveBeenCalledWith({
         where: { id: 'eq_1' },
-        data: { currentOperatorId: 'user_op', currentSupervisorId: 'user_sup' },
+        data: { currentOperatorId: 'op_1', currentSupervisorId: 'user_sup' },
         include: EQUIPMENT_USAGE_INCLUDE,
       });
       expect(result).toMatchObject({
-        operator: { id: 'user_op', name: 'Juan Operador' },
+        operator: { id: 'op_1', name: 'Patricio Rojas' },
         supervisor: { id: 'user_sup', name: 'Marcela Supervisora' },
         inUse: true,
       });
@@ -1026,6 +1113,7 @@ describe('EquipmentService', () => {
       update.mockResolvedValue({
         id: 'eq_1',
         currentOperatorId: null,
+        currentOperator: null,
         currentSupervisorId: null,
         horometros: [],
       });
@@ -1045,47 +1133,59 @@ describe('EquipmentService', () => {
         supervisor: null,
         inUse: false,
       });
+      expect(assertActive).not.toHaveBeenCalled();
       expect(userFindUnique).not.toHaveBeenCalled();
     });
 
     it('un campo omitido deja esa asignación intacta', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      userFindUnique.mockResolvedValue({ id: 'user_op', role: ROLES.OPERADOR });
+      assertActive.mockResolvedValue({
+        id: 'op_1',
+        name: 'Patricio Rojas',
+        isActive: true,
+      });
       update.mockResolvedValue({
         id: 'eq_1',
-        currentOperatorId: 'user_op',
+        currentOperatorId: 'op_1',
+        currentOperator: { id: 'op_1', name: 'Patricio Rojas' },
         currentSupervisorId: null,
         horometros: [],
       });
 
-      await service.updateAssignment('eq_1', { operatorId: 'user_op' });
+      await service.updateAssignment('eq_1', { operatorId: 'op_1' });
 
       const [{ data }] = update.mock.calls[0] as [
         { data: Record<string, unknown> },
       ];
       expect(data).not.toHaveProperty('currentSupervisorId');
+      expect(userFindUnique).not.toHaveBeenCalled();
     });
 
-    it('rechaza un operatorId de un usuario con otro rol', async () => {
+    it('rechaza (409 OPERATOR_INACTIVE) un operador del catálogo dado de baja, sin llegar a actualizar', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      userFindUnique.mockResolvedValue({
-        id: 'user_x',
-        role: ROLES.MANTENEDOR,
-      });
+      assertActive.mockRejectedValue(
+        new ConflictException({
+          message: 'El operador "Patricio Rojas" está inactivo',
+          code: 'OPERATOR_INACTIVE',
+        }),
+      );
 
       await expect(
-        service.updateAssignment('eq_1', { operatorId: 'user_x' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+        service.updateAssignment('eq_1', { operatorId: 'op_inactivo' }),
+      ).rejects.toBeInstanceOf(ConflictException);
       expect(update).not.toHaveBeenCalled();
     });
 
-    it('rechaza un operatorId inexistente', async () => {
+    it('rechaza (404) un operatorId que no existe en el catálogo — incluye el caso de mandar un id de user', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      userFindUnique.mockResolvedValue(null);
+      assertActive.mockRejectedValue(
+        new NotFoundException('Operador "user_op" no encontrado'),
+      );
 
       await expect(
-        service.updateAssignment('eq_1', { operatorId: 'missing' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+        service.updateAssignment('eq_1', { operatorId: 'user_op' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(update).not.toHaveBeenCalled();
     });
 
     it('rechaza un supervisorId con rol distinto de SUPERVISOR', async () => {
@@ -1097,18 +1197,13 @@ describe('EquipmentService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('rechaza un operatorId baneado aunque tenga el rol OPERADOR correcto', async () => {
+    it('rechaza un supervisorId inexistente', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' });
-      userFindUnique.mockResolvedValue({
-        id: 'user_baneado',
-        role: ROLES.OPERADOR,
-        banned: true,
-      });
+      userFindUnique.mockResolvedValue(null);
 
       await expect(
-        service.updateAssignment('eq_1', { operatorId: 'user_baneado' }),
+        service.updateAssignment('eq_1', { supervisorId: 'missing' }),
       ).rejects.toBeInstanceOf(BadRequestException);
-      expect(update).not.toHaveBeenCalled();
     });
 
     it('rechaza un supervisorId baneado aunque tenga el rol SUPERVISOR correcto', async () => {
@@ -1129,9 +1224,10 @@ describe('EquipmentService', () => {
       findUnique.mockResolvedValue(null);
 
       await expect(
-        service.updateAssignment('missing', { operatorId: 'user_op' }),
+        service.updateAssignment('missing', { operatorId: 'op_1' }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(update).not.toHaveBeenCalled();
+      expect(assertActive).not.toHaveBeenCalled();
     });
   });
 
@@ -1140,26 +1236,25 @@ describe('EquipmentService', () => {
       const ficha = {
         id: 'eq_1',
         internalCode: 'EX-001',
-        currentOperatorId: 'user_op',
+        currentOperatorId: 'op_1',
+        currentOperator: { id: 'op_1', name: 'Patricio Rojas' },
         currentSupervisorId: null,
         horometros: [{ nivelCombustible: 90 }],
       };
       findUnique.mockResolvedValue(ficha);
-      userFindMany.mockResolvedValue([
-        { id: 'user_op', name: 'Juan Operador' },
-      ]);
 
       const result = await service.findOne('eq_1');
 
       expect(result).toMatchObject({
         id: 'eq_1',
         internalCode: 'EX-001',
-        operator: { id: 'user_op', name: 'Juan Operador' },
+        operator: { id: 'op_1', name: 'Patricio Rojas' },
         supervisor: null,
         inUse: true,
         currentFuelLevel: 90,
       });
       expect(result).not.toHaveProperty('horometros');
+      expect(result).not.toHaveProperty('currentOperator');
     });
 
     it('lanza NotFoundException si el equipo no existe', async () => {

@@ -148,6 +148,87 @@ describe('NotificationsService', () => {
     });
   });
 
+  describe('notifyRolesWithAttachment', () => {
+    const ATTACHMENTS = [
+      {
+        filename: 'reporte.pdf',
+        content: Buffer.from('%PDF-1.4'),
+        contentType: 'application/pdf',
+      },
+    ];
+
+    it('crea una fila por cada ADMIN, adjunta el PDF y reporta allEmailsSent=true', async () => {
+      findByRole.mockResolvedValue([
+        { id: 'a1', email: 'admin1@smi.local', name: 'Admin 1' },
+        { id: 'a2', email: 'admin2@smi.local', name: 'Admin 2' },
+      ]);
+      create.mockResolvedValue({ id: 'n1' });
+      sendMail.mockResolvedValue(true);
+
+      const result = await service.notifyRolesWithAttachment(
+        [ROLES.ADMIN],
+        { tipo: 'shift.exit-report', titulo: 'Reporte', cuerpo: 'detalle' },
+        ATTACHMENTS,
+        ['sergio@cliente.cl'],
+      );
+
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(sendMail).toHaveBeenCalledTimes(3); // 2 ADMIN + 1 extra
+      expect(sendMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: 'sergio@cliente.cl',
+          attachments: ATTACHMENTS,
+        }),
+      );
+      expect(result).toEqual({ recipientCount: 3, allEmailsSent: true });
+    });
+
+    it('los extraEmails NO generan fila Notification (no tienen cuenta)', async () => {
+      findByRole.mockResolvedValue([]);
+      sendMail.mockResolvedValue(true);
+
+      await service.notifyRolesWithAttachment(
+        [ROLES.ADMIN],
+        { tipo: 'shift.exit-report', titulo: 't', cuerpo: 'c' },
+        ATTACHMENTS,
+        ['sergio@cliente.cl'],
+      );
+
+      expect(create).not.toHaveBeenCalled();
+      expect(sendMail).toHaveBeenCalledTimes(1);
+    });
+
+    it('si un solo correo falla, allEmailsSent es false', async () => {
+      findByRole.mockResolvedValue([
+        { id: 'a1', email: 'admin1@smi.local', name: 'Admin 1' },
+      ]);
+      create.mockResolvedValue({ id: 'n1' });
+      sendMail.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+      const result = await service.notifyRolesWithAttachment(
+        [ROLES.ADMIN],
+        { tipo: 'shift.exit-report', titulo: 't', cuerpo: 'c' },
+        ATTACHMENTS,
+        ['sergio@cliente.cl'],
+      );
+
+      expect(result.allEmailsSent).toBe(false);
+    });
+
+    it('sin destinatarios (ni roles ni extra), recipientCount=0 y allEmailsSent=false', async () => {
+      findByRole.mockResolvedValue([]);
+
+      const result = await service.notifyRolesWithAttachment(
+        [ROLES.ADMIN],
+        { tipo: 'shift.exit-report', titulo: 't', cuerpo: 'c' },
+        ATTACHMENTS,
+      );
+
+      expect(result).toEqual({ recipientCount: 0, allEmailsSent: false });
+      expect(sendMail).not.toHaveBeenCalled();
+    });
+  });
+
   describe('markRead', () => {
     it('lanza NotFoundException cuando el userId no coincide con el dueño (ownership)', async () => {
       updateMany.mockResolvedValue({ count: 0 });

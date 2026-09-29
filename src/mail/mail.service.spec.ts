@@ -25,7 +25,7 @@ describe('MailService', () => {
     service = module.get<MailService>(MailService);
   });
 
-  it('sin SMTP configurado, sendMail es no-op y no lanza', async () => {
+  it('sin SMTP configurado, sendMail es no-op, no lanza y devuelve false', async () => {
     const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
 
     await expect(
@@ -34,10 +34,14 @@ describe('MailService', () => {
         subject: 'Asunto',
         html: '<p>hola</p>',
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
 
     expect(warnSpy).toHaveBeenCalledWith('email disabled: SMTP not configured');
     warnSpy.mockRestore();
+  });
+
+  it('sin SMTP configurado, isConfigured() es false', () => {
+    expect(service.isConfigured()).toBe(false);
   });
 
   it('solo resuelve el transport una vez (cachea el resultado no-op)', async () => {

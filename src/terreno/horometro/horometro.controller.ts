@@ -1,11 +1,11 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
 import { HorometroService } from './horometro.service';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
 import { SalidaHorometroDto } from './dto/salida-horometro.dto';
-import { UpdateHorometroDto } from './dto/update-horometro.dto';
 
 @Controller('horometro')
 export class HorometroController {
@@ -23,27 +23,32 @@ export class HorometroController {
 
   @Post()
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async create(@Body() dto: CreateHorometroDto) {
+  async create(
+    @Body() dto: CreateHorometroDto,
+    @Session() session: UserSession,
+  ) {
     return {
-      data: await this.service.create(dto),
+      data: await this.service.create(dto, session),
       message: 'Lectura registrada',
     };
   }
 
-  @Patch(':id')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async update(@Param('id') id: string, @Body() dto: UpdateHorometroDto) {
-    return {
-      data: await this.service.update(id, dto),
-      message: 'Lectura actualizada',
-    };
-  }
+  // `PATCH /horometro/:id` genérico (`update`) se ELIMINÓ (RFC Supervisión
+  // en Terreno): no validaba nada — podía cerrar una tarjeta en
+  // silencio (`valorFinal` sin pasar por `salida()`) sin cuadrar el contador
+  // del equipo ni respetar el gate de `shiftId`. Ningún uso en el frontend
+  // (grep de `PATCH .../horometro/:id` y `updateHorometro` en
+  // `smi-frontend/src`, confirmado antes de retirarlo).
 
   @Patch(':id/salida')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async salida(@Param('id') id: string, @Body() dto: SalidaHorometroDto) {
+  async salida(
+    @Param('id') id: string,
+    @Body() dto: SalidaHorometroDto,
+    @Session() session: UserSession,
+  ) {
     return {
-      data: await this.service.salida(id, dto),
+      data: await this.service.salida(id, dto, session),
       message: 'Turno cerrado',
     };
   }

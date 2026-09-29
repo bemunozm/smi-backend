@@ -17,6 +17,7 @@ export const DOMAIN_EVENTS = {
   ORDEN_ASSIGNED: 'orden.assigned',
   ORDEN_COMPLETED: 'orden.completed',
   ITEM_LOW_STOCK: 'item.low-stock',
+  SHIFT_EXIT_REPORT_SENT: 'shift.exit-report',
 } as const;
 
 export type DomainEventName =
@@ -58,4 +59,25 @@ export interface ItemLowStockEvent {
   branchName: string;
   quantity: number;
   minimumQuantity: number;
+}
+
+/**
+ * Emitido por `ShiftReportsService` (RFC Supervisión en Terreno) DESPUÉS de
+ * que la fila `ShiftExitReport` ya se confirmó en la base de
+ * datos — nunca antes (ver `ShiftReportsService.create`). `fileKey` es la
+ * key privada en el bucket (el listener la usa con
+ * `StorageService.getObjectBuffer` para adjuntar el PDF al correo); nunca se
+ * expone en una respuesta HTTP.
+ */
+export interface ShiftExitReportSentEvent {
+  reportId: string;
+  shiftId: string;
+  fileKey: string;
+  fileName: string;
+  cardCount: number;
+  /** Nombre del supervisor que generó el reporte (`session.user.name`). */
+  supervisorName: string;
+  /** `YYYY-MM-DD` — ver `src/shifts/date-only.ts`. */
+  shiftDate: string;
+  shiftType: string;
 }

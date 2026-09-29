@@ -14,10 +14,21 @@ import nodemailer, { type Transporter } from 'nodemailer';
 
 import { env } from '../common/config/env';
 
+/** Adjunto de correo — mismo shape mínimo que espera `nodemailer`. */
+export interface MailAttachment {
+  readonly filename: string;
+  readonly content: Buffer;
+  readonly contentType: string;
+}
+
 export interface SendMailInput {
   to: string;
   subject: string;
   html: string;
+  /** Opcional, aditivo — ver Diseño del RFC Supervisión en Terreno §Reporte
+   * (el PDF de salida de turno viaja acá). Los callers existentes no lo
+   * mandan y siguen funcionando igual. */
+  attachments?: MailAttachment[];
 }
 
 @Injectable()
@@ -25,10 +36,19 @@ export class MailService {
   private readonly logger = new Logger(MailService.name);
   private transporter: Transporter | null | undefined; // undefined = aún no resuelto
 
-  async sendMail(input: SendMailInput): Promise<void> {
+  /**
+   * Devuelve `true` cuando el correo efectivamente se intentó enviar (SMTP
+   * configurado y `transporter.sendMail` no lanzó); `false` cuando quedó en
+   * no-op (SMTP no configurado) o cuando el envío falló — en ambos casos SIN
+   * lanzar (ver docstring de cabecera: el correo es best-effort). El booleano
+   * es lo que usa `NotificationsService.notifyRolesWithAttachment` para
+   * derivar `ShiftExitReport.emailStatus` (SENT/FAILED/SKIPPED); el resto de
+   * los callers (fire-and-forget) simplemente lo ignora.
+   */
+  async sendMail(input: SendMailInput): Promise<boolean> {
     const transporter = this.getTransporter();
     if (!transporter) {
-      return;
+      return false;
     }
 
     try {
@@ -37,7 +57,9 @@ export class MailService {
         to: input.to,
         subject: input.subject,
         html: input.html,
+        attachments: input.attachments,
       });
+      return true;
     } catch (error) {
       // El correo es best-effort: un SMTP caído no debe tumbar el flujo que
       // ya persistió la notificación in-app.
@@ -45,7 +67,16 @@ export class MailService {
         `No se pudo enviar el correo a ${input.to}`,
         error instanceof Error ? error.stack : undefined,
       );
+      return false;
     }
+  }
+
+  /** `true` si hay credenciales SMTP mínimas configuradas — mismo criterio
+   * que `getTransporter()`, expuesto para que un caller (ej.
+   * `NotificationsListener`) pueda distinguir "no hay SMTP" (SKIPPED) de "el
+   * envío falló" (FAILED) sin duplicar la condición. */
+  isConfigured(): boolean {
+    return Boolean(env.smtpHost && env.smtpUser && env.smtpPass);
   }
 
   private getTransporter(): Transporter | null {
@@ -53,7 +84,7 @@ export class MailService {
       return this.transporter;
     }
 
-    if (!env.smtpHost || !env.smtpUser || !env.smtpPass) {
+    if (!this.isConfigured()) {
       this.logger.warn('email disabled: SMTP not configured');
       this.transporter = null;
       return this.transporter;

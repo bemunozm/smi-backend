@@ -9,6 +9,7 @@ import type { Notification, Prisma } from '@prisma/client';
 import type { Role } from '../auth/roles';
 import { escapeHtml } from '../mail/html-escape.util';
 import { MailService } from '../mail/mail.service';
+import type { MailAttachment } from '../mail/mail.service';
 import { PrismaService } from '../common/prisma/prisma.service';
 import type { UserResponseDto } from '../users/dto/user-response.dto';
 import { UsersService } from '../users/users.service';
@@ -77,15 +78,7 @@ export class NotificationsService {
     userId: string,
     input: CreateNotificationInput,
   ): Promise<Notification> {
-    const notification = await this.prisma.notification.create({
-      data: {
-        userId,
-        tipo: input.tipo,
-        titulo: input.titulo,
-        cuerpo: input.cuerpo,
-        data: input.data,
-      },
-    });
+    const notification = await this.createNotificationRow(userId, input);
 
     const recipient = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -144,19 +137,73 @@ export class NotificationsService {
     );
   }
 
+  /**
+   * Fan-out CON adjunto + destinatarios "externos" sin cuenta (usado por
+   * `NotificationsListener.onShiftExitReportSent`). A diferencia de
+   * `createForRoles` (correo best-effort silencioso, sin adjunto, sin
+   * reportar éxito): acá el caller necesita (a) adjuntar el PDF al correo, y
+   * (b) saber si TODOS los correos salieron, para derivar
+   * `ShiftExitReport.emailStatus`. Por eso es un método aparte en vez de
+   * extender `createForRoles` — ese sigue igual para los otros 3 eventos.
+   *
+   * `extraEmails` (ej. `SHIFT_REPORT_EXTRA_RECIPIENTS`) reciben SOLO el
+   * correo: no tienen cuenta, así que no hay fila `Notification` que
+   * crearles.
+   */
+  async notifyRolesWithAttachment(
+    roles: readonly Role[],
+    input: CreateNotificationInput,
+    attachments: readonly MailAttachment[],
+    extraEmails: readonly string[] = [],
+  ): Promise<{ recipientCount: number; allEmailsSent: boolean }> {
+    const usersByRole = await Promise.all(
+      roles.map((role) => this.users.findByRole(role)),
+    );
+    const uniqueRecipients = new Map<string, UserResponseDto>();
+    for (const usersOfRole of usersByRole) {
+      for (const user of usersOfRole) {
+        uniqueRecipients.set(user.id, user);
+      }
+    }
+    const recipients = Array.from(uniqueRecipients.values());
+    const html = this.buildEmailHtml(input.titulo, input.cuerpo);
+    const mailAttachments = [...attachments];
+
+    const roleResults = await Promise.all(
+      recipients.map(async (recipient) => {
+        await this.createNotificationRow(recipient.id, input);
+        return this.mail.sendMail({
+          to: recipient.email,
+          subject: input.titulo,
+          html,
+          attachments: mailAttachments,
+        });
+      }),
+    );
+
+    const extraResults = await Promise.all(
+      extraEmails.map((to) =>
+        this.mail.sendMail({
+          to,
+          subject: input.titulo,
+          html,
+          attachments: mailAttachments,
+        }),
+      ),
+    );
+
+    const allResults = [...roleResults, ...extraResults];
+    return {
+      recipientCount: allResults.length,
+      allEmailsSent: allResults.length > 0 && allResults.every(Boolean),
+    };
+  }
+
   private async notifyRecipient(
     recipient: UserResponseDto,
     input: CreateNotificationInput,
   ): Promise<Notification> {
-    const notification = await this.prisma.notification.create({
-      data: {
-        userId: recipient.id,
-        tipo: input.tipo,
-        titulo: input.titulo,
-        cuerpo: input.cuerpo,
-        data: input.data,
-      },
-    });
+    const notification = await this.createNotificationRow(recipient.id, input);
 
     await this.mail.sendMail({
       to: recipient.email,
@@ -165,6 +212,24 @@ export class NotificationsService {
     });
 
     return notification;
+  }
+
+  /** Único punto de escritura de una fila `Notification` — reusado por los 3
+   * caminos que crean una (`createForUser`, `notifyRolesWithAttachment`,
+   * `notifyRecipient`), antes duplicado con el mismo `data` en cada uno. */
+  private createNotificationRow(
+    userId: string,
+    input: CreateNotificationInput,
+  ): Promise<Notification> {
+    return this.prisma.notification.create({
+      data: {
+        userId,
+        tipo: input.tipo,
+        titulo: input.titulo,
+        cuerpo: input.cuerpo,
+        data: input.data,
+      },
+    });
   }
 
   private buildEmailHtml(titulo: string, cuerpo: string): string {
