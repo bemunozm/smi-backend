@@ -122,6 +122,31 @@ model Notification {
   @@map("notification")
 }
 
+/// Trazabilidad de cambios a un registro ya enviado (Acta N.° 004, R13).
+///
+/// Editar un reporte o un trabajo extraordinario no pide autorización previa,
+/// pero cada cambio deja una fila acá: quién, cuándo y qué dato pasó de qué
+/// valor a cuál. Es genérica (`entity` + `entityId`, soft ref como en
+/// `Notification`) para que la usen también el reporte diario y las tarjetas
+/// de turno cuando tengan backend, sin una tabla por dominio.
+///
+/// `userName` se guarda como texto y no como relación: el registro tiene que
+/// decir quién firmó el cambio aunque después le cambien el nombre al usuario.
+model ChangeLog {
+  id        String   @id @default(cuid())
+  /// Qué tipo de registro se editó: `trabajo_extra`.
+  entity    String
+  entityId  String   @map("entity_id")
+  userId    String   @map("user_id")
+  userName  String   @map("user_name")
+  /// `[{ field, label, before, after }]`, con los valores ya legibles.
+  changes   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([entity, entityId, createdAt])
+  @@map("change_log")
+}
+
 // ============================================================================
 // Dominio: Flota (Benjamín) — modelo rediseñado en inglés (RFC T01, opción A).
 // El dominio de Inventario también quedó en inglés (RFC-3); su relación con la
