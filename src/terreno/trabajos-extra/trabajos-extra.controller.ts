@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
 import { TrabajosExtraService } from './trabajos-extra.service';
@@ -22,13 +23,22 @@ export class TrabajosExtraController {
 
   @Post()
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async create(@Body() dto: CreateTrabajoExtraDto) {
-    return { data: await this.service.create(dto), message: 'Trabajo registrado' };
+  async create(
+    @Body() dto: CreateTrabajoExtraDto,
+    @Session() session: UserSession,
+  ) {
+    return {
+      data: await this.service.create(dto, session.user.id),
+      message: 'Trabajo registrado',
+    };
   }
 
   @Patch(':id')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
   async update(@Param('id') id: string, @Body() dto: UpdateTrabajoExtraDto) {
-    return { data: await this.service.update(id, dto), message: 'Trabajo actualizado' };
+    return {
+      data: await this.service.update(id, dto),
+      message: 'Trabajo actualizado',
+    };
   }
 }

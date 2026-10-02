@@ -1,7 +1,9 @@
 import {
+  IsDateString,
   IsIn,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
 } from 'class-validator';
@@ -9,6 +11,17 @@ import {
 import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
 
 export class CreateHallazgoDto {
+  /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
+   * offline. Opcional para no romper a un cliente que no lo manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
+  /** Hora del DISPOSITIVO al registrar el hallazgo — ver `capture-time.ts`. */
+  @IsOptional()
+  @IsDateString()
+  capturedAt?: string;
+
   @IsString()
   equipoId!: string;
 

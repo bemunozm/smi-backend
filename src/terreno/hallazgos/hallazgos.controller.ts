@@ -23,7 +23,10 @@ export class HallazgosController {
 
   @Post()
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async create(@Body() dto: CreateHallazgoDto, @Session() session: UserSession) {
+  async create(
+    @Body() dto: CreateHallazgoDto,
+    @Session() session: UserSession,
+  ) {
     // El usuario hace falta para reclamar la foto temporal: `claimTmp` valida
     // que la key subida le pertenezca antes de moverla a su lugar definitivo.
     return {
@@ -35,6 +38,9 @@ export class HallazgosController {
   @Patch(':id')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
   async update(@Param('id') id: string, @Body() dto: UpdateHallazgoDto) {
-    return { data: await this.service.update(id, dto), message: 'Hallazgo actualizado' };
+    return {
+      data: await this.service.update(id, dto),
+      message: 'Hallazgo actualizado',
+    };
   }
 }
