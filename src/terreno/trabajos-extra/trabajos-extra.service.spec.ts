@@ -1,21 +1,34 @@
 import { Test } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TrabajosExtraService } from './trabajos-extra.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { ChangeLogService } from '../../change-log/change-log.service';
+import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 
 describe('TrabajosExtraService', () => {
   let service: TrabajosExtraService;
   const prisma = {
     equipment: { findUnique: jest.fn() },
-    trabajoExtraordinario: { create: jest.fn() },
-    // Un equipo con turno en curso está ocupado y no admite trabajos extra.
+    trabajoExtraordinario: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+    // Se mockea para probar que un turno abierto ya NO bloquea el trabajo.
     registroHorometro: { findFirst: jest.fn() },
+    // La edición y su registro de cambios van en una sola transacción.
+    $transaction: jest.fn(),
   };
+  const eventEmitter = { emit: jest.fn() };
+  const changeLog = { record: jest.fn(), findFor: jest.fn() };
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
       providers: [
         TrabajosExtraService,
         { provide: PrismaService, useValue: prisma },
+        { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: ChangeLogService, useValue: changeLog },
       ],
     }).compile();
     service = mod.get(TrabajosExtraService);
@@ -24,7 +37,6 @@ describe('TrabajosExtraService', () => {
       id: 'e1',
       internalCode: 'CA-011',
     });
-    // Por defecto el equipo está libre: sin turno en curso.
     prisma.registroHorometro.findFirst.mockResolvedValue(null);
     prisma.trabajoExtraordinario.create.mockImplementation(
       ({ data }: { data: Record<string, unknown> }) => data,
@@ -63,7 +75,9 @@ describe('TrabajosExtraService', () => {
       descripcion: 'Horómetro tipeado al revés',
     };
 
-    await expect(service.create(invertido)).rejects.toThrow(/no puede ser menor/);
+    await expect(service.create(invertido)).rejects.toThrow(
+      /no puede ser menor/,
+    );
     expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
   });
 
@@ -133,26 +147,141 @@ describe('TrabajosExtraService', () => {
     });
   });
   /**
-   * Un equipo con turno en curso está ocupado. Las horas del trabajo
-   * extraordinario y las del turno se facturan por separado, y mientras el
-   * turno siga abierto no se sabe cuáles serán sus horas — las del trabajo
-   * podrían terminar contadas dos veces.
+   * Acta N.° 004, punto 4: el trabajo extraordinario usa la misma máquina
+   * del turno, que tiene tiempos en ralentí. Antes esto se rechazaba; un
+   * equipo con turno abierto ahora tiene que poder registrar su trabajo.
    */
-  it('rechaza el trabajo si el equipo tiene un turno en curso', async () => {
+  it('acepta el trabajo aunque el equipo tenga un turno en curso', async () => {
     prisma.registroHorometro.findFirst.mockResolvedValue({ id: 'h1' });
 
-    await expect(
-      service.create({
-        equipoId: 'e1',
-        operador: 'Juan Rojas',
-        faena: 'Patillo',
-        turno: 'DIURNO',
-        horometroInicial: 1200,
-        horometroFinal: 1212,
-        actividades: ['REGULACION_CARGA'],
-        descripcion: 'Carga de material',
-      }),
-    ).rejects.toThrow(/tiene un turno en curso/);
-    expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    const res = await service.create({
+      equipoId: 'e1',
+      operador: 'Juan Rojas',
+      faena: 'Patillo',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      actividades: ['REGULACION_CARGA'],
+      descripcion: 'Carga de material',
+    });
+
+    expect(prisma.trabajoExtraordinario.create).toHaveBeenCalled();
+    expect(res.equipoId).toBe('e1');
+  });
+
+  /**
+   * Acta N.° 004, R13: un trabajo ya registrado se edita sin autorización,
+   * pero cada cambio queda registrado (quién, qué dato, antes y después) y
+   * se le avisa al administrador.
+   */
+  describe('update', () => {
+    const editor = { id: 'u1', name: 'Limbert Villacorta' };
+    const guardado = {
+      id: 't1',
+      equipoId: 'e1',
+      equipo: { internalCode: 'CA-011' },
+      operador: 'Juan Rojas',
+      faena: 'Patillo',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      totalHoras: 12,
+      actividades: ['REGULACION_CARGA'],
+      otraActividad: null,
+      descripcion: 'Carga de material',
+      observaciones: null,
+      fecha: new Date(2026, 9, 1, 10, 0),
+    };
+
+    beforeEach(() => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue(guardado);
+      prisma.trabajoExtraordinario.update.mockImplementation(
+        ({ data }: { data: Record<string, unknown> }) => ({
+          ...guardado,
+          ...data,
+        }),
+      );
+      prisma.$transaction.mockImplementation(
+        (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+      );
+    });
+
+    it('guarda el cambio, recalcula las horas y lo registra con su antes y después', async () => {
+      const res = await service.update(
+        't1',
+        { horometroFinal: 1214.5 },
+        editor,
+      );
+
+      expect(res.totalHoras).toBe(14.5);
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'trabajo_extra',
+        't1',
+        editor,
+        [
+          {
+            field: 'horometroFinal',
+            label: 'Horómetro final',
+            before: '1.212 h',
+            after: '1.214,5 h',
+          },
+        ],
+      );
+    });
+
+    it('avisa al administrador quién cambió qué', async () => {
+      await service.update('t1', { operador: 'Pedro Soto' }, editor);
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.RECORD_EDITED,
+        expect.objectContaining({
+          entity: 'trabajo_extra',
+          entityId: 't1',
+          editedBy: 'Limbert Villacorta',
+          changes: [
+            { label: 'Operador', before: 'Juan Rojas', after: 'Pedro Soto' },
+          ],
+        }),
+      );
+    });
+
+    /** El aviso dice el código del equipo, no su id interno. */
+    it('registra el cambio de equipo con sus códigos', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        id: 'e2',
+        internalCode: 'CM-003',
+      });
+
+      await service.update('t1', { equipoId: 'e2' }, editor);
+
+      const llamada = changeLog.record.mock.calls[0] as unknown[];
+      const cambios = llamada[4] as { before: string; after: string }[];
+      expect(cambios).toEqual([
+        expect.objectContaining({
+          label: 'Equipo',
+          before: 'CA-011',
+          after: 'CM-003',
+        }),
+      ]);
+    });
+
+    /** Las reglas se aplican al registro combinado, no solo a lo que vino. */
+    it('rechaza un final menor que el inicial ya guardado', async () => {
+      await expect(
+        service.update('t1', { horometroFinal: 1100 }, editor),
+      ).rejects.toThrow(/no puede ser menor/);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    /** Guardar sin cambiar nada no es un cambio: no se registra ni se avisa. */
+    it('no registra ni avisa si nada cambió', async () => {
+      await service.update('t1', { operador: 'Juan Rojas' }, editor);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(changeLog.record).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
   });
 });

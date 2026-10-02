@@ -1,5 +1,5 @@
 /**
- * Escucha los 4 eventos de dominio (`common/events/domain-events.ts`) y los
+ * Escucha los eventos de dominio (`common/events/domain-events.ts`) y los
  * traduce a notificaciones vía `NotificationsService`. Los dominios que
  * disparan estos eventos (Terreno/Mantenimiento/Inventario) se conectan en
  * una fase posterior — este listener ya queda listo para recibirlos.
@@ -13,6 +13,7 @@ import {
   type ItemLowStockEvent,
   type OrdenAssignedEvent,
   type OrdenCompletedEvent,
+  type RecordEditedEvent,
 } from '../common/events/domain-events';
 import { NotificationsService } from './notifications.service';
 import {
@@ -20,7 +21,9 @@ import {
   ITEM_LOW_STOCK_ROLES,
   ORDEN_ASSIGNED_ROLES,
   ORDEN_COMPLETED_ROLES,
+  RECORD_EDITED_ROLES,
   buildHallazgoCreatedTemplate,
+  buildRecordEditedTemplate,
   buildItemLowStockTemplate,
   buildOrdenAssignedTemplate,
   buildOrdenCompletedTemplate,
@@ -75,6 +78,15 @@ export class NotificationsListener {
     await this.notifications.createForRoles(ORDEN_COMPLETED_ROLES, {
       ...template,
       data: { ordenId: event.ordenId, equipoId },
+    });
+  }
+
+  @OnEvent(DOMAIN_EVENTS.RECORD_EDITED)
+  async onRecordEdited(event: RecordEditedEvent): Promise<void> {
+    const template = buildRecordEditedTemplate(event);
+    await this.notifications.createForRoles(RECORD_EDITED_ROLES, {
+      ...template,
+      data: { entity: event.entity, entityId: event.entityId },
     });
   }
 

@@ -168,7 +168,10 @@ export class NotificationsService {
   }
 
   private buildEmailHtml(titulo: string, cuerpo: string): string {
-    return `<h1>${escapeHtml(titulo)}</h1><p>${escapeHtml(cuerpo)}</p>`;
+    // Un cuerpo de varias líneas (un cambio por línea en `record.edited`) se
+    // leería como un solo renglón: HTML ignora el salto de línea.
+    const parrafo = escapeHtml(cuerpo).replace(/\n/g, '<br>');
+    return `<h1>${escapeHtml(titulo)}</h1><p>${parrafo}</p>`;
   }
 
   /**
