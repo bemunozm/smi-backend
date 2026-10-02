@@ -2,6 +2,7 @@
   "moduleFileExtensions": ["js", "json", "ts", "mjs"],
   "rootDir": ".",
   "testEnvironment": "node",
+  "setupFiles": ["<rootDir>/helpers/limit-db-pool.ts"],
   "testRegex": ".e2e-spec.ts$",
   "transform": {
     "^.+\\.tsx?$": "ts-jest",
