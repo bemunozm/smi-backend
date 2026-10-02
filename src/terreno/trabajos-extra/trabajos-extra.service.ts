@@ -1,12 +1,42 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+
+import { ERROR_CODES } from '../../common/errors/error-codes';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OperatorsService } from '../../operators/operators.service';
+import { assertReasonableCapturedAt } from '../../shifts/capture-time';
 import { CreateTrabajoExtraDto } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
+
+/**
+ * Relación que toda lectura/escritura devuelve. Una sola definición para que
+ * `create`, `findAll`, `findOne` y `update` entreguen la misma forma: el
+ * outbox offline de la tablet inserta la respuesta de `create` en la misma
+ * caché que alimenta el listado, y sin `equipo` la fila mostraría el
+ * `equipoId` crudo en vez del código interno.
+ */
+const TRABAJO_EXTRA_INCLUDE = {
+  equipo: { select: { internalCode: true } },
+} satisfies Prisma.TrabajoExtraordinarioInclude;
+
+/**
+ * `createdById` es interno (solo sirve para el chequeo de propiedad en
+ * reintentos): se omite en el SELECT de toda query cuyo resultado sale a la
+ * API, en vez de filtrarlo después.
+ */
+const TRABAJO_EXTRA_OMIT = {
+  createdById: true,
+} satisfies Prisma.TrabajoExtraordinarioOmit;
+
+export type TrabajoExtraResponse = Prisma.TrabajoExtraordinarioGetPayload<{
+  include: typeof TRABAJO_EXTRA_INCLUDE;
+  omit: typeof TRABAJO_EXTRA_OMIT;
+}>;
 
 @Injectable()
 export class TrabajosExtraService {
@@ -15,7 +45,17 @@ export class TrabajosExtraService {
     private readonly operators: OperatorsService,
   ) {}
 
-  async create(dto: CreateTrabajoExtraDto) {
+  async create(dto: CreateTrabajoExtraDto, userId: string) {
+    // PRIMERO y antes de cualquier regla: un reintento offline debe devolver
+    // la fila ya creada aunque el estado del mundo haya cambiado desde
+    // entonces (operador desactivado, turno abierto después, etc.).
+    if (dto.id) {
+      const existing = await this.findOwnedById(dto.id, userId);
+      if (existing) return existing;
+    }
+
+    const fecha = this.resolveFecha(dto.capturedAt);
+
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },
     });
@@ -52,10 +92,12 @@ export class TrabajosExtraService {
       select: { id: true },
     });
     if (turnoAbierto) {
-      throw new BadRequestException(
-        `El equipo ${equipo.internalCode} tiene un turno en curso y está ocupado. ` +
+      throw new BadRequestException({
+        message:
+          `El equipo ${equipo.internalCode} tiene un turno en curso y está ocupado. ` +
           'Cerrá la tarjeta del turno antes de registrar un trabajo extraordinario.',
-      );
+        code: ERROR_CODES.EQUIPMENT_ON_SHIFT,
+      });
     }
 
     /**
@@ -95,43 +137,107 @@ export class TrabajosExtraService {
     const totalHoras = Number(
       (dto.horometroFinal - dto.horometroInicial).toFixed(2),
     );
-    return this.prisma.trabajoExtraordinario.create({
-      data: {
-        equipoId: dto.equipoId,
-        operatorId: operator.id,
-        operador: operator.name,
-        faena: dto.faena,
-        turno: dto.turno,
-        horometroInicial: dto.horometroInicial,
-        horometroFinal: dto.horometroFinal,
-        totalHoras,
-        actividades: dto.actividades,
-        otraActividad: eligioOtro ? otraActividad : null,
-        descripcion: dto.descripcion,
-        observaciones: dto.observaciones ?? null,
-      },
-    });
+    try {
+      return await this.prisma.trabajoExtraordinario.create({
+        data: {
+          ...(dto.id ? { id: dto.id } : {}),
+          createdById: userId,
+          fecha,
+          equipoId: dto.equipoId,
+          operatorId: operator.id,
+          operador: operator.name,
+          faena: dto.faena,
+          turno: dto.turno,
+          horometroInicial: dto.horometroInicial,
+          horometroFinal: dto.horometroFinal,
+          totalHoras,
+          actividades: dto.actividades,
+          otraActividad: eligioOtro ? otraActividad : null,
+          descripcion: dto.descripcion,
+          observaciones: dto.observaciones ?? null,
+        },
+        include: TRABAJO_EXTRA_INCLUDE,
+        omit: TRABAJO_EXTRA_OMIT,
+      });
+    } catch (error: unknown) {
+      // Carrera: otro reintento con el MISMO id ya ganó entre el chequeo
+      // inicial y el insert.
+      if (
+        dto.id &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const winner = await this.findOwnedById(dto.id, userId);
+        if (winner) return winner;
+      }
+      throw error;
+    }
   }
 
-  findAll() {
+  /**
+   * La fila con ese id si es del usuario (reintento propio); `null` si no
+   * existe; 409 si el id ya lo ocupa otro usuario o una fila legacy sin dueño.
+   */
+  private async findOwnedById(
+    id: string,
+    userId: string,
+  ): Promise<TrabajoExtraResponse | null> {
+    const owned = await this.prisma.trabajoExtraordinario.findFirst({
+      where: { id, createdById: userId },
+      include: TRABAJO_EXTRA_INCLUDE,
+      omit: TRABAJO_EXTRA_OMIT,
+    });
+    if (owned) return owned;
+
+    const taken = await this.prisma.trabajoExtraordinario.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (taken) {
+      throw new ConflictException({
+        message: 'Ya existe un trabajo con ese id de otro usuario',
+        code: ERROR_CODES.ID_CONFLICT,
+      });
+    }
+    return null;
+  }
+
+  /** `capturedAt` (hora del dispositivo) si viene y es razonable; si no, la
+   * hora del servidor. */
+  private resolveFecha(capturedAt: string | undefined): Date {
+    if (!capturedAt) return new Date();
+    const captured = new Date(capturedAt);
+    assertReasonableCapturedAt(captured);
+    return captured;
+  }
+
+  findAll(): Promise<TrabajoExtraResponse[]> {
     return this.prisma.trabajoExtraordinario.findMany({
       orderBy: { fecha: 'desc' },
-      include: { equipo: { select: { internalCode: true } } },
+      include: TRABAJO_EXTRA_INCLUDE,
+      omit: TRABAJO_EXTRA_OMIT,
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string): Promise<TrabajoExtraResponse> {
     const reg = await this.prisma.trabajoExtraordinario.findUnique({
       where: { id },
+      include: TRABAJO_EXTRA_INCLUDE,
+      omit: TRABAJO_EXTRA_OMIT,
     });
     if (!reg) throw new NotFoundException('Registro no encontrado');
     return reg;
   }
 
-  update(id: string, dto: UpdateTrabajoExtraDto) {
+  update(
+    id: string,
+    dto: UpdateTrabajoExtraDto,
+  ): Promise<TrabajoExtraResponse> {
     return this.prisma.trabajoExtraordinario.update({
       where: { id },
       data: dto,
+      include: TRABAJO_EXTRA_INCLUDE,
+      omit: TRABAJO_EXTRA_OMIT,
     });
   }
 }

@@ -224,6 +224,149 @@ maybeDescribe('Trabajos extra — operador del catálogo (e2e)', () => {
     });
   });
 
+  describe('POST /api/trabajos-extra — idempotencia (reenvío offline)', () => {
+    it('el reintento con el mismo id devuelve la misma fila sin duplicarla', async () => {
+      const equipo = await createFreshEquipo('IDEM1');
+      const operador = await createOperator(`Operador Idem E2E ${RUN_ID}`);
+      const payload = {
+        ...baseTrabajoExtraPayload(equipo.id, operador.id),
+        id: randomUUID(),
+      };
+
+      const first = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(payload)
+        .expect(201);
+      const replay = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(payload)
+        .expect(201);
+
+      const firstData = (first.body as ApiEnvelope<TrabajoExtraData>).data;
+      const replayData = (replay.body as ApiEnvelope<TrabajoExtraData>).data;
+      expect(firstData.id).toBe(payload.id);
+      expect(replayData).toEqual(firstData);
+      expect(
+        await prisma.trabajoExtraordinario.count({
+          where: { equipoId: equipo.id },
+        }),
+      ).toBe(1);
+    });
+
+    it('el reintento sigue devolviendo la fila aunque el operador se haya desactivado después', async () => {
+      const equipo = await createFreshEquipo('IDEM2');
+      const operador = await createOperator(`Operador Baja E2E ${RUN_ID}`);
+      const payload = {
+        ...baseTrabajoExtraPayload(equipo.id, operador.id),
+        id: randomUUID(),
+      };
+
+      const first = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(payload)
+        .expect(201);
+
+      await adminAgent
+        .patch(`/api/operators/${operador.id}`)
+        .send({ isActive: false })
+        .expect(200);
+
+      // Un alta NUEVA con ese operador ya falla...
+      await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send({
+          ...baseTrabajoExtraPayload(equipo.id, operador.id),
+          id: randomUUID(),
+        })
+        .expect(409);
+
+      // ...pero el reintento del alta original es idempotente.
+      const replay = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(payload)
+        .expect(201);
+      expect((replay.body as ApiEnvelope<TrabajoExtraData>).data).toEqual(
+        (first.body as ApiEnvelope<TrabajoExtraData>).data,
+      );
+    });
+
+    it('otro usuario con el mismo id -> 409 ID_CONFLICT', async () => {
+      const equipo = await createFreshEquipo('IDEM3');
+      const operador = await createOperator(`Operador Otro E2E ${RUN_ID}`);
+      const payload = {
+        ...baseTrabajoExtraPayload(equipo.id, operador.id),
+        id: randomUUID(),
+      };
+      await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(payload)
+        .expect(201);
+
+      // El admin también puede crear, pero no es el dueño de esa fila.
+      const response = await adminAgent
+        .post('/api/trabajos-extra')
+        .send(payload)
+        .expect(409);
+      expect((response.body as ErrorEnvelope).code).toBe('ID_CONFLICT');
+    });
+
+    it('capturedAt queda como fecha; uno absurdo -> 400 INVALID_CAPTURE_TIME', async () => {
+      const equipo = await createFreshEquipo('IDEM4');
+      const operador = await createOperator(`Operador Fecha E2E ${RUN_ID}`);
+      const capturedAt = new Date(Date.now() - 2 * 3_600_000);
+
+      const ok = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send({
+          ...baseTrabajoExtraPayload(equipo.id, operador.id),
+          id: randomUUID(),
+          capturedAt: capturedAt.toISOString(),
+        })
+        .expect(201);
+      const data = (ok.body as ApiEnvelope<TrabajoExtraData>).data;
+      expect(new Date(data.fecha as string).getTime()).toBe(
+        capturedAt.getTime(),
+      );
+
+      const bad = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send({
+          ...baseTrabajoExtraPayload(equipo.id, operador.id),
+          id: randomUUID(),
+          capturedAt: '2001-01-01T00:00:00.000Z',
+        })
+        .expect(400);
+      expect((bad.body as ErrorEnvelope).code).toBe('INVALID_CAPTURE_TIME');
+    });
+  });
+
+  describe('POST /api/trabajos-extra — equipo con turno abierto', () => {
+    it('400 con code EQUIPMENT_ON_SHIFT', async () => {
+      const equipo = await createFreshEquipo('ONSHIFT');
+      const operador = await createOperator(`Operador Turno E2E ${RUN_ID}`);
+      const turno = await prisma.registroHorometro.create({
+        data: {
+          equipoId: equipo.id,
+          operador: 'Turno abierto (e2e)',
+          turno: 'DIURNO',
+          valorInicial: 1200,
+        },
+      });
+
+      try {
+        const response = await supervisorAgent
+          .post('/api/trabajos-extra')
+          .send(baseTrabajoExtraPayload(equipo.id, operador.id))
+          .expect(400);
+        expect((response.body as ErrorEnvelope).code).toBe(
+          'EQUIPMENT_ON_SHIFT',
+        );
+      } finally {
+        await prisma.registroHorometro.delete({ where: { id: turno.id } });
+      }
+    });
+  });
+
   describe('borrar un operador con trabajos extra asociados', () => {
     it('crea equipo + operador, un trabajo extra, y bloquea el borrado -> 409 OPERATOR_IN_USE', async () => {
       const equipo = await createFreshEquipo('DELETE');
