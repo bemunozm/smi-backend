@@ -51,10 +51,7 @@ export function configureApp(app: NestExpressApplication): void {
   // basePath ('/api/auth'), al margen del prefijo global de Nest.
   app.setGlobalPrefix('api');
 
-  // NOTA (cierre de R2): acá vivía
-  // `app.useStaticAssets(...)`, que servía `/uploads/*` público y sin
-  // autenticación (el `UploadsController`/`UploadsModule` legacy de Terreno)
-  // — retirado en esta fase. Todo archivo (Flota Y Terreno) pasa ahora por
-  // `POST /api/files` + storage privado firmado (`StorageService.sign`). Ver
-  // SECURITY-NOTES.md.
+  // No se sirven archivos estáticos públicos: todo archivo (Flota y Terreno)
+  // pasa por `POST /api/files` + storage privado firmado
+  // (`StorageService.sign`). Ver SECURITY-NOTES.md.
 }

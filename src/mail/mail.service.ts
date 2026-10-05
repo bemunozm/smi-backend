@@ -25,9 +25,8 @@ export interface SendMailInput {
   to: string;
   subject: string;
   html: string;
-  /** Opcional, aditivo — ver Diseño del RFC Supervisión en Terreno §Reporte
-   * (el PDF de salida de turno viaja acá). Los callers existentes no lo
-   * mandan y siguen funcionando igual. */
+  /** Opcional (el PDF de salida de turno viaja acá). Los callers que no
+   * adjuntan nada no lo mandan. */
   attachments?: MailAttachment[];
 }
 

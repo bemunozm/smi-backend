@@ -54,7 +54,7 @@ export const ALL_ROLES: readonly Role[] = Object.values(ROLES);
  * teoría, según la lib) una lista separada por comas. Normaliza antes de
  * comparar. Uso: un flujo de negocio que necesita ramificar por rol DENTRO
  * del handler (no el gate binario de `@Roles()`), ej. "el dueño de la
- * tarjeta o un ADMIN pueden cerrarla" (RFC Supervisión en Terreno).
+ * tarjeta o un ADMIN pueden cerrarla".
  */
 export function sessionHasRole(
   role: string | string[] | undefined,

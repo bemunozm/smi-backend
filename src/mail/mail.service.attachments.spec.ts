@@ -3,8 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 
 // A diferencia de `mail.service.spec.ts` (SMTP sin configurar, no-op), este
 // archivo fija credenciales SMTP completas para poder probar el path real de
-// `transporter.sendMail` — incluidos los adjuntos (RFC Supervisión en
-// Terreno §Reporte) y el booleano de éxito/fracaso que consume
+// `transporter.sendMail` — incluidos los adjuntos y el booleano de éxito/fracaso que consume
 // `NotificationsService.notifyRolesWithAttachment`. Van en un archivo aparte
 // porque el mock de `env` es a nivel de módulo (no se puede tener dos
 // configuraciones distintas en el mismo archivo sin `jest.resetModules`).

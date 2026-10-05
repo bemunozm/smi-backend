@@ -31,8 +31,8 @@ export class NotificationsController {
     return { data, message: 'ok' };
   }
 
-  // Antes de `:id/read` no hay ambigüedad (distinto número de segmentos),
-  // pero se declara primero por convención de rutas más específicas antes.
+  // No hay ambigüedad con `:id/read` (distinto número de segmentos), pero se
+  // declara primero por convención: las rutas más específicas van antes.
   @Get('unread-count')
   async unreadCount(@Session() session: UserSession) {
     const count = await this.service.unreadCount(session.user.id);

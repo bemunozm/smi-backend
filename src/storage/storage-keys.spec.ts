@@ -42,7 +42,6 @@ describe('storage-keys', () => {
     });
   });
 
-  /** M3 de la auditoría de seguridad. */
   describe('buildServerFileKey', () => {
     const date = new Date('2026-09-28T12:00:00.000Z');
 

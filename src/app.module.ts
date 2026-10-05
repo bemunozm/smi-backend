@@ -36,35 +36,32 @@ import { auth } from './auth/auth';
     HealthModule,
     UsersModule,
     MantenimientoModule,
-    // Dominio Flota (Benjamín) — RFC T01, en inglés.
+    // Dominio Flota, en inglés.
     EquipmentModule,
-    // Plataforma (Benjamín): sucursales/bodegas base, las referencia Equipment.
+    // Plataforma: sucursales/bodegas base, las referencia Equipment.
     BranchModule,
-    // Catálogo de operadores (RFC Supervisión en Terreno) — lo
+    // Catálogo de operadores — lo
     // referencia `RegistroHorometro.operatorId`.
     OperatorsModule,
-    // Dominio Inventario (Joaquín) — RFC-3, modelo en inglés.
+    // Dominio Inventario, modelo en inglés.
     InventoryModule,
-    // Dominio Operación en Terreno (Alexander)
+    // Dominio Operación en Terreno
     TerrenoModule,
-    // Supervisión en Terreno, Módulo A (Benjamín, RFC Supervisión en
-    // Terreno Fases 2-3): tarjetas de turno (`POST /api/shift-cards*`,
+    // Supervisión en Terreno, Módulo A: tarjetas de turno (`POST /api/shift-cards*`,
     // `GET /api/shifts`) y reporte de salida de turno
     // (`POST /api/shift-reports`) — reutiliza `RegistroHorometro` como
     // tabla, pero es un flujo propio (idempotencia por id de cliente),
     // aparte de Flota.
     ShiftsModule,
-    // Almacenamiento de archivos de Flota Y Terreno (RFC R2-storage +
-    // cierre de R2 en Supervisión en Terreno): sube a `tmp/` vía
-    // POST /api/files. El legacy `UploadsModule`/`/uploads` (servía
-    // horómetro/hallazgos de Terreno sin autenticación) se retiró en esta
-    // fase — ver SECURITY-NOTES.md.
+    // Almacenamiento de archivos de Flota y Terreno: sube a `tmp/` vía
+    // POST /api/files. No existe ruta pública `/uploads` — ver
+    // SECURITY-NOTES.md.
     FilesModule,
-    // Núcleo (Benjamín): OCR server-side de litros desde foto de surtidor.
+    // Núcleo: OCR server-side de litros desde foto de surtidor.
     OcrModule,
-    // Núcleo (Benjamín): ficha consolidada de un equipo, cruza los 4 dominios
+    // Núcleo: ficha consolidada de un equipo, cruza los 4 dominios
     FichaModule,
-    // Núcleo (Benjamín): notificaciones in-app + correo, alimentadas por el
+    // Núcleo: notificaciones in-app + correo, alimentadas por el
     // bus de eventos de dominio
     NotificationsModule,
     AuthModule.forRoot({

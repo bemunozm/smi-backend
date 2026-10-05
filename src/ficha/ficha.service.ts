@@ -20,8 +20,7 @@ type OrdenTrabajoConIntervenciones = OrdenTrabajo & {
 };
 
 /**
- * Agregador de Núcleo para la ficha consolidada de un equipo (requerimientos
- * §5.5). Terreno y Mantenimiento NO tienen relación Prisma con `Equipment` (usan
+ * Agregador de Núcleo para la ficha consolidada de un equipo. Terreno y Mantenimiento NO tienen relación Prisma con `Equipment` (usan
  * `equipoId` como soft-ref), así que este servicio consulta cada tabla de
  * forma independiente vía `PrismaService` y normaliza el resultado a un único
  * timeline — no reemplaza ni modifica los módulos de cada dominio.
@@ -120,14 +119,11 @@ export class FichaService {
 
     if (!equipo) throw new NotFoundException(`Equipo "${id}" no encontrado`);
 
-    // Firmas resueltas ANTES de mapear (ver Diseño del RFC R2-storage,
-    // "Combustible"): `mapCombustible`/`mapHallazgo` se mantienen síncronos,
-    // consumiendo el mapa ya resuelto — mismo patrón batch que
-    // `EquipmentService.resolvePhotoUrls`. `mapHallazgo` no firmaba `fotoKey`
-    // hasta el cierre de R2 (RFC Supervisión en Terreno) — devolvía
-    // `registro.fotoUrl` a secas, así que un hallazgo con foto nueva (subida
-    // vía `/api/files`, con `fotoKey` y `fotoUrl: null`) mostraba la ficha
-    // sin foto.
+    // Firmas resueltas ANTES de mapear: `mapCombustible`/`mapHallazgo` se
+    // mantienen síncronos, consumiendo el mapa ya resuelto — mismo patrón
+    // batch que `EquipmentService.resolvePhotoUrls`. Un hallazgo con foto
+    // nueva (subida vía `/api/files`) tiene `fotoKey` y `fotoUrl: null`, así
+    // que hay que firmar `fotoKey` o la ficha lo mostraría sin foto.
     const [fotoUrlsPorCombustible, fotoUrlsPorHallazgo] = await Promise.all([
       this.resolveCombustibleFotoUrls(combustibles),
       this.resolveHallazgoFotoUrls(hallazgos),
@@ -191,8 +187,7 @@ export class FichaService {
   /**
    * `fotoUrl` de cada combustible, en UNA tanda `Promise.all`: firmada si el
    * registro tiene `fotoKey` (subida nueva por R2/MinIO), o el valor legacy
-   * `fotoUrl` tal cual si no (subida vieja por `/api/uploads`, Terreno sigue
-   * usándola) — mismo criterio que `CombustibleService.shape`.
+   * `fotoUrl` tal cual si no (subida vieja por `/api/uploads`) — mismo criterio que `CombustibleService.shape`.
    */
   private async resolveCombustibleFotoUrls(
     combustibles: readonly RegistroCombustible[],
@@ -212,8 +207,8 @@ export class FichaService {
    * `fotoUrl` de cada hallazgo, en UNA tanda `Promise.all` — mismo criterio
    * que `resolveCombustibleFotoUrls`: firmada si el registro tiene `fotoKey`
    * (subida nueva por R2/MinIO), o el valor legacy `fotoUrl` tal cual si no
-   * (subida vieja por `/api/uploads`, retirado en el cierre de R2 — la
-   * columna y el valor persistido se conservan para datos históricos).
+   * (subida vieja por `/api/uploads`; la columna y el valor persistido se
+   * conservan para datos históricos).
    */
   private async resolveHallazgoFotoUrls(
     hallazgos: readonly Hallazgo[],
