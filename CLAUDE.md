@@ -9,7 +9,7 @@ API REST del **Sistema de Mantenimiento e Inventario (SMI)**. Este archivo defin
 - Validación con **class-validator** (DTOs). `ValidationPipe` global activo.
 
 ## Principio de arquitectura: un módulo Nest por dominio
-El sistema se organiza por **dominios funcionales**, no por roles. Los roles (`ADMIN | SUPERVISOR | MANTENEDOR | OPERADOR`) son una capa de permisos liviana, no módulos.
+El sistema se organiza por **dominios funcionales**, no por roles. Los roles (`ADMIN | SUPERVISOR | MANTENEDOR`) son una capa de permisos liviana, no módulos. El **operador NO es un rol de usuario**: es un catálogo propio (`Operator`, `src/operators/*`) sin acceso a la plataforma — el RFC "Supervisión en Terreno" (anexo "el operador deja de ser usuario de la plataforma", 28/09) eliminó el rol `OPERADOR` de Better Auth que existía antes.
 
 ```
 src/
@@ -38,7 +38,9 @@ prisma/
 **Trabaja dentro de la carpeta de tu dominio.** Archivos compartidos (`app.module.ts`, `common/`, `prisma/schema.prisma`) se editan avisando al equipo.
 
 ## schema.prisma — zona sensible
-Contiene las tablas de Better Auth (`user`, `session`, `account`, `verification`) **y los modelos de todos los dominios ya integrados** (Equipo, Insumo, MovimientoInventario, RegistroCombustible, RegistroHorometro, TrabajoExtraordinario, Hallazgo, OrdenTrabajo, Intervencion, UmbralMantenimiento, Actividad, Notificacion). El campo `role` (String, default `OPERADOR`) vive en `user`. **NO crear una tabla `Usuario` propia** — se referencia `user.id` de Better Auth. Todo cambio al schema va por **rama corta + migración Prisma versionada + PR** (avisar al equipo; ver `CONTRIBUTING.md`).
+Contiene las tablas de Better Auth (`user`, `session`, `account`, `verification`) **y los modelos de todos los dominios ya integrados** (Equipo, Insumo, MovimientoInventario, RegistroCombustible, RegistroHorometro, TrabajoExtraordinario, Hallazgo, OrdenTrabajo, Intervencion, UmbralMantenimiento, Actividad, Notificacion, `Operator`). El campo `role` (String, default `MANTENEDOR`) vive en `user` — valores válidos `ADMIN | SUPERVISOR | MANTENEDOR`. **NO crear una tabla `Usuario` propia** — se referencia `user.id` de Better Auth. `Operator` (catálogo de operadores, sin acceso a la plataforma) SÍ es un modelo nuestro: `Equipment.currentOperatorId`, `RegistroHorometro.operatorId` y `TrabajoExtraordinario.operatorId` son FKs reales hacia él (`onDelete: SetNull`), a diferencia de `currentSupervisorId`, que sigue siendo un soft ref a `user.id` sin FK. Todo cambio al schema va por **rama corta + migración Prisma versionada + PR** (avisar al equipo; ver `CONTRIBUTING.md`).
+
+**Patrón operador de catálogo, en todo endpoint que lo reciba** (Flota `POST /api/horometro`, Trabajos extra `POST /api/trabajos-extra`, tarjetas de turno `POST /api/shift-cards`): el cliente manda solo `operatorId` (**obligatorio**, `operador` NO se acepta en el DTO — `forbidNonWhitelisted` lo rechaza con 400 si viene); el servidor valida con `OperatorsService.assertActive(operatorId)` (404 si no existe, 409 `OPERATOR_INACTIVE` si está dado de baja) y arma el snapshot de texto `operador = operator.name` **él mismo**, nunca desde texto que mande el cliente (RFC Supervisión en Terreno, Anexo 2 "operador del catálogo en Trabajos extra + snapshot único").
 
 ## Cómo agregar un módulo de dominio (sigue `users/` como plantilla)
 1. `src/<dominio>/<dominio>.module.ts` + `.controller.ts` + `.service.ts` + `dto/`.
@@ -76,7 +78,7 @@ servido **siempre con URL firmada al leer** — nunca hay una key ni una url pú
 - Handler de Better Auth en `/api/auth/*` (login/logout/sesión). En el front se consume con `useSession()` del cliente — **el backend no emite JWT manuales**.
 - `AuthGuard` global **deny-by-default**: toda ruta exige sesión salvo `@AllowAnonymous()`.
 - `disableSignUp: true` → no hay registro público; los usuarios se crean vía el módulo `users` (que usa `auth.api` del plugin admin) o el seed.
-- Roles: se comparan como string simple (`session.user.role`). El `ac`/`roles` custom del plugin admin (`auth/access-control.ts`) mapea los 4 roles; `ADMIN` tiene los permisos de gestión de usuarios.
+- Roles: se comparan como string simple (`session.user.role`). El `ac`/`roles` custom del plugin admin (`auth/access-control.ts`) mapea los 3 roles de plataforma (`ADMIN | SUPERVISOR | MANTENEDOR`); `ADMIN` tiene los permisos de gestión de usuarios. El operador no entra acá — es un catálogo propio (`Operator`), no un rol de Better Auth.
 
 ## Convenciones de código (obligatorias)
 - TypeScript strict. **Prohibido `any`** → usa `unknown` + type guards.
@@ -120,4 +122,5 @@ Rate limiting, bind de Postgres a `127.0.0.1`, helmet, cookies seguras, TTL de s
 - ❌ `any` en TypeScript · ❌ `console.log` para errores · ❌ `new PrismaClient()` suelto (usa `PrismaService`)
 - ❌ Hardcodear credenciales/URLs · ❌ push directo a `main` · ❌ co-autoría de IA en commits
 - ❌ Insertar/actualizar credenciales o rol con Prisma crudo → usa `auth.api` de Better Auth
+  - Excepción documentada: `scripts/set-password.ts` — `auth.api.setUserPassword` exige una sesión de admin ya autenticada, que un script de servidor no puede satisfacer (ver el docstring del archivo para el detalle).
 - ❌ Modelos de dominio en `schema.prisma` sin avisar al equipo

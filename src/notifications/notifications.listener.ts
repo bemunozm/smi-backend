@@ -7,6 +7,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
+import { env } from '../common/config/env';
 import {
   DOMAIN_EVENTS,
   type HallazgoCreatedEvent,
@@ -14,7 +15,11 @@ import {
   type OrdenAssignedEvent,
   type OrdenCompletedEvent,
   type RecordEditedEvent,
+  type ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
+import { MailService } from '../mail/mail.service';
+import { ShiftReportsService } from '../shifts/shift-reports.service';
+import type { ShiftExitReportEmailStatus } from '../shifts/shift-exit-report-email-status';
 import { NotificationsService } from './notifications.service';
 import {
   HALLAZGO_CREATED_ROLES,
@@ -22,18 +27,24 @@ import {
   ORDEN_ASSIGNED_ROLES,
   ORDEN_COMPLETED_ROLES,
   RECORD_EDITED_ROLES,
+  SHIFT_EXIT_REPORT_ROLES,
   buildHallazgoCreatedTemplate,
   buildRecordEditedTemplate,
   buildItemLowStockTemplate,
   buildOrdenAssignedTemplate,
   buildOrdenCompletedTemplate,
+  buildShiftExitReportSentTemplate,
 } from './notifications.constants';
 
 @Injectable()
 export class NotificationsListener {
   private readonly logger = new Logger(NotificationsListener.name);
 
-  constructor(private readonly notifications: NotificationsService) {}
+  constructor(
+    private readonly notifications: NotificationsService,
+    private readonly mail: MailService,
+    private readonly shiftReports: ShiftReportsService,
+  ) {}
 
   @OnEvent(DOMAIN_EVENTS.HALLAZGO_CREATED)
   async onHallazgoCreated(event: HallazgoCreatedEvent): Promise<void> {
@@ -102,5 +113,72 @@ export class NotificationsListener {
         minimumQuantity: event.minimumQuantity,
       },
     });
+  }
+
+  /**
+   * `shift.exit-report` — único lugar que envía la notificación in-app Y el
+   * correo con el PDF adjunto para este evento (ver docstring de
+   * `NotificationsService.notifyRolesWithAttachment`). SIEMPRE actualiza
+   * `emailStatus` al final vía `ShiftReportsService.markEmailStatus`, incluso
+   * si algo falla — nunca deja el `'PENDING'` inicial colgado, y nunca deja
+   * escapar la excepción (el evento se emite fire-and-forget DESPUÉS de que
+   * la fila ya se confirmó, así que un error acá no puede tumbar la request
+   * HTTP igual, pero dejarlo escapar generaría un unhandled rejection). Solo
+   * orquesta: la escritura de `ShiftExitReport` y la lectura del PDF viven en
+   * `ShiftReportsService`, dueño de ese modelo.
+   */
+  @OnEvent(DOMAIN_EVENTS.SHIFT_EXIT_REPORT_SENT)
+  async onShiftExitReportSent(event: ShiftExitReportSentEvent): Promise<void> {
+    let emailStatus: ShiftExitReportEmailStatus;
+
+    try {
+      emailStatus = await this.sendShiftExitReportNotifications(event);
+    } catch (error) {
+      this.logger.error(
+        `No se pudo procesar shift.exit-report (reportId="${event.reportId}")`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      emailStatus = 'FAILED';
+    }
+
+    try {
+      await this.shiftReports.markEmailStatus(event.reportId, emailStatus);
+    } catch (error) {
+      this.logger.error(
+        `No se pudo actualizar emailStatus del reporte "${event.reportId}"`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
+
+  private async sendShiftExitReportNotifications(
+    event: ShiftExitReportSentEvent,
+  ): Promise<ShiftExitReportEmailStatus> {
+    const template = buildShiftExitReportSentTemplate(event);
+    const data = { reportId: event.reportId, shiftId: event.shiftId };
+
+    if (!this.mail.isConfigured()) {
+      // Sin SMTP, igual se crea la notificación in-app — solo el correo
+      // queda SKIPPED. `notifyRolesWithAttachment` de todas formas intentaría
+      // `mail.sendMail` (no-op, devuelve false), así que evaluamos esto
+      // ANTES para no reportar 'FAILED' por un no-op esperado.
+      await this.notifications.createForRoles(SHIFT_EXIT_REPORT_ROLES, {
+        ...template,
+        data,
+      });
+      return 'SKIPPED';
+    }
+
+    const attachment = await this.shiftReports.getAttachment(event.reportId);
+    const { recipientCount, allEmailsSent } =
+      await this.notifications.notifyRolesWithAttachment(
+        SHIFT_EXIT_REPORT_ROLES,
+        { ...template, data },
+        [attachment],
+        env.shiftReportExtraRecipients,
+      );
+
+    if (recipientCount === 0) return 'SKIPPED';
+    return allEmailsSent ? 'SENT' : 'FAILED';
   }
 }

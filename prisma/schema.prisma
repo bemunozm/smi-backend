@@ -36,10 +36,13 @@ model User {
   image         String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
-  /// Valores válidos: ADMIN | SUPERVISOR | MANTENEDOR | OPERADOR (ver src/auth/roles.ts).
+  /// Valores válidos: ADMIN | SUPERVISOR | MANTENEDOR (ver src/auth/roles.ts).
+  /// El operador NO es un rol de usuario — es un catálogo propio (`Operator`,
+  /// más abajo), sin acceso a la plataforma (RFC Supervisión en Terreno,
+  /// anexo "el operador deja de ser usuario de la plataforma", 28/09).
   /// String (no enum Prisma) a propósito: el admin plugin de Better Auth tipa
   /// el rol como string dinámico; un enum Prisma introduciría fricción de tipos.
-  role          String    @default("OPERADOR")
+  role          String    @default("MANTENEDOR")
   banned        Boolean?  @default(false)
   banReason     String?
   banExpires    DateTime?
@@ -235,13 +238,20 @@ model Equipment {
   /// ahora mismo) — NO es historial de sesiones, eso queda como follow-up.
   /// `inUse` no es columna: se deriva en el service como `!!currentOperatorId`.
   ///
-  /// Soft refs a `user.id` (String, SIN `@relation`) — mismo criterio que el
-  /// resto del schema (ver comentario de cabecera): la tabla `user` la
-  /// regenera `npm run auth:schema` y una relación real exigiría un campo
-  /// inverso (`Equipment[]`) en `User` que ese generador no toca a mano.
-  /// `EquipmentService` resuelve id → {id,name} con un `user.findMany` propio.
-  currentOperatorId   String? @map("current_operator_id")
-  currentSupervisorId String? @map("current_supervisor_id")
+  /// `currentOperatorId` es FK REAL a `Operator` (RFC Supervisión en Terreno,
+  /// anexo "el operador deja de ser usuario de la plataforma", 28/09): el
+  /// operador es un catálogo propio nuestro, así que SÍ se permite la
+  /// relación Prisma — a diferencia de `currentSupervisorId`, que sigue
+  /// siendo un soft ref a `user.id` (String, SIN `@relation`, mismo criterio
+  /// que el resto del schema: la tabla `user` la regenera `npm run
+  /// auth:schema` y una relación real exigiría un campo inverso que ese
+  /// generador no toca a mano — `EquipmentService` resuelve ese id → {id,name}
+  /// con un `user.findMany` propio). `onDelete: SetNull` en ambos: borrar el
+  /// operador/supervisor no debe borrar el equipo, solo liberar la
+  /// asignación.
+  currentOperatorId   String?   @map("current_operator_id")
+  currentOperator     Operator? @relation(fields: [currentOperatorId], references: [id], onDelete: SetNull)
+  currentSupervisorId String?   @map("current_supervisor_id")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -300,13 +310,13 @@ model EquipmentDocument {
 
   type       EquipmentDocumentType
   title      String?
-  expiryDate DateTime? @map("expiry_date")
-  fileKey    String?   @map("file_key")
+  expiryDate DateTime?             @map("expiry_date")
+  fileKey    String?               @map("file_key")
   /// Nombre "humano" del archivo (el que subió el usuario, ej. "Póliza
   /// Seguro.pdf") — se usa para el `Content-Disposition` al servir el
   /// archivo (`GET /api/equipment/documents/:id/file`), porque `fileKey` es
   /// un uuid sin significado para el usuario.
-  fileName   String?   @map("file_name")
+  fileName   String?               @map("file_name")
   notes      String?
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -471,7 +481,7 @@ model StockMovement {
   reason    MovementReason
 
   /// Siempre > 0. El signo lo determina `direction`.
-  quantity Float
+  quantity         Float
   /// Saldo del ítem EN ESTA BODEGA después de aplicar el asiento, calculado
   /// dentro de la misma transacción. Denormalizado a propósito: deja evidencia
   /// auditable del saldo en cada punto sin recalcular la serie completa.
@@ -563,35 +573,232 @@ model RegistroCombustible {
   /// `@map` a propósito: este modelo, igual que el resto de Terreno, no sigue
   /// la convención snake_case del resto del schema (ver comentario de
   /// cabecera de esta sección).
+  /// ADVERTENCIA (info, auditoría de seguridad): cuando esta carga nació de
+  /// un cierre de tarjeta (`registroHorometroId` no nulo), esta key es LA
+  /// MISMA que `RegistroHorometro.pumpPhotoKey` de esa tarjeta — ver la
+  /// advertencia espejo ahí.
   fotoKey  String?
   fecha    DateTime  @default(now())
+
+  /// Vínculo 1:1 opcional con la tarjeta de turno que originó esta carga
+  /// (RFC Supervisión en Terreno, Fase 1): al cerrar una tarjeta con
+  /// `fuelLiters > 0`, Fase 2 crea ACÁ la carga con la misma `pumpPhotoKey`
+  /// del cierre, para que aparezca sola en la ficha y en el historial de
+  /// combustible sin duplicar la foto. `SetNull` y no `Cascade`: borrar la
+  /// tarjeta (excepcional) no debe arrastrarse la carga ya registrada.
+  registroHorometroId String?            @unique @map("registro_horometro_id")
+  registroHorometro   RegistroHorometro? @relation(fields: [registroHorometroId], references: [id], onDelete: SetNull)
 }
 
+/// Tarjeta de turno de Supervisión en Terreno (RFC Supervisión en Terreno,
+/// Fase 1 — schema/migración; los endpoints `POST /api/shift-cards*` son
+/// Fase 2). El modelo reutilizado es `RegistroHorometro` (no una tabla
+/// nueva): el índice único parcial `RegistroHorometro_equipo_id_open_turno_key`
+/// (ver migración `20260921153343_horometro_open_turno_unique_index`) ya
+/// garantiza un solo turno abierto por equipo a nivel de base de datos, y
+/// `reconcileEquipmentCounter`/`openShift`/la ficha ya lo consumen.
+///
+/// El PK sigue siendo `id String @default(cuid())` a propósito: Fase 2 pasa a
+/// generarlo desde el cliente (UUID v4, para que "abrir tarjeta" sea
+/// idempotente sin ida y vuelta al servidor) — ese cambio de estrategia de
+/// generación no requiere migración de schema, solo que el caller mande el
+/// `id`.
 model RegistroHorometro {
   id               String    @id @default(cuid())
   equipoId         String    @map("equipo_id")
   equipo           Equipment @relation(fields: [equipoId], references: [id])
-  operador         String // nombre y apellido
+  operador         String // nombre y apellido — snapshot; ver `operatorId` para el catálogo
   turno            String // DIURNO | NOCTURNO
   valorInicial     Float
   valorFinal       Float?
   nivelCombustible Float? // % de combustible
-  fotoUrl          String? // foto de ENTRADA (horómetro/odómetro al iniciar)
-  fecha            DateTime  @default(now()) // hora de ENTRADA
+  fecha            DateTime  @default(now()) // hora de ENTRADA (reloj del dispositivo)
 
   /// Flujo ENTRADA/SALIDA en dos pasos (Flota): "turno abierto" = `valorFinal
-  /// == null`. Al cerrar (`PATCH /horometro/:id/salida`) se completan estos
-  /// dos campos junto con `valorFinal` — quedan `null` mientras el turno está
-  /// abierto.
-  fechaSalida    DateTime? // hora de SALIDA
-  fotoUrlSalida  String? // foto de SALIDA (horómetro/odómetro al terminar)
+  /// == null`. Al cerrar (`PATCH /horometro/:id/salida`, o `POST
+  /// /api/shift-cards/:id/close` en Fase 2) se completa este campo junto con
+  /// `valorFinal` — queda `null` mientras el turno está abierto.
+  fechaSalida DateTime? // hora de SALIDA (reloj del dispositivo)
+
+  /// Turno (Módulo A/B) al que pertenece esta tarjeta. `SetNull` y no
+  /// `Cascade`: un `Shift` no se borra en la operación normal, pero si
+  /// alguna vez se limpia uno viejo, la tarjeta no debe desaparecer con él.
+  shiftId String? @map("shift_id")
+  shift   Shift?  @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+
+  /// Supervisor que abrió la tarjeta — soft ref a `user.id` (sin FK, mismo
+  /// criterio que el resto del schema: la tabla `user` la regenera el CLI de
+  /// Better Auth). Se graba en el create vía `@Session()` (Fase 2).
+  supervisorId String? @map("supervisor_id")
+
+  /// Operador del catálogo propio (`Operator`), aditivo sobre `operador`
+  /// (que se mantiene como snapshot de texto — el nombre no cambia con
+  /// retroactividad si el operador se renombra o desactiva después).
+  /// `SetNull`: desactivar/borrar un operador no debe borrar el historial de
+  /// tarjetas que lo referencian.
+  operatorId String?   @map("operator_id")
+  operator   Operator? @relation(fields: [operatorId], references: [id], onDelete: SetNull)
+
+  /// Litros cargados al cierre (Módulo A). Mismo tipo que
+  /// `RegistroCombustible.litros` — si es > 0, Fase 2 crea la carga
+  /// vinculada (`RegistroCombustible.registroHorometroId`) con esta misma
+  /// `pumpPhotoKey`.
+  fuelLiters    Float?  @map("fuel_liters")
+  /// Key del objeto en el bucket de storage (R2/MinIO) de la foto del
+  /// surtidor/horómetro al cierre. Reemplaza a `fotoUrlSalida` (legacy,
+  /// pública, eliminada en esta misma migración) — nunca una URL, se firma
+  /// on-read igual que el resto de Flota (ver `StorageService.sign`).
+  /// ADVERTENCIA (info, auditoría de seguridad): cuando `fuelLiters > 0`,
+  /// `RegistroCombustible.fotoKey` de la carga vinculada (ver
+  /// `registroHorometroId` más abajo) apunta a ESTE MISMO objeto — no es una
+  /// copia. Cualquier borrado/reemplazo futuro de esta key (ej. un endpoint
+  /// que permita re-subir la foto de cierre) tiene que considerar TAMBIÉN la
+  /// fila de `RegistroCombustible`, o esa carga queda apuntando a un objeto
+  /// borrado.
+  pumpPhotoKey  String? @map("pump_photo_key")
+  /// Observaciones libres del supervisor al cierre.
+  observaciones String?
+
+  /// UUID generado por el cliente al cerrar la tarjeta (Fase 2): permite que
+  /// un reintento de "cerrar" (por red offline) sea idempotente — releer por
+  /// este id en vez de volver a aplicar el cierre. `@unique` es la garantía
+  /// dura contra dos cierres con clientClientId distintos coincidiendo.
+  closeClientId String? @unique @map("close_client_id")
+
+  /// `true` cuando el valor inicial ingresado por el supervisor fue MENOR que
+  /// el contador vigente del equipo y el modo warn (Fase 2) lo aceptó sin
+  /// mover el contador ni rechazar — auditoría de una posible lectura
+  /// errónea, no un bloqueo.
+  belowPreviousReading Boolean @default(false) @map("below_previous_reading")
+
+  /// Horas de servidor (auditoría), independientes de `fecha`/`fechaSalida`
+  /// (reloj del dispositivo, que puede estar desfasado sin señal).
+  createdAt DateTime  @default(now()) @map("created_at")
+  closedAt  DateTime? @map("closed_at")
+
+  /// Desfase detectado entre el reloj del dispositivo y el del servidor al
+  /// abrir/cerrar (`clientTimestamp - serverTimestamp`, en ms) — se audita,
+  /// nunca se usa para rechazar salvo que sea absurdo (Fase 2: > 24 h futuro
+  /// o > 7 días de antigüedad).
+  clientClockSkewMs Int? @map("client_clock_skew_ms")
+
+  /// Carga de combustible 1:1 creada al cierre cuando `fuelLiters > 0` (ver
+  /// comentario de `RegistroCombustible.registroHorometroId`).
+  combustible RegistroCombustible?
+
+  @@index([shiftId])
+  @@index([supervisorId])
+}
+
+/// Turno de Supervisión en Terreno: agrupa las tarjetas (`RegistroHorometro`)
+/// que un supervisor abre en una fecha+tipo de turno. Clave natural
+/// `(supervisorId, date, type)` — Fase 2 lo crea con upsert por esa clave al
+/// abrir la primera tarjeta del turno, nunca con un endpoint `createShift`
+/// propio. Contrato compartido con el Módulo B (reporte diario, Alexander).
+model Shift {
+  id   String   @id @default(cuid())
+  /// Sin hora: el turno es "el día X", no un instante. La API lo sirve como
+  /// string `YYYY-MM-DD` (Fase 2, capa de servicio) — acá es `@db.Date` para
+  /// que dos turnos del mismo día no puedan diferir por zona horaria.
+  date DateTime @db.Date
+  /// DIURNO | NOCTURNO — `String` y no enum Prisma, mismo criterio que
+  /// `RegistroHorometro.turno` (columnas de Terreno, decisión de su dueño;
+  /// ver comentario de cabecera del schema).
+  type String
+
+  /// Soft ref a `user.id` — mismo criterio que `RegistroHorometro.supervisorId`.
+  supervisorId String @map("supervisor_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  cards       RegistroHorometro[]
+  exitReports ShiftExitReport[]
+
+  @@unique([supervisorId, date, type])
+  @@map("shift")
+}
+
+/// Reporte de salida de turno (Módulo A, Fase 3: PDF + envío). El PK es el
+/// UUID que genera el cliente al pedir el reporte (idempotencia: reintentar
+/// con el mismo id devuelve el mismo reporte en vez de generar el PDF de
+/// nuevo). Un `Shift` puede tener MÁS de un reporte — se permite reenviar si
+/// se agregan tarjetas después del primer envío.
+model ShiftExitReport {
+  id      String @id
+  shiftId String @map("shift_id")
+  shift   Shift  @relation(fields: [shiftId], references: [id])
+
+  fileKey   String @map("file_key")
+  fileName  String @map("file_name")
+  cardCount Int    @map("card_count")
+
+  /// Hora del dispositivo al pedir el reporte (puede diferir de `createdAt`,
+  /// hora de servidor, si se generó offline y se reintentó después).
+  requestedAt DateTime @map("requested_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  /// Soft ref a `user.id` de quien pidió el reporte.
+  createdById String   @map("created_by_id")
+
+  /// PENDING | SENT | FAILED | SKIPPED — `String` y no enum Prisma, mismo
+  /// criterio que el resto de vocabularios de Terreno en este schema.
+  emailStatus String    @default("PENDING") @map("email_status")
+  notifiedAt  DateTime? @map("notified_at")
+
+  @@index([shiftId])
+  @@map("shift_exit_report")
+}
+
+/// Catálogo propio de operadores de Supervisión en Terreno (RFC, decisión
+/// 28/09: "Operadores = catálogo propio"), reemplaza el arreglo
+/// `OPERADORES` hardcodeado en `RegistroEquipoView.tsx` del frontend. CRUD
+/// clonado de `src/branch/*`: lectura abierta a cualquier sesión, escritura
+/// ADMIN/SUPERVISOR, borrado ADMIN con guarda de uso (409 si algún
+/// `RegistroHorometro` lo referencia).
+model Operator {
+  id       String  @id @default(cuid())
+  name     String
+  /// RUT chileno normalizado `12345678-K`, validado con dígito verificador
+  /// en el DTO (no acá: Prisma no valida formato). Opcional hasta que llegue
+  /// la nómina real del cliente (seed sin RUT).
+  rut      String? @unique
+  isActive Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  horometros RegistroHorometro[]
+
+  /// Asignación de uso ACTUAL de Flota (`Equipment.currentOperatorId`, RFC
+  /// Supervisión en Terreno, anexo "el operador deja de ser usuario de la
+  /// plataforma") — inverso de la FK real agregada en esa migración.
+  assignedEquipment Equipment[]
+
+  /// Trabajos extraordinarios asignados a este operador del catálogo (RFC
+  /// Supervisión en Terreno, Anexo 2 "operador del catálogo en Trabajos
+  /// extra") — inverso de `TrabajoExtraordinario.operatorId`.
+  trabajosExtra TrabajoExtraordinario[]
+
+  @@map("operator")
 }
 
 model TrabajoExtraordinario {
   id               String    @id @default(cuid())
   equipoId         String    @map("equipo_id")
   equipo           Equipment @relation(fields: [equipoId], references: [id])
-  operador         String
+  operador         String // nombre y apellido — snapshot armado por el SERVIDOR; ver `operatorId` para el catálogo
+  /// Operador del catálogo propio (`Operator`), aditivo sobre `operador`
+  /// (que se mantiene como snapshot de texto, igual que en `RegistroHorometro`
+  /// — el nombre no cambia con retroactividad si el operador se renombra o
+  /// desactiva después). Nullable por las filas legacy (texto libre sin match
+  /// determinístico en el catálogo, ver migración de backfill); para las
+  /// filas NUEVAS es obligatorio a nivel de servicio
+  /// (`CreateTrabajoExtraDto.operatorId`) — el cliente ya no puede mandar
+  /// `operador` directamente (RFC Supervisión en Terreno, Anexo 2). `SetNull`:
+  /// borrar/desactivar un operador no debe borrar el historial de trabajos
+  /// que lo referencian.
+  operatorId       String?   @map("operator_id")
+  operator         Operator? @relation(fields: [operatorId], references: [id], onDelete: SetNull)
   faena            String
   turno            String // DIURNO | NOCTURNO
   horometroInicial Float
@@ -610,6 +817,8 @@ model TrabajoExtraordinario {
   descripcion      String
   observaciones    String?
   fecha            DateTime  @default(now())
+
+  @@index([operatorId])
 }
 
 model Hallazgo {

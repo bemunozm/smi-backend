@@ -11,6 +11,7 @@ import type {
   OrdenAssignedEvent,
   OrdenCompletedEvent,
   RecordEditedEvent,
+  ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 
@@ -105,6 +106,26 @@ export function buildItemLowStockTemplate(
     // La bodega va en el cuerpo porque es lo que vuelve accionable el aviso:
     // sin ella, quien lo lee no sabe si le toca a él reponer.
     cuerpo: `Quedan ${event.quantity} en ${event.branchName} (mínimo ${event.minimumQuantity})`,
+  };
+}
+
+/** `shift.exit-report` → solo ADMIN (RFC Supervisión en Terreno). */
+export const SHIFT_EXIT_REPORT_ROLES: readonly Role[] = [ROLES.ADMIN];
+
+function pluralizeEquipo(cardCount: number): string {
+  return cardCount === 1 ? '1 equipo' : `${cardCount} equipos`;
+}
+
+export function buildShiftExitReportSentTemplate(
+  event: ShiftExitReportSentEvent,
+): NotificationTemplate {
+  const turnoLegible = event.shiftType === 'DIURNO' ? 'diurno' : 'nocturno';
+  return {
+    tipo: DOMAIN_EVENTS.SHIFT_EXIT_REPORT_SENT,
+    titulo: `Reporte de salida de turno — ${event.supervisorName}`,
+    cuerpo:
+      `${event.supervisorName} envió el reporte de salida del turno ${turnoLegible} ` +
+      `del ${event.shiftDate} con ${pluralizeEquipo(event.cardCount)}.`,
   };
 }
 

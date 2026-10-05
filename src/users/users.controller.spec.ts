@@ -45,15 +45,15 @@ describe('UsersController', () => {
       expect(findByRole).not.toHaveBeenCalled();
     });
 
-    it('permite a un SUPERVISOR con ?role=OPERADOR (alimenta el picker de Flota)', async () => {
+    it('permite a un SUPERVISOR con ?role=MANTENEDOR (filtra el directorio por rol)', async () => {
       findByRole.mockResolvedValue([]);
 
       await controller.findAll(
-        { role: ROLES.OPERADOR },
+        { role: ROLES.MANTENEDOR },
         sessionWithRole(ROLES.SUPERVISOR),
       );
 
-      expect(findByRole).toHaveBeenCalledWith(ROLES.OPERADOR);
+      expect(findByRole).toHaveBeenCalledWith(ROLES.MANTENEDOR);
       expect(findAll).not.toHaveBeenCalled();
     });
 

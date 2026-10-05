@@ -16,8 +16,9 @@ import { FilesModule } from './files/files.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OcrModule } from './ocr/ocr.module';
+import { OperatorsModule } from './operators/operators.module';
+import { ShiftsModule } from './shifts/shifts.module';
 import { TerrenoModule } from './terreno/terreno.module';
-import { UploadsModule } from './uploads/uploads.module';
 import { auth } from './auth/auth';
 
 @Module({
@@ -39,14 +40,25 @@ import { auth } from './auth/auth';
     EquipmentModule,
     // Plataforma (Benjamín): sucursales/bodegas base, las referencia Equipment.
     BranchModule,
+    // Catálogo de operadores (RFC Supervisión en Terreno) — lo
+    // referencia `RegistroHorometro.operatorId`.
+    OperatorsModule,
     // Dominio Inventario (Joaquín) — RFC-3, modelo en inglés.
     InventoryModule,
     // Dominio Operación en Terreno (Alexander)
     TerrenoModule,
-    UploadsModule,
-    // Almacenamiento de archivos de Flota (RFC R2-storage): sube a `tmp/` vía
-    // POST /api/files. El legacy UploadsModule/`/uploads` sigue intacto para
-    // Terreno (horómetro/hallazgos) — fuera de alcance de este RFC.
+    // Supervisión en Terreno, Módulo A (Benjamín, RFC Supervisión en
+    // Terreno Fases 2-3): tarjetas de turno (`POST /api/shift-cards*`,
+    // `GET /api/shifts`) y reporte de salida de turno
+    // (`POST /api/shift-reports`) — reutiliza `RegistroHorometro` como
+    // tabla, pero es un flujo propio (idempotencia por id de cliente),
+    // aparte de Flota.
+    ShiftsModule,
+    // Almacenamiento de archivos de Flota Y Terreno (RFC R2-storage +
+    // cierre de R2 en Supervisión en Terreno): sube a `tmp/` vía
+    // POST /api/files. El legacy `UploadsModule`/`/uploads` (servía
+    // horómetro/hallazgos de Terreno sin autenticación) se retiró en esta
+    // fase — ver SECURITY-NOTES.md.
     FilesModule,
     // Núcleo (Benjamín): OCR server-side de litros desde foto de surtidor.
     OcrModule,

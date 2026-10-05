@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import {
   BadRequestException,
+  NotFoundException,
   ServiceUnavailableException,
   UnsupportedMediaTypeException,
 } from '@nestjs/common';
@@ -151,6 +152,24 @@ describe('StorageService', () => {
       );
     });
 
+    it('el 400 de NoSuchKey trae code TMP_KEY_EXPIRED en el body (RFC Supervisión en Terreno)', async () => {
+      const tmpKey = buildTmpKey(USER_ID, 'jpg');
+      const noSuchKeyError = Object.assign(new Error('not found'), {
+        name: 'NoSuchKey',
+      });
+      sendSpy.mockRejectedValue(noSuchKeyError);
+
+      expect.assertions(2);
+      try {
+        await service.claimTmp(tmpKey, USER_ID, 'equipment-photo');
+      } catch (error: unknown) {
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect((error as BadRequestException).getResponse()).toMatchObject({
+          code: 'TMP_KEY_EXPIRED',
+        });
+      }
+    });
+
     it('mapea NotFound (variante de MinIO) al mismo 400', async () => {
       const tmpKey = buildTmpKey(USER_ID, 'jpg');
       const notFoundError = Object.assign(new Error('not found'), {
@@ -170,6 +189,115 @@ describe('StorageService', () => {
       await expect(
         service.claimTmp(tmpKey, USER_ID, 'equipment-photo'),
       ).rejects.toThrow('boom');
+    });
+  });
+
+  describe('putServerFile', () => {
+    const PDF_BUFFER = Buffer.from('%PDF-1.4 fake');
+
+    it('sube directo a la key server-file (sin tmp/, sin claim) y devuelve la key', async () => {
+      sendSpy.mockResolvedValue({});
+
+      const key = await service.putServerFile('shift-exit-report', PDF_BUFFER, {
+        id: 'report-1',
+        date: new Date('2026-09-28T12:00:00.000Z'),
+      });
+
+      // M3: la key ya NO es determinística — lleva un sufijo aleatorio por
+      // intento (ver storage-keys.spec.ts), así que acá se matchea el shape,
+      // no el string exacto.
+      expect(key).toMatch(/^reports\/shift-exit\/2026\/09\/report-1-.+\.pdf$/);
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      const command = sentCommand<PutObjectCommand>(sendSpy);
+      expect(command).toBeInstanceOf(PutObjectCommand);
+      expect(command.input.Key).toBe(key);
+      expect(command.input.ContentType).toBe('application/pdf');
+      expect(command.input.Body).toBe(PDF_BUFFER);
+    });
+
+    it('sin date explícita usa la fecha actual', async () => {
+      sendSpy.mockResolvedValue({});
+      const key = await service.putServerFile('shift-exit-report', PDF_BUFFER, {
+        id: 'report-2',
+      });
+      expect(key).toMatch(
+        /^reports\/shift-exit\/\d{4}\/\d{2}\/report-2-.+\.pdf$/,
+      );
+    });
+
+    it('M3: dos subidas con el mismo id producen keys distintas', async () => {
+      sendSpy.mockResolvedValue({});
+      const first = await service.putServerFile(
+        'shift-exit-report',
+        PDF_BUFFER,
+        {
+          id: 'report-3',
+        },
+      );
+      const second = await service.putServerFile(
+        'shift-exit-report',
+        PDF_BUFFER,
+        { id: 'report-3' },
+      );
+      expect(first).not.toBe(second);
+    });
+
+    it('mapea un error de red a ServiceUnavailableException', async () => {
+      const networkError = Object.assign(new Error('connect ECONNREFUSED'), {
+        code: 'ECONNREFUSED',
+      });
+      sendSpy.mockRejectedValue(networkError);
+
+      await expect(
+        service.putServerFile('shift-exit-report', PDF_BUFFER, { id: 'r' }),
+      ).rejects.toThrow(ServiceUnavailableException);
+    });
+  });
+
+  describe('getObjectBuffer', () => {
+    it('devuelve el buffer completo del objeto', async () => {
+      const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF
+      sendSpy.mockResolvedValue({
+        Body: { transformToByteArray: () => Promise.resolve(bytes) },
+      });
+
+      const buffer = await service.getObjectBuffer('reports/shift-exit/x.pdf');
+
+      expect(buffer).toBeInstanceOf(Buffer);
+      expect(buffer.toString('utf8')).toBe('%PDF');
+      const command = sentCommand<GetObjectCommand>(sendSpy);
+      expect(command).toBeInstanceOf(GetObjectCommand);
+      expect(command.input.Key).toBe('reports/shift-exit/x.pdf');
+    });
+
+    it('mapea NoSuchKey a NotFoundException', async () => {
+      const noSuchKeyError = Object.assign(new Error('not found'), {
+        name: 'NoSuchKey',
+      });
+      sendSpy.mockRejectedValue(noSuchKeyError);
+
+      await expect(
+        service.getObjectBuffer('reports/shift-exit/x.pdf'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('sin Body en la respuesta lanza NotFoundException', async () => {
+      sendSpy.mockResolvedValue({});
+
+      await expect(
+        service.getObjectBuffer('reports/shift-exit/x.pdf'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('mapea un error de red a ServiceUnavailableException', async () => {
+      const networkError = Object.assign(new Error('connect ECONNREFUSED'), {
+        code: 'ECONNREFUSED',
+      });
+      sendSpy.mockRejectedValue(networkError);
+
+      await expect(
+        service.getObjectBuffer('reports/shift-exit/x.pdf'),
+      ).rejects.toThrow(ServiceUnavailableException);
     });
   });
 
@@ -292,8 +420,8 @@ describe('StorageService', () => {
   });
 
   describe('onModuleInit', () => {
-    // `warnIfUsingDevCredentials` (hallazgo BAJO B2 de la revisión de
-    // seguridad) dispara siempre que `NODE_ENV !== 'production'` — estos
+    // `warnIfUsingDevCredentials` dispara siempre que `NODE_ENV !==
+    // 'production'` — estos
     // tests fuerzan `NODE_ENV = 'production'` para aislar el warn del
     // `HeadBucket` (que es lo que ya cubrían antes de ese hallazgo) del warn
     // de credenciales dev, que se prueba aparte más abajo.
@@ -330,7 +458,7 @@ describe('StorageService', () => {
       );
     });
 
-    it('loguea warn de credenciales dev si NODE_ENV no es "production", aunque el bucket responda (hallazgo BAJO B2)', async () => {
+    it('loguea warn de credenciales dev si NODE_ENV no es "production", aunque el bucket responda', async () => {
       process.env.NODE_ENV = 'development';
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
       sendSpy.mockResolvedValue({});

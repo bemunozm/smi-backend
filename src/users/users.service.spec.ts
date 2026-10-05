@@ -90,13 +90,13 @@ describe('UsersService', () => {
     ]);
   });
 
-  it('findByRole excluye usuarios baneados de la consulta (pickers de asignación de Flota)', async () => {
+  it('findByRole excluye usuarios baneados de la consulta (picker de supervisor de Flota)', async () => {
     // No hay BD real en estos tests: lo que sí podemos asertar es que la
     // query a Prisma excluye explícitamente `banned: true` — la exclusión
     // real la aplica la BD a partir de ese `where`.
     findMany.mockResolvedValue([]);
 
-    await service.findByRole('OPERADOR');
+    await service.findByRole('SUPERVISOR');
 
     const [{ where }] = findMany.mock.calls[0] as [
       { where: { role: string; banned: unknown } },

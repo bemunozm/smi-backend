@@ -7,6 +7,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { TrabajoExtraordinario } from '@prisma/client';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { OperatorsService } from '../../operators/operators.service';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type { RecordEditedEvent } from '../../common/events/domain-events';
 import {
@@ -25,6 +26,7 @@ import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
 type DatosTrabajo = Pick<
   TrabajoExtraordinario,
   | 'equipoId'
+  | 'operatorId'
   | 'operador'
   | 'faena'
   | 'turno'
@@ -44,6 +46,7 @@ const horas = (v: unknown) =>
 export class TrabajosExtraService {
   constructor(
     private prisma: PrismaService,
+    private readonly operators: OperatorsService,
     private eventEmitter: EventEmitter2,
     private changeLog: ChangeLogService,
   ) {}
@@ -55,22 +58,27 @@ export class TrabajosExtraService {
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
     /**
-     * Un equipo con turno en curso **sí** admite un trabajo extraordinario.
-     *
-     * Hasta el 28/09/2026 se rechazaba, por miedo a cobrar dos veces las
-     * mismas horas. El cliente lo corrigió en el Acta N.° 004 (punto 4): los
-     * trabajos se registran al final del turno y usan la misma máquina,
-     * porque los equipos tienen tiempos en ralentí. Lo que importa es dejar
-     * registro de la máquina que ejecutó la tarea, como respaldo del pago.
-     *
-     * Que el equipo esté en turno se sigue mostrando en el formulario, como
-     * aviso para no coordinarlo por radio — no como bloqueo.
+     * Operador del catálogo — obligatorio. Se valida justo después del
+     * chequeo de equipo (la precondición más barata primero) y antes de las
+     * reglas de horómetro y actividades, así un operador inactivo o
+     * inexistente falla rápido. `operador` (snapshot) se arma acá con el
+     * nombre del catálogo: el cliente no lo manda.
+     */
+    const operator = await this.operators.assertActive(dto.operatorId);
+
+    /**
+     * Un equipo con turno en curso **sí** admite un trabajo extraordinario:
+     * los trabajos se registran al final del turno y usan la misma máquina
+     * durante sus tiempos en ralentí. Lo que importa es dejar registro de la
+     * máquina que ejecutó la tarea, como respaldo del pago. Que el equipo esté
+     * en turno es un aviso del formulario, no un bloqueo.
      */
 
     return this.prisma.trabajoExtraordinario.create({
       data: this.validar({
         equipoId: dto.equipoId,
-        operador: dto.operador,
+        operatorId: operator.id,
+        operador: operator.name,
         faena: dto.faena,
         turno: dto.turno,
         horometroInicial: dto.horometroInicial,
@@ -123,11 +131,24 @@ export class TrabajosExtraService {
       codigoNuevo = equipo.internalCode;
     }
 
+    // El operador se cambia por catálogo, igual que al crear: se valida que
+    // esté activo y el snapshot `operador` se deriva de su nombre. Si no se
+    // toca, se conserva lo guardado (incluidas las filas legacy sin
+    // `operatorId`) sin exigir que el operador siga activo.
+    let operatorId = actual.operatorId;
+    let operador = actual.operador;
+    if (dto.operatorId && dto.operatorId !== actual.operatorId) {
+      const operator = await this.operators.assertActive(dto.operatorId);
+      operatorId = operator.id;
+      operador = operator.name;
+    }
+
     // Lo que vino se monta sobre lo guardado y se valida el resultado: un
     // body con solo el horómetro final igual tiene que respetar el inicial.
     const nuevo = this.validar({
       equipoId: dto.equipoId ?? actual.equipoId,
-      operador: dto.operador ?? actual.operador,
+      operatorId,
+      operador,
       faena: dto.faena ?? actual.faena,
       turno: dto.turno ?? actual.turno,
       horometroInicial: dto.horometroInicial ?? actual.horometroInicial,

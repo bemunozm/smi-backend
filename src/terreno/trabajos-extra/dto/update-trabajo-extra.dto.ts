@@ -1,13 +1,19 @@
+import { Transform } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
   IsIn,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 
+import { normalizeObservaciones } from '../../../common/normalize-observaciones';
+import { SHIFT_TYPES, type ShiftType } from '../../../shifts/shift-type';
 import { ACTIVIDADES } from './create-trabajo-extra.dto';
 
 /**
@@ -16,6 +22,9 @@ import { ACTIVIDADES } from './create-trabajo-extra.dto';
  * solo lo que cambió— y valida igual que al crear. Las reglas que cruzan
  * campos (final ≥ inicial, «Otro» con texto) las aplica el servicio sobre el
  * registro ya combinado, no sobre lo que vino en el body.
+ *
+ * El operador se cambia por `operatorId` (catálogo), igual que al crear: el
+ * nombre (`operador`) lo deriva el servidor, y mandarlo en el body es un 400.
  *
  * Lo que no se edita: `totalHoras` (se recalcula) y `fecha` (es cuándo se
  * registró, y es parte de lo que la trazabilidad tiene que conservar).
@@ -27,22 +36,28 @@ export class UpdateTrabajoExtraDto {
 
   @IsOptional()
   @IsString()
-  operador?: string;
+  @IsNotEmpty()
+  operatorId?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   faena?: string;
 
   @IsOptional()
-  @IsIn(['DIURNO', 'NOCTURNO'])
-  turno?: string;
+  @IsIn(SHIFT_TYPES)
+  turno?: ShiftType;
 
   @IsOptional()
-  @IsNumber()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(1_000_000)
   horometroInicial?: number;
 
   @IsOptional()
-  @IsNumber()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(1_000_000)
   horometroFinal?: number;
 
   @IsOptional()
@@ -58,9 +73,12 @@ export class UpdateTrabajoExtraDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   descripcion?: string;
 
   @IsOptional()
+  @Transform(({ value }: { value: unknown }) => normalizeObservaciones(value))
   @IsString()
+  @MaxLength(1000)
   observaciones?: string;
 }

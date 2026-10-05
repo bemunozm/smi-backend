@@ -1,9 +1,11 @@
 /**
- * Gate e2e completo de Flota en Cloudflare R2 (Fase 5 del RFC R2-storage):
- * ejercita, contra una app Nest real (mismo pipeline que `main.ts`, vía
+ * Gate e2e completo de Flota en Cloudflare R2 (RFC R2-storage): ejercita,
+ * contra una app Nest real (mismo pipeline que `main.ts`, vía
  * `configureApp`) y contra Postgres + MinIO REALES (sin mocks), los 3 usos
  * de Flota — foto de equipo, documento de equipo, foto de carga de
- * combustible — más la ficha consolidada y el legacy `/api/uploads`.
+ * combustible — más la ficha consolidada. El legacy `/api/uploads` se
+ * retiró por completo (RFC Supervisión en Terreno — ver
+ * SECURITY-NOTES.md), así que ya no se ejercita acá.
  *
  * Bucket DEDICADO (`smi-files-e2e`, no el `smi-files` de dev/otros tests) —
  * ver `ensureBucketExists`. `STORAGE_BUCKET` se fija en `process.env` ANTES
@@ -15,8 +17,6 @@
  */
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { rmSync } from 'node:fs';
-import { join } from 'node:path';
 
 function isMinioReachable(): boolean {
   const result = spawnSync(
@@ -84,7 +84,6 @@ import {
   DEFAULT_DEV_STORAGE_SECRET_ACCESS_KEY,
   env,
 } from '../src/common/config/env';
-import { UPLOAD_DIR } from '../src/uploads/uploads.controller';
 
 const maybeDescribe =
   minioReachable && postgresReachable ? describe : describe.skip;
@@ -124,9 +123,6 @@ interface ErrorEnvelope {
 }
 interface UploadFileData {
   key: string;
-  url: string;
-}
-interface LegacyUploadData {
   url: string;
 }
 interface EquipmentData {
@@ -284,7 +280,7 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
 
   let adminAgent: SupertestAgent;
   let supervisorAgent: SupertestAgent;
-  let operadorAgent: SupertestAgent;
+  let mantenedorAgent: SupertestAgent;
 
   // `internalCode` tiene @MaxLength(20) — "E2E-" (4) + RUN_ID (5) + "-" (1) =
   // 10 chars fijos, deja 10 para el sufijo.
@@ -292,7 +288,6 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
   const internalCode = (suffix: string) => `E2E-${RUN_ID}-${suffix}`;
 
   const createdEquipmentIds: string[] = [];
-  let legacyUploadUrl: string | undefined;
 
   // Estado compartido del flujo "camino feliz" sobre un mismo equipo —
   // poblado progresivamente por los tests de la sección `Happy paths`.
@@ -333,16 +328,14 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
       'supervisor@smi.local',
       SEED_PASSWORD,
     );
-    operadorAgent = await loginAgent(app, 'operador@smi.local', SEED_PASSWORD);
+    mantenedorAgent = await loginAgent(
+      app,
+      'mantenedor@smi.local',
+      SEED_PASSWORD,
+    );
   });
 
   afterAll(async () => {
-    if (legacyUploadUrl) {
-      rmSync(join(UPLOAD_DIR, legacyUploadUrl.replace('/uploads/', '')), {
-        force: true,
-      });
-    }
-
     if (createdEquipmentIds.length > 0) {
       await prisma.registroCombustible.deleteMany({
         where: { equipoId: { in: createdEquipmentIds } },
@@ -701,40 +694,29 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
         .expect(413);
     }, 20_000);
 
-    it('19) sin sesión -> 401; OPERADOR -> 403', async () => {
+    it('19) sin sesión -> 401; MANTENEDOR -> 403', async () => {
       await request(app.getHttpServer())
         .post('/api/equipment')
         .send(baseEquipmentPayload(internalCode('NOSESSION')))
         .expect(401);
 
-      await operadorAgent
+      await mantenedorAgent
         .post('/api/equipment')
-        .send(baseEquipmentPayload(internalCode('OPERADOR')))
+        .send(baseEquipmentPayload(internalCode('MANTENEDOR')))
         .expect(403);
     });
 
-    it('20) combustible con fotoUrl+fotoKey juntos -> 400; fotoUrl externa -> 400', async () => {
-      const juntosResponse = await supervisorAgent
-        .post('/api/combustible')
-        .send({
-          equipoId: equoPrincipal.id,
-          litros: 10,
-          tipo: 'PETROLEO',
-          fotoUrl: '/uploads/algo.jpg',
-          fotoKey: `tmp/e2efakeowner1234567890/${randomUUID()}.jpg`,
-        })
-        .expect(400);
-      expect((juntosResponse.body as ErrorEnvelope).message).toContain(
-        'fotoUrl',
-      );
-
+    it('20) combustible con fotoUrl en el body -> 400 (campo retirado en el cierre de R2)', async () => {
+      // `fotoUrl` ya no es un campo de `CreateCombustibleDto` — con
+      // `forbidNonWhitelisted` global, cualquier body que lo incluya se
+      // rechaza entero, sin importar si viene solo o junto a `fotoKey`.
       await supervisorAgent
         .post('/api/combustible')
         .send({
           equipoId: equoPrincipal.id,
           litros: 10,
           tipo: 'PETROLEO',
-          fotoUrl: 'https://evil/x.jpg',
+          fotoUrl: '/uploads/algo.jpg',
         })
         .expect(400);
     });
@@ -830,43 +812,18 @@ maybeDescribe('Flota — foto/documento/combustible en R2 (e2e)', () => {
     });
   });
 
-  describe('Legacy', () => {
-    it('25) POST /api/uploads (legacy) sirve el JPEG con headers de seguridad', async () => {
-      const uploadResponse = await supervisorAgent
+  describe('Legacy (retirado en el cierre de R2)', () => {
+    it('25) POST /api/uploads ya no existe -> 404', async () => {
+      await supervisorAgent
         .post('/api/uploads')
         .attach('file', MINIMAL_JPEG, 'legacy.jpg')
-        .expect(201);
-
-      legacyUploadUrl = (uploadResponse.body as ApiEnvelope<LegacyUploadData>)
-        .data.url;
-      expect(legacyUploadUrl).toMatch(/^\/uploads\/.+\.jpg$/);
-
-      const staticResponse = await request(app.getHttpServer())
-        .get(legacyUploadUrl)
-        .expect(200);
-
-      expect(staticResponse.headers['x-content-type-options']).toBe('nosniff');
-      expect(staticResponse.headers['content-security-policy']).toBe(
-        "default-src 'none'; sandbox",
-      );
-      expect(staticResponse.headers['content-disposition']).toBeUndefined();
+        .expect(404);
     });
 
-    it('26) combustible con fotoUrl legacy "/uploads/..." se devuelve sin cambios', async () => {
-      expect(legacyUploadUrl).toBeDefined();
-
-      const response = await supervisorAgent
-        .post('/api/combustible')
-        .send({
-          equipoId: equoPrincipal.id,
-          litros: 12,
-          tipo: 'BENCINA',
-          fotoUrl: legacyUploadUrl,
-        })
-        .expect(201);
-
-      const data = (response.body as ApiEnvelope<CombustibleData>).data;
-      expect(data.fotoUrl).toBe(legacyUploadUrl);
+    it('26) /uploads/* ya no se sirve estático -> 404', async () => {
+      await request(app.getHttpServer())
+        .get('/uploads/cualquier-cosa.jpg')
+        .expect(404);
     });
   });
 

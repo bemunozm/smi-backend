@@ -1,12 +1,19 @@
+import { Transform } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
   IsIn,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
+
+import { normalizeObservaciones } from '../../../common/normalize-observaciones';
+import { SHIFT_TYPES, type ShiftType } from '../../../shifts/shift-type';
 
 export const ACTIVIDADES = [
   'REGULACION_CARGA',
@@ -39,19 +46,32 @@ export class CreateTrabajoExtraDto {
   @IsString()
   equipoId!: string;
 
+  /**
+   * Operador del catálogo propio (`Operator`) — OBLIGATORIO (RFC Supervisión
+   * en Terreno). `operador` YA NO se recibe acá: el servicio lo arma desde
+   * `OperatorsService.assertActive(operatorId).name`, nunca desde texto que
+   * mande el cliente. Con `forbidNonWhitelisted: true` global, mandar
+   * `operador` en el body ahora es un 400.
+   */
   @IsString()
-  operador!: string;
+  @IsNotEmpty()
+  operatorId!: string;
 
   @IsString()
+  @MaxLength(100)
   faena!: string;
 
-  @IsIn(['DIURNO', 'NOCTURNO'])
-  turno!: string;
+  @IsIn(SHIFT_TYPES)
+  turno!: ShiftType;
 
-  @IsNumber()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(1_000_000)
   horometroInicial!: number;
 
-  @IsNumber()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(1_000_000)
   horometroFinal!: number;
 
   /**
@@ -60,7 +80,7 @@ export class CreateTrabajoExtraDto {
    */
   @IsArray()
   @ArrayNotEmpty({ message: 'Elegí al menos una actividad' })
-  @IsIn(ACTIVIDADES as unknown as string[], { each: true })
+  @IsIn(ACTIVIDADES, { each: true })
   actividades!: string[];
 
   /**
@@ -73,9 +93,15 @@ export class CreateTrabajoExtraDto {
   otraActividad?: string;
 
   @IsString()
+  @MaxLength(1000)
   descripcion!: string;
 
+  /** Mismo normalizado + tope que `CloseShiftCardDto.observaciones` (ver
+   * `common/normalize-observaciones.ts`) — texto libre que un supervisor
+   * puede pegar desde el teclado del dispositivo. */
   @IsOptional()
+  @Transform(({ value }: { value: unknown }) => normalizeObservaciones(value))
   @IsString()
+  @MaxLength(1000)
   observaciones?: string;
 }

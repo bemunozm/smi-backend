@@ -253,9 +253,9 @@ export class UsersService {
 
   private normalizeRole(role: string | string[] | undefined): string {
     if (!role) {
-      return ROLES.OPERADOR;
+      return ROLES.MANTENEDOR;
     }
-    return Array.isArray(role) ? (role[0] ?? ROLES.OPERADOR) : role;
+    return Array.isArray(role) ? (role[0] ?? ROLES.MANTENEDOR) : role;
   }
 
   /**
