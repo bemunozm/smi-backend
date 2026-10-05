@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -12,7 +11,8 @@ import {
   assertExpected,
   type ExpectedFields,
 } from '../../common/concurrency/expected-fields';
-import { ERROR_CODES } from '../../common/errors/error-codes';
+import { lockRow } from '../../common/concurrency/lock-row';
+import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OperatorsService } from '../../operators/operators.service';
 import { assertReasonableCapturedAt } from '../../shifts/capture-time';
@@ -102,14 +102,30 @@ export class TrabajosExtraService {
   ) {}
 
   async create(dto: CreateTrabajoExtraDto, userId: string) {
-    // PRIMERO y antes de cualquier regla: un reintento offline debe devolver
-    // la fila ya creada aunque el estado del mundo haya cambiado desde
-    // entonces (operador desactivado, turno abierto después, etc.).
-    if (dto.id) {
-      const existing = await this.findOwnedById(dto.id, userId);
-      if (existing) return existing;
-    }
+    // La búsqueda por id va PRIMERO y antes de cualquier regla: un reintento
+    // offline debe devolver la fila ya creada aunque el estado del mundo haya
+    // cambiado desde entonces (operador desactivado, turno abierto después,
+    // etc.).
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe un trabajo con ese id de otro usuario',
+      findExisting: async (id) => {
+        const owner = await this.prisma.trabajoExtraordinario.findUnique({
+          where: { id },
+          select: { createdById: true },
+        });
+        if (!owner) return null;
+        return {
+          ownerId: owner.createdById,
+          result: () => this.findOne(id),
+        };
+      },
+      create: () => this.createFresh(dto, userId),
+    });
+  }
 
+  private async createFresh(dto: CreateTrabajoExtraDto, userId: string) {
     const fecha = this.resolveFecha(dto.capturedAt);
 
     const equipo = await this.prisma.equipment.findUnique({
@@ -148,58 +164,16 @@ export class TrabajosExtraService {
       observaciones: dto.observaciones ?? null,
     });
 
-    try {
-      return await this.prisma.trabajoExtraordinario.create({
-        data: {
-          ...(dto.id ? { id: dto.id } : {}),
-          createdById: userId,
-          fecha,
-          ...datos,
-        },
-        include: TRABAJO_EXTRA_INCLUDE,
-        omit: TRABAJO_EXTRA_OMIT,
-      });
-    } catch (error: unknown) {
-      // Carrera: otro reintento con el MISMO id ya ganó entre el chequeo
-      // inicial y el insert.
-      if (
-        dto.id &&
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        const winner = await this.findOwnedById(dto.id, userId);
-        if (winner) return winner;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * La fila con ese id si es del usuario (reintento propio); `null` si no
-   * existe; 409 si el id ya lo ocupa otro usuario o una fila legacy sin dueño.
-   */
-  private async findOwnedById(
-    id: string,
-    userId: string,
-  ): Promise<TrabajoExtraResponse | null> {
-    const owned = await this.prisma.trabajoExtraordinario.findFirst({
-      where: { id, createdById: userId },
+    return this.prisma.trabajoExtraordinario.create({
+      data: {
+        ...(dto.id ? { id: dto.id } : {}),
+        createdById: userId,
+        fecha,
+        ...datos,
+      },
       include: TRABAJO_EXTRA_INCLUDE,
       omit: TRABAJO_EXTRA_OMIT,
     });
-    if (owned) return owned;
-
-    const taken = await this.prisma.trabajoExtraordinario.findUnique({
-      where: { id },
-      select: { id: true },
-    });
-    if (taken) {
-      throw new ConflictException({
-        message: 'Ya existe un trabajo con ese id de otro usuario',
-        code: ERROR_CODES.ID_CONFLICT,
-      });
-    }
-    return null;
   }
 
   /** `capturedAt` (hora del dispositivo) si viene y es razonable; si no, la
@@ -331,7 +305,7 @@ export class TrabajosExtraService {
       if (expected) {
         // Entre la lectura de arriba y esta transacción otra edición pudo
         // aplicarse: se relee con la fila bloqueada antes de pisarla.
-        await tx.$queryRaw`SELECT id FROM "TrabajoExtraordinario" WHERE id = ${id} FOR UPDATE`;
+        await lockRow(tx, 'trabajoExtra', id);
         const vigente = await tx.trabajoExtraordinario.findUnique({
           where: { id },
         });

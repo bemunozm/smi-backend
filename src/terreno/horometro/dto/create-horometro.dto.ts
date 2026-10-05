@@ -1,9 +1,11 @@
 import {
+  IsDateString,
   IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   Min,
 } from 'class-validator';
@@ -11,6 +13,19 @@ import {
 import { SHIFT_TYPES, type ShiftType } from '../../../shifts/shift-type';
 
 export class CreateHorometroDto {
+  /** UUID v4 generado por el cliente: PK del registro y clave de idempotencia
+   * para el reenvío offline. Opcional para no romper a un cliente que no lo
+   * manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
+  /** Hora del DISPOSITIVO al registrar la entrada — ver `capture-time.ts`.
+   * Es `fecha` de la fila; sin ella, la hora del servidor. */
+  @IsOptional()
+  @IsDateString()
+  capturedAt?: string;
+
   @IsString()
   equipoId!: string;
 

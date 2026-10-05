@@ -22,7 +22,7 @@ describe('HallazgosService', () => {
     // La corrección y su registro de cambios van en una sola transacción.
     $transaction: jest.fn(),
     // Bloqueo de la fila (`FOR UPDATE`) cuando la edición trae `X-Expected`.
-    $queryRaw: jest.fn(),
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 'h1' }]),
   };
   const eventEmitter = { emit: jest.fn() };
   // La foto ahora va al storage privado: `claimTmp` mueve la key temporal a su
@@ -175,6 +175,7 @@ describe('HallazgosService', () => {
       return new Prisma.PrismaClientKnownRequestError('unique', {
         code: 'P2002',
         clientVersion: 'test',
+        meta: { target: ['id'] },
       });
     }
 
@@ -198,7 +199,7 @@ describe('HallazgosService', () => {
       const data = createdData();
       expect('id' in data).toBe(false);
       expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(before);
-      expect(prisma.hallazgo.findFirst).not.toHaveBeenCalled();
+      expect(prisma.hallazgo.findUnique).not.toHaveBeenCalled();
     });
 
     it('rechaza un capturedAt absurdo con 400 sin reclamar la foto ni escribir', async () => {
@@ -217,15 +218,17 @@ describe('HallazgosService', () => {
     });
 
     it('el reintento del mismo usuario devuelve la fila existente sin reclamar, escribir ni emitir', async () => {
-      prisma.hallazgo.findFirst.mockResolvedValue({
-        id: ID,
-        equipoId: 'e1',
-        descripcion: 'Fuga',
-        prioridad: 'ALTA',
-        estado: 'ABIERTO',
-        fotoUrl: null,
-        fotoKey: 'hallazgo-photos/ya.jpg',
-      });
+      prisma.hallazgo.findUnique
+        .mockResolvedValueOnce({ createdById: 'u1' })
+        .mockResolvedValueOnce({
+          id: ID,
+          equipoId: 'e1',
+          descripcion: 'Fuga',
+          prioridad: 'ALTA',
+          estado: 'ABIERTO',
+          fotoUrl: null,
+          fotoKey: 'hallazgo-photos/ya.jpg',
+        });
       // Aunque el equipo ya no exista y la key tmp ya se haya consumido.
       prisma.equipment.findUnique.mockResolvedValue(null);
 
@@ -244,7 +247,7 @@ describe('HallazgosService', () => {
     });
 
     it('otro usuario con el mismo id -> 409 ID_CONFLICT', async () => {
-      prisma.hallazgo.findUnique.mockResolvedValue({ id: ID });
+      prisma.hallazgo.findUnique.mockResolvedValue({ createdById: 'otro' });
 
       await expect(service.create(base, 'u1')).rejects.toMatchObject({
         status: 409,
@@ -255,7 +258,7 @@ describe('HallazgosService', () => {
     });
 
     it('una fila legacy sin dueño con ese id -> 409 ID_CONFLICT', async () => {
-      prisma.hallazgo.findUnique.mockResolvedValue({ id: ID });
+      prisma.hallazgo.findUnique.mockResolvedValue({ createdById: null });
 
       await expect(service.create(base, 'u1')).rejects.toMatchObject({
         response: { code: 'ID_CONFLICT' },
@@ -263,8 +266,9 @@ describe('HallazgosService', () => {
     });
 
     it('carrera P2002: suelta la foto reclamada, devuelve la fila propia y no emite', async () => {
-      prisma.hallazgo.findFirst
+      prisma.hallazgo.findUnique
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ createdById: 'u1' })
         .mockResolvedValueOnce({
           id: ID,
           equipoId: 'e1',
@@ -290,7 +294,7 @@ describe('HallazgosService', () => {
     it('carrera P2002 contra otro usuario -> 409 ID_CONFLICT y suelta la foto', async () => {
       prisma.hallazgo.findUnique
         .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ id: ID });
+        .mockResolvedValueOnce({ createdById: 'otro' });
       prisma.hallazgo.create.mockRejectedValueOnce(p2002());
 
       await expect(
@@ -349,28 +353,32 @@ describe('HallazgosService', () => {
     });
 
     it('el replay idempotente usa la misma forma de query que create', async () => {
-      prisma.hallazgo.findFirst.mockResolvedValue(row);
+      prisma.hallazgo.findUnique
+        .mockResolvedValueOnce({ createdById: 'u1' })
+        .mockResolvedValueOnce(row);
 
       const res = await service.create(dto, 'u1');
 
-      expectQueryShape(prisma.hallazgo.findFirst);
+      expectQueryShape(prisma.hallazgo.findUnique, 1);
       expect(res).toHaveProperty('equipo', { internalCode: 'EXC-01' });
     });
 
     it('la relectura tras P2002 usa la misma forma de query que create', async () => {
-      prisma.hallazgo.findFirst
+      prisma.hallazgo.findUnique
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ createdById: 'u1' })
         .mockResolvedValueOnce(row);
       prisma.hallazgo.create.mockRejectedValueOnce(
         new Prisma.PrismaClientKnownRequestError('unique', {
           code: 'P2002',
           clientVersion: 'test',
+          meta: { target: ['id'] },
         }),
       );
 
       const res = await service.create(dto, 'u1');
 
-      expectQueryShape(prisma.hallazgo.findFirst, 1);
+      expectQueryShape(prisma.hallazgo.findUnique, 2);
       expect(res).toHaveProperty('equipo', { internalCode: 'EXC-01' });
     });
 
@@ -382,15 +390,20 @@ describe('HallazgosService', () => {
       expectQueryShape(prisma.hallazgo.findUnique);
     });
 
-    it('el chequeo de propiedad filtra por dueño en la query, sin leer createdById', async () => {
-      prisma.hallazgo.findFirst.mockResolvedValue(row);
+    it('el chequeo de propiedad solo lee createdById: la fila completa sale por findOne', async () => {
+      prisma.hallazgo.findUnique
+        .mockResolvedValueOnce({ createdById: 'u1' })
+        .mockResolvedValueOnce(row);
 
       await service.create(dto, 'u1');
 
-      const [args] = prisma.hallazgo.findFirst.mock.calls[0] as [
-        { where: unknown },
+      const [ownerQuery] = prisma.hallazgo.findUnique.mock.calls[0] as [
+        { where: unknown; select: unknown },
       ];
-      expect(args.where).toEqual({ id: ID, createdById: 'u1' });
+      expect(ownerQuery).toEqual({
+        where: { id: ID },
+        select: { createdById: true },
+      });
     });
   });
 

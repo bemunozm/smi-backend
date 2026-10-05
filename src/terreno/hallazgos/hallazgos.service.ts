@@ -1,8 +1,4 @@
-import {
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import type { Hallazgo } from '@prisma/client';
@@ -11,7 +7,8 @@ import {
   assertExpected,
   type ExpectedFields,
 } from '../../common/concurrency/expected-fields';
-import { ERROR_CODES } from '../../common/errors/error-codes';
+import { lockRow } from '../../common/concurrency/lock-row';
+import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { assertReasonableCapturedAt } from '../../shifts/capture-time';
 import { formatBusinessDate } from '../../shifts/date-only';
@@ -100,15 +97,30 @@ export class HallazgosService {
   ) {}
 
   async create(dto: CreateHallazgoDto, userId: string) {
-    // PRIMERO y antes de cualquier regla: un reintento offline debe devolver
-    // la fila ya creada aunque el estado del mundo haya cambiado desde
-    // entonces (equipo dado de baja, key tmp ya reclamada) — y sin repetir
-    // el claim ni el evento.
-    if (dto.id) {
-      const existing = await this.findOwnedById(dto.id, userId);
-      if (existing) return this.shape(existing);
-    }
+    // La búsqueda por id va PRIMERO y antes de cualquier regla: un reintento
+    // offline debe devolver la fila ya creada aunque el estado del mundo haya
+    // cambiado desde entonces (equipo dado de baja, key tmp ya reclamada) — y
+    // sin repetir el claim ni el evento.
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe un hallazgo con ese id de otro usuario',
+      findExisting: async (id) => {
+        const owner = await this.prisma.hallazgo.findUnique({
+          where: { id },
+          select: { createdById: true },
+        });
+        if (!owner) return null;
+        return {
+          ownerId: owner.createdById,
+          result: () => this.findOne(id),
+        };
+      },
+      create: () => this.createFresh(dto, userId),
+    });
+  }
 
+  private async createFresh(dto: CreateHallazgoDto, userId: string) {
     const fecha = this.resolveFecha(dto.capturedAt);
 
     const equipo = await this.prisma.equipment.findUnique({
@@ -146,14 +158,9 @@ export class HallazgosService {
       if (finalKey) {
         await this.storage.discard(finalKey);
       }
-
-      if (dto.id && this.isUniqueViolation(error)) {
-        // Carrera: otro reintento con el MISMO id ya ganó entre el chequeo
-        // inicial y el insert. La foto reclamada por este intento ya se soltó;
-        // la fila ganadora conserva la suya.
-        const winner = await this.findOwnedById(dto.id, userId);
-        if (winner) return this.shape(winner);
-      }
+      // En una carrera con el MISMO id, `createOrReturn` relee la fila
+      // ganadora; la foto reclamada por este intento ya se soltó y la fila
+      // ganadora conserva la suya.
       throw error;
     }
 
@@ -256,7 +263,7 @@ export class HallazgosService {
       if (expected) {
         // Entre la lectura de arriba y esta transacción otra edición pudo
         // aplicarse: se relee con la fila bloqueada antes de pisarla.
-        await tx.$queryRaw`SELECT id FROM "Hallazgo" WHERE id = ${id} FOR UPDATE`;
+        await lockRow(tx, 'hallazgo', id);
         const vigente = await tx.hallazgo.findUnique({ where: { id } });
         if (!vigente) throw new NotFoundException('Hallazgo no encontrado');
         assertExpected(
@@ -305,34 +312,6 @@ export class HallazgosService {
     return this.changeLog.findFor('hallazgo', id);
   }
 
-  /**
-   * La fila con ese id si es del usuario (reintento propio); `null` si no
-   * existe; 409 si el id ya lo ocupa otro usuario o una fila legacy sin dueño.
-   */
-  private async findOwnedById(
-    id: string,
-    userId: string,
-  ): Promise<HallazgoWithEquipo | null> {
-    const owned = await this.prisma.hallazgo.findFirst({
-      where: { id, createdById: userId },
-      include: HALLAZGO_INCLUDE,
-      omit: HALLAZGO_OMIT,
-    });
-    if (owned) return owned;
-
-    const taken = await this.prisma.hallazgo.findUnique({
-      where: { id },
-      select: { id: true },
-    });
-    if (taken) {
-      throw new ConflictException({
-        message: 'Ya existe un hallazgo con ese id de otro usuario',
-        code: ERROR_CODES.ID_CONFLICT,
-      });
-    }
-    return null;
-  }
-
   /** `capturedAt` (hora del dispositivo) si viene y es razonable; si no, la
    * hora del servidor. */
   private resolveFecha(capturedAt: string | undefined): Date {
@@ -340,13 +319,6 @@ export class HallazgosService {
     const captured = new Date(capturedAt);
     assertReasonableCapturedAt(captured);
     return captured;
-  }
-
-  private isUniqueViolation(error: unknown): boolean {
-    return (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === 'P2002'
-    );
   }
 
   /**

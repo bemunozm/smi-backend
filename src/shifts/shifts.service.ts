@@ -35,6 +35,7 @@ import {
   assertExpected,
   type ExpectedFields,
 } from '../common/concurrency/expected-fields';
+import { lockRow } from '../common/concurrency/lock-row';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type { RecordEditedEvent } from '../common/events/domain-events';
 import {
@@ -645,7 +646,7 @@ export class ShiftsService {
   ): Promise<ShiftCardEdit> {
     // Serializa ediciones y cierres concurrentes sobre la misma tarjeta: lo
     // que se lee a continuación es lo que se va a pisar.
-    await tx.$queryRaw`SELECT id FROM "RegistroHorometro" WHERE id = ${id} FOR UPDATE`;
+    await lockRow(tx, 'registroHorometro', id);
     const actual = await tx.registroHorometro.findUnique({
       where: { id },
       include: SHIFT_CARD_INCLUDE,

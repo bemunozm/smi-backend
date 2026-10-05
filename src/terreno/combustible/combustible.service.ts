@@ -1,11 +1,21 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
-import type { RegistroCombustible } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 
+import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StorageService } from '../../storage/storage.service';
 import { CreateCombustibleDto } from './dto/create-combustible.dto';
 import { UpdateCombustibleDto } from './dto/update-combustible.dto';
+
+/** `createdById` es interno: no sale en ninguna respuesta. */
+const COMBUSTIBLE_OMIT = {
+  createdById: true,
+} satisfies Prisma.RegistroCombustibleOmit;
+
+type RegistroCombustibleRow = Prisma.RegistroCombustibleGetPayload<{
+  omit: typeof COMBUSTIBLE_OMIT;
+}>;
 
 /** Forma de un registro en la API — nunca expone `fotoKey` (ver Diseño del
  * RFC R2-storage, "Combustible"): `fotoUrl` es la key firmada cuando existe
@@ -22,6 +32,25 @@ export class CombustibleService {
   ) {}
 
   async create(dto: CreateCombustibleDto, userId: string) {
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe una carga con ese id de otro usuario',
+      // El reintento propio devuelve la carga con su foto firmada de nuevo; no
+      // reclama la key tmp ni toca nada.
+      findExisting: async (id) => {
+        const existing = await this.prisma.registroCombustible.findUnique({
+          where: { id },
+        });
+        if (!existing) return null;
+        const { createdById, ...registro } = existing;
+        return { ownerId: createdById, result: () => this.shape(registro) };
+      },
+      create: () => this.createFresh(dto, userId),
+    });
+  }
+
+  private async createFresh(dto: CreateCombustibleDto, userId: string) {
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },
     });
@@ -38,10 +67,13 @@ export class CombustibleService {
     // antes acá `return this.shape(registro)` SIN `await` dentro del try
     // hacía que el rollback nunca se disparara igual por accidente — se deja
     // explícito para no depender de ese detalle.
-    let registro: RegistroCombustible;
+    let registro: RegistroCombustibleRow;
     try {
       registro = await this.prisma.registroCombustible.create({
+        omit: COMBUSTIBLE_OMIT,
         data: {
+          ...(dto.id ? { id: dto.id } : {}),
+          createdById: userId,
           equipoId: dto.equipoId,
           litros: dto.litros,
           tipo: dto.tipo,
@@ -56,6 +88,8 @@ export class CombustibleService {
         },
       });
     } catch (error: unknown) {
+      // Se descarta ANTES de que `createOrReturn` relea la carrera: la copia
+      // del perdedor no queda en el bucket, la fila ganadora conserva la suya.
       if (finalKey) {
         await this.storage.discard(finalKey);
       }
@@ -69,6 +103,7 @@ export class CombustibleService {
     const registros = await this.prisma.registroCombustible.findMany({
       orderBy: { fecha: 'desc' },
       include: { equipo: { select: { internalCode: true } } },
+      omit: COMBUSTIBLE_OMIT,
     });
     return Promise.all(registros.map((registro) => this.shape(registro)));
   }
@@ -76,6 +111,7 @@ export class CombustibleService {
   async findOne(id: string) {
     const reg = await this.prisma.registroCombustible.findUnique({
       where: { id },
+      omit: COMBUSTIBLE_OMIT,
     });
     if (!reg) throw new NotFoundException('Registro no encontrado');
     return this.shape(reg);
@@ -85,6 +121,7 @@ export class CombustibleService {
     const registro = await this.prisma.registroCombustible.update({
       where: { id },
       data: dto,
+      omit: COMBUSTIBLE_OMIT,
     });
     return this.shape(registro);
   }

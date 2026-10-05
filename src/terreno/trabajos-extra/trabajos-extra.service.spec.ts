@@ -34,7 +34,7 @@ describe('TrabajosExtraService', () => {
     // La edición y su registro de cambios van en una sola transacción.
     $transaction: jest.fn(),
     // Bloqueo de la fila (`FOR UPDATE`) cuando la edición trae `X-Expected`.
-    $queryRaw: jest.fn(),
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 't1' }]),
   };
   const assertActive = jest.fn();
   const eventEmitter = { emit: jest.fn() };
@@ -326,6 +326,7 @@ describe('TrabajosExtraService', () => {
       return new Prisma.PrismaClientKnownRequestError('unique', {
         code: 'P2002',
         clientVersion: 'test',
+        meta: { target: ['id'] },
       });
     }
 
@@ -349,7 +350,7 @@ describe('TrabajosExtraService', () => {
       const data = createdData();
       expect('id' in data).toBe(false);
       expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(before);
-      expect(prisma.trabajoExtraordinario.findFirst).not.toHaveBeenCalled();
+      expect(prisma.trabajoExtraordinario.findUnique).not.toHaveBeenCalled();
     });
 
     it('rechaza un capturedAt absurdo con 400 y no escribe', async () => {
@@ -361,7 +362,9 @@ describe('TrabajosExtraService', () => {
 
     it('el reintento del mismo usuario devuelve la fila existente sin re-evaluar reglas, aunque el operador se haya desactivado', async () => {
       const existing = { id: ID, operador: 'Juan Rojas' };
-      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(existing);
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(existing);
       assertActive.mockRejectedValue(
         new ConflictException({
           message: 'inactivo',
@@ -381,7 +384,9 @@ describe('TrabajosExtraService', () => {
 
     it('el reintento de una fila ya creada no revalida capturedAt', async () => {
       const existing = { id: ID };
-      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(existing);
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(existing);
 
       const res = await createAs({
         ...payload,
@@ -392,7 +397,9 @@ describe('TrabajosExtraService', () => {
     });
 
     it('otro usuario con el mismo id -> 409 ID_CONFLICT', async () => {
-      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({ id: ID });
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        createdById: 'otro',
+      });
 
       await expect(createAs(payload)).rejects.toMatchObject({
         status: 409,
@@ -402,7 +409,9 @@ describe('TrabajosExtraService', () => {
     });
 
     it('una fila legacy sin dueño con ese id -> 409 ID_CONFLICT', async () => {
-      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({ id: ID });
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        createdById: null,
+      });
 
       await expect(createAs(payload)).rejects.toMatchObject({
         response: { code: 'ID_CONFLICT' },
@@ -411,8 +420,9 @@ describe('TrabajosExtraService', () => {
 
     it('carrera P2002: relee y devuelve la fila propia', async () => {
       const winner = { id: ID };
-      prisma.trabajoExtraordinario.findFirst
+      prisma.trabajoExtraordinario.findUnique
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ createdById: USER_ID })
         .mockResolvedValueOnce(winner);
       prisma.trabajoExtraordinario.create.mockRejectedValueOnce(p2002());
 
@@ -422,7 +432,7 @@ describe('TrabajosExtraService', () => {
     it('carrera P2002 contra otro usuario -> 409 ID_CONFLICT', async () => {
       prisma.trabajoExtraordinario.findUnique
         .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ id: ID });
+        .mockResolvedValueOnce({ createdById: 'otro' });
       prisma.trabajoExtraordinario.create.mockRejectedValueOnce(p2002());
 
       await expect(createAs(payload)).rejects.toMatchObject({
@@ -734,28 +744,32 @@ describe('TrabajosExtraService', () => {
     });
 
     it('el replay idempotente usa la misma forma de query que create', async () => {
-      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(row);
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(row);
 
       const res = await createAs(payload);
 
-      expectQueryShape(prisma.trabajoExtraordinario.findFirst);
+      expectQueryShape(prisma.trabajoExtraordinario.findUnique, 1);
       expect(res).toHaveProperty('equipo', { internalCode: 'CA-011' });
     });
 
     it('la relectura tras P2002 usa la misma forma de query que create', async () => {
-      prisma.trabajoExtraordinario.findFirst
+      prisma.trabajoExtraordinario.findUnique
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ createdById: USER_ID })
         .mockResolvedValueOnce(row);
       prisma.trabajoExtraordinario.create.mockRejectedValueOnce(
         new Prisma.PrismaClientKnownRequestError('unique', {
           code: 'P2002',
           clientVersion: 'test',
+          meta: { target: ['id'] },
         }),
       );
 
       const res = await createAs(payload);
 
-      expectQueryShape(prisma.trabajoExtraordinario.findFirst, 1);
+      expectQueryShape(prisma.trabajoExtraordinario.findUnique, 2);
       expect(res).toHaveProperty('equipo', { internalCode: 'CA-011' });
     });
 
@@ -767,15 +781,19 @@ describe('TrabajosExtraService', () => {
       expectQueryShape(prisma.trabajoExtraordinario.findUnique);
     });
 
-    it('el chequeo de propiedad filtra por dueño en la query, sin leer createdById', async () => {
-      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(row);
+    it('el chequeo de propiedad solo lee createdById: la fila completa sale por findOne', async () => {
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(row);
 
       await createAs(payload);
 
-      const [args] = prisma.trabajoExtraordinario.findFirst.mock.calls[0] as [
-        { where: unknown },
-      ];
-      expect(args.where).toEqual({ id: ID, createdById: USER_ID });
+      const [ownerQuery] = prisma.trabajoExtraordinario.findUnique.mock
+        .calls[0] as [{ where: unknown; select: unknown }];
+      expect(ownerQuery).toEqual({
+        where: { id: ID },
+        select: { createdById: true },
+      });
     });
   });
 });

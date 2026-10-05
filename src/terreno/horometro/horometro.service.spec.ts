@@ -44,8 +44,11 @@ describe('HorometroService', () => {
       update: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
     },
     equipment: { findUnique: jest.fn(), updateMany: jest.fn() },
+    // Bloqueo de la fila (`FOR UPDATE`) al cerrar.
+    $queryRaw: jest.fn(),
   };
 
   const prisma = {
@@ -55,6 +58,7 @@ describe('HorometroService', () => {
       update: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
     },
     $transaction: jest.fn(),
   };
@@ -74,6 +78,9 @@ describe('HorometroService', () => {
 
     // Sin turno abierto por defecto — cada test de rechazo lo sobreescribe.
     tx.registroHorometro.findFirst.mockResolvedValue(null);
+    tx.$queryRaw.mockResolvedValue([{ id: 'r1' }]);
+    // Sin registro previo con el id del cliente por defecto.
+    prisma.registroHorometro.findUnique.mockResolvedValue(null);
 
     tx.registroHorometro.create.mockImplementation(
       ({ data }: { data: Record<string, unknown> }) => ({
@@ -127,6 +134,112 @@ describe('HorometroService', () => {
 
   describe('create (ENTRADA)', () => {
     const session = buildSession('sup_1');
+
+    describe('id del cliente (reintento offline)', () => {
+      const ID = '11111111-1111-4111-8111-111111111111';
+      const dto = {
+        id: ID,
+        equipoId: 'e1',
+        operatorId: 'op_1',
+        turno: 'DIURNO' as const,
+        valorInicial: 100,
+      };
+
+      it('crea con el id del cliente y usa capturedAt como fecha', async () => {
+        const capturedAt = new Date(Date.now() - 3_600_000).toISOString();
+
+        await service.create({ ...dto, capturedAt }, session);
+
+        const data = lastCallData(tx.registroHorometro.create);
+        expect(data.id).toBe(ID);
+        expect(data.fecha).toEqual(new Date(capturedAt));
+      });
+
+      it('sin capturedAt la fecha es la hora del servidor', async () => {
+        const before = Date.now();
+
+        await service.create(dto, session);
+
+        const data = lastCallData(tx.registroHorometro.create);
+        expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(before);
+      });
+
+      it('un capturedAt absurdo es 400 INVALID_CAPTURE_TIME y no abre la transacción', async () => {
+        await expect(
+          service.create(
+            { ...dto, capturedAt: '2001-01-01T00:00:00.000Z' },
+            session,
+          ),
+        ).rejects.toMatchObject({
+          response: { code: 'INVALID_CAPTURE_TIME' },
+        });
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('replay del mismo supervisor: devuelve el registro sin validar operador, equipo ni turno, y sin escribir', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          id: ID,
+          supervisorId: 'sup_1',
+        });
+        assertActive.mockRejectedValue(new Error('no debe consultarse'));
+
+        const res = await service.create(dto, session);
+
+        expect(res).toEqual({ id: ID, supervisorId: 'sup_1' });
+        expect(assertActive).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('id ocupado por otro supervisor: 409 ID_CONFLICT', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          id: ID,
+          supervisorId: 'otro',
+        });
+
+        await expect(service.create(dto, session)).rejects.toMatchObject({
+          status: 409,
+          response: { code: 'ID_CONFLICT' },
+        });
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('carrera sobre la PK: relee y devuelve el registro ganador', async () => {
+        prisma.registroHorometro.findUnique
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ id: ID, supervisorId: 'sup_1' });
+        tx.registroHorometro.create.mockImplementation(() => {
+          throw prismaError('P2002', { target: ['id'] });
+        });
+
+        await expect(service.create(dto, session)).resolves.toEqual({
+          id: ID,
+          supervisorId: 'sup_1',
+        });
+      });
+
+      it('carrera contra el índice del turno abierto con mi propio id: devuelve mi registro, no el 400', async () => {
+        prisma.registroHorometro.findUnique
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ id: ID, supervisorId: 'sup_1' });
+        tx.registroHorometro.create.mockImplementation(() => {
+          throw prismaError('P2002', { target: ['equipo_id'] });
+        });
+
+        await expect(service.create(dto, session)).resolves.toEqual({
+          id: ID,
+          supervisorId: 'sup_1',
+        });
+      });
+
+      it('el turno abierto de OTRO registro con un id nuevo sigue siendo el 400 EQUIPMENT_BUSY', async () => {
+        tx.registroHorometro.findFirst.mockResolvedValue({ id: 'r_otro' });
+
+        await expect(service.create(dto, session)).rejects.toMatchObject({
+          status: 400,
+          response: { code: 'EQUIPMENT_BUSY' },
+        });
+      });
+    });
 
     it('abre el turno, cuadra el contador a valorInicial y graba supervisorId desde la sesión', async () => {
       await service.create(
@@ -214,7 +327,10 @@ describe('HorometroService', () => {
           },
           session,
         ),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { code: 'EQUIPMENT_BUSY' },
+      });
 
       expect(tx.registroHorometro.create).not.toHaveBeenCalled();
       expect(tx.equipment.updateMany).not.toHaveBeenCalled();
@@ -581,6 +697,11 @@ describe('HorometroService', () => {
       await expect(
         service.salida('r1', { valorFinal: 50 }, session),
       ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        service.salida('r1', { valorFinal: 50 }, session),
+      ).rejects.toMatchObject({
+        response: { code: 'HOURMETER_BELOW_INITIAL' },
+      });
 
       expect(tx.registroHorometro.update).not.toHaveBeenCalled();
       expect(tx.equipment.updateMany).not.toHaveBeenCalled();
@@ -598,14 +719,142 @@ describe('HorometroService', () => {
       await expect(
         service.salida('r1', { valorFinal: 130 }, session),
       ).rejects.toBeInstanceOf(ConflictException);
+      await expect(
+        service.salida('r1', { valorFinal: 130 }, session),
+      ).rejects.toMatchObject({ response: { code: 'ALREADY_CLOSED' } });
 
       expect(tx.registroHorometro.update).not.toHaveBeenCalled();
       expect(tx.equipment.updateMany).not.toHaveBeenCalled();
     });
 
-    it('lanza NotFoundException si el registro no existe', async () => {
+    describe('reintento idempotente (closeClientId / capturedAt)', () => {
+      const CLOSE_ID = '22222222-2222-4222-8222-222222222222';
+
+      it('la tarjeta ya cerrada con el MISMO closeClientId responde con la tarjeta, sin cerrar de nuevo', async () => {
+        tx.registroHorometro.findUnique.mockResolvedValue({
+          id: 'r1',
+          equipoId: 'e1',
+          valorInicial: 100,
+          valorFinal: 130,
+          closeClientId: CLOSE_ID,
+          shiftId: null,
+        });
+        tx.registroHorometro.findUniqueOrThrow.mockResolvedValue({
+          id: 'r1',
+          valorFinal: 130,
+        });
+
+        const res = await service.salida(
+          'r1',
+          { valorFinal: 130, closeClientId: CLOSE_ID },
+          session,
+        );
+
+        expect(res).toEqual({ id: 'r1', valorFinal: 130 });
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+        expect(tx.equipment.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('cerrada con OTRO closeClientId (o sin él) sigue siendo 409 ALREADY_CLOSED', async () => {
+        tx.registroHorometro.findUnique.mockResolvedValue({
+          id: 'r1',
+          equipoId: 'e1',
+          valorInicial: 100,
+          valorFinal: 130,
+          closeClientId: 'otro',
+          shiftId: null,
+        });
+
+        await expect(
+          service.salida(
+            'r1',
+            { valorFinal: 130, closeClientId: CLOSE_ID },
+            session,
+          ),
+        ).rejects.toMatchObject({ response: { code: 'ALREADY_CLOSED' } });
+      });
+
+      it('guarda closeClientId y usa capturedAt como fechaSalida (closedAt sigue siendo la hora del servidor)', async () => {
+        const capturedAt = new Date(Date.now() - 3_600_000).toISOString();
+
+        await service.salida(
+          'r1',
+          { valorFinal: 130, closeClientId: CLOSE_ID, capturedAt },
+          session,
+        );
+
+        const data = lastCallData(tx.registroHorometro.update);
+        expect(data.closeClientId).toBe(CLOSE_ID);
+        expect(data.fechaSalida).toEqual(new Date(capturedAt));
+        expect((data.closedAt as Date).getTime()).toBeGreaterThan(
+          new Date(capturedAt).getTime(),
+        );
+      });
+
+      it('un capturedAt absurdo es 400 INVALID_CAPTURE_TIME y no abre la transacción', async () => {
+        await expect(
+          service.salida(
+            'r1',
+            { valorFinal: 130, capturedAt: '2001-01-01T00:00:00.000Z' },
+            session,
+          ),
+        ).rejects.toMatchObject({
+          response: { code: 'INVALID_CAPTURE_TIME' },
+        });
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('closeClientId ya usado por otra tarjeta (P2002) sobre una tarjeta abierta: 409 ID_CONFLICT', async () => {
+        tx.registroHorometro.update.mockImplementation(() => {
+          throw prismaError('P2002', { target: ['close_client_id'] });
+        });
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          id: 'r1',
+          valorFinal: null,
+          closeClientId: null,
+        });
+
+        await expect(
+          service.salida(
+            'r1',
+            { valorFinal: 130, closeClientId: CLOSE_ID },
+            session,
+          ),
+        ).rejects.toMatchObject({ response: { code: 'ID_CONFLICT' } });
+      });
+
+      it('carrera: dos cierres con el mismo closeClientId, el perdedor recibe la tarjeta ya cerrada', async () => {
+        tx.registroHorometro.update.mockImplementation(() => {
+          throw prismaError('P2002', { target: ['close_client_id'] });
+        });
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          id: 'r1',
+          valorFinal: 130,
+          closeClientId: CLOSE_ID,
+        });
+        prisma.registroHorometro.findUniqueOrThrow.mockResolvedValue({
+          id: 'r1',
+          valorFinal: 130,
+        });
+
+        await expect(
+          service.salida(
+            'r1',
+            { valorFinal: 130, closeClientId: CLOSE_ID },
+            session,
+          ),
+        ).resolves.toEqual({ id: 'r1', valorFinal: 130 });
+      });
+    });
+
+    it('lanza NotFoundException CARD_NOT_FOUND si el registro no existe', async () => {
       tx.registroHorometro.findUnique.mockResolvedValue(null);
 
+      await expect(
+        service.salida('missing', { valorFinal: 130 }, session),
+      ).rejects.toMatchObject({
+        response: { code: 'CARD_NOT_FOUND' },
+      });
       await expect(
         service.salida('missing', { valorFinal: 130 }, session),
       ).rejects.toBeInstanceOf(NotFoundException);

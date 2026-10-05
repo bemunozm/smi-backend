@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StorageService } from '../../storage/storage.service';
@@ -202,6 +203,92 @@ describe('CombustibleService', () => {
     });
   });
 
+  describe('id del cliente (reintento offline)', () => {
+    const ID = '11111111-1111-4111-8111-111111111111';
+    const dto = {
+      id: ID,
+      equipoId: 'e1',
+      litros: 30,
+      tipo: 'BENCINA',
+      fotoKey: 'tmp/user1234567890123456/raw.jpg',
+    };
+    const stored = {
+      id: ID,
+      equipoId: 'e1',
+      litros: 30,
+      tipo: 'BENCINA',
+      fotoUrl: null,
+      fotoKey: 'fuel-photos/final.jpg',
+      fecha: new Date(),
+    };
+
+    beforeEach(() => {
+      prisma.registroCombustible.findUnique.mockReset();
+      sign.mockResolvedValue('https://minio.local/signed/final.jpg');
+    });
+
+    it('replay del mismo usuario: devuelve la carga con la foto firmada de nuevo, sin reclamar ni crear', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...stored,
+        createdById: USER_ID,
+      });
+
+      const res = await service.create(dto, USER_ID);
+
+      expect(res.fotoUrl).toBe('https://minio.local/signed/final.jpg');
+      expect(res).not.toHaveProperty('fotoKey');
+      expect(res).not.toHaveProperty('createdById');
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(prisma.registroCombustible.create).not.toHaveBeenCalled();
+    });
+
+    it('id ocupado por otro usuario: 409 ID_CONFLICT y no toca el storage', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...stored,
+        createdById: 'otro',
+      });
+
+      await expect(service.create(dto, USER_ID)).rejects.toMatchObject({
+        response: { code: 'ID_CONFLICT' },
+      });
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(sign).not.toHaveBeenCalled();
+    });
+
+    it('carrera sobre la PK: el perdedor descarta su copia de la foto y devuelve la fila ganadora', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+      claimTmp.mockResolvedValue('fuel-photos/perdedora.jpg');
+      prisma.registroCombustible.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ ...stored, createdById: USER_ID });
+      prisma.registroCombustible.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('unique', {
+          code: 'P2002',
+          clientVersion: 'test',
+          meta: { target: ['id'] },
+        }),
+      );
+
+      const res = await service.create(dto, USER_ID);
+
+      expect(discard).toHaveBeenCalledWith('fuel-photos/perdedora.jpg');
+      expect(res.fotoUrl).toBe('https://minio.local/signed/final.jpg');
+    });
+
+    it('con id nuevo reclama la foto y guarda el dueño', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+      prisma.registroCombustible.findUnique.mockResolvedValue(null);
+      claimTmp.mockResolvedValue('fuel-photos/final.jpg');
+
+      await service.create(dto, USER_ID);
+
+      const [{ data }] = prisma.registroCombustible.create.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({ id: ID, createdById: USER_ID });
+    });
+  });
+
   describe('findAll/findOne/update — shape', () => {
     it('findAll mantiene el include equipo.internalCode que usa la vista de Terreno', async () => {
       prisma.registroCombustible.findMany.mockResolvedValue([
@@ -222,6 +309,7 @@ describe('CombustibleService', () => {
       expect(prisma.registroCombustible.findMany).toHaveBeenCalledWith({
         orderBy: { fecha: 'desc' },
         include: { equipo: { select: { internalCode: true } } },
+        omit: { createdById: true },
       });
       expect(res).toMatchObject({ equipo: { internalCode: 'EX-001' } });
       expect(res).not.toHaveProperty('fotoKey');
@@ -261,6 +349,7 @@ describe('CombustibleService', () => {
       expect(prisma.registroCombustible.update).toHaveBeenCalledWith({
         where: { id: 'c1' },
         data: {},
+        omit: { createdById: true },
       });
       // El registro YA tenía fotoUrl legacy antes de este update (dato
       // histórico) — se sigue devolviendo tal cual, aunque el DTO de update
