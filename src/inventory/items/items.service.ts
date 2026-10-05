@@ -5,8 +5,18 @@ import {
 } from '@nestjs/common';
 import { MovementReason, Prisma } from '@prisma/client';
 
+import {
+  assertExpectedLocked,
+  definedFields,
+} from '../../common/concurrency/assert-expected-locked';
+import type { ExpectedFields } from '../../common/concurrency/expected-fields';
+import { ERROR_CODES } from '../../common/errors/error-codes';
+import {
+  createOrReturn,
+  isPrimaryKeyViolation,
+} from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { StockService } from '../stock.service';
+import { StockService, type PendingStockEvents } from '../stock.service';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import { CreateItemDto } from './dto/create-item.dto';
 import { QueryItemsDto } from './dto/query-items.dto';
@@ -29,6 +39,34 @@ const STOCK_INCLUDE = {
   category: { select: { id: true, name: true } },
 } satisfies Prisma.InventoryItemInclude;
 
+/** `createdById` es interno: no sale en ninguna respuesta. */
+const ITEM_OMIT = { createdById: true } satisfies Prisma.InventoryItemOmit;
+
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
+const CAMPO_LABEL: Record<string, string> = {
+  name: 'Nombre',
+  description: 'Descripción',
+  unit: 'Unidad',
+  type: 'Tipo',
+  categoryId: 'Categoría',
+  partNumber: 'N.° de parte',
+  defaultSupplier: 'Proveedor',
+  isCritical: 'Crítico',
+  isActive: 'Activo',
+};
+
+const UPDATE_FIELDS = {
+  name: true,
+  description: true,
+  unit: true,
+  type: true,
+  categoryId: true,
+  partNumber: true,
+  defaultSupplier: true,
+  isCritical: true,
+  isActive: true,
+} satisfies Prisma.InventoryItemSelect;
+
 @Injectable()
 export class ItemsService {
   constructor(
@@ -40,6 +78,7 @@ export class ItemsService {
     return this.prisma.inventoryItem.findMany({
       where: this.buildWhere(filters),
       include: STOCK_INCLUDE,
+      omit: ITEM_OMIT,
       orderBy: { name: 'asc' },
     });
   }
@@ -48,6 +87,7 @@ export class ItemsService {
     const item = await this.prisma.inventoryItem.findUnique({
       where: { id },
       include: STOCK_INCLUDE,
+      omit: ITEM_OMIT,
     });
     if (!item) throw new NotFoundException(`Ítem "${id}" no encontrado`);
     return item;
@@ -76,65 +116,149 @@ export class ItemsService {
   }
 
   async create(dto: CreateItemDto, performedById: string) {
-    const { initialQuantity, branchId, ...card } = dto;
+    return createOrReturn({
+      id: dto.id,
+      userId: performedById,
+      conflictMessage: 'Ya existe un ítem con ese id de otro usuario',
+      // El reintento propio devuelve el ítem tal como está hoy y NO vuelve a
+      // recibir la existencia inicial.
+      findExisting: async (id) => {
+        const owner = await this.prisma.inventoryItem.findUnique({
+          where: { id },
+          select: { createdById: true },
+        });
+        if (!owner) return null;
+        return { ownerId: owner.createdById, result: () => this.findOne(id) };
+      },
+      create: () => this.createFresh(dto, performedById),
+    });
+  }
+
+  private async createFresh(dto: CreateItemDto, performedById: string) {
+    const { id, initialQuantity, branchId, ...card } = dto;
+    const events: PendingStockEvents = [];
 
     try {
       // La existencia inicial entra como movimiento de COMPRA, no como columna
       // suelta: así el primer renglón del kardex explica de dónde salió el
       // saldo, en vez de aparecer una existencia sin origen.
-      return await this.prisma.$transaction(async (tx) => {
-        const item = await tx.inventoryItem.create({ data: card });
+      const item = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.inventoryItem.create({
+          data: {
+            ...(id ? { id } : {}),
+            ...card,
+            createdById: performedById,
+          },
+        });
 
         if (initialQuantity && initialQuantity > 0 && branchId) {
           await this.stock.receive(
             {
-              itemId: item.id,
+              itemId: created.id,
               branchId,
               quantity: initialQuantity,
               reason: MovementReason.PURCHASE,
               performedById,
               notes: 'Existencia inicial al dar de alta el ítem',
             },
-            tx,
+            { tx, events },
           );
         }
 
         return tx.inventoryItem.findUniqueOrThrow({
-          where: { id: item.id },
+          where: { id: created.id },
           include: STOCK_INCLUDE,
+          omit: ITEM_OMIT,
         });
       });
+      this.stock.emitPending(events);
+      return item;
     } catch (error: unknown) {
+      // Un choque con la PK es la carrera de dos reintentos con el mismo id:
+      // lo resuelve `createOrReturn`, no es un SKU repetido.
+      if (isPrimaryKeyViolation(error)) throw error;
       throw this.translateKnownErrors(error, dto);
     }
   }
 
-  async update(id: string, dto: UpdateItemDto) {
+  async update(id: string, dto: UpdateItemDto, expected?: ExpectedFields) {
     await this.findOne(id);
-    try {
-      return await this.prisma.inventoryItem.update({
+    const write = (db: Prisma.TransactionClient) =>
+      db.inventoryItem.update({
         where: { id },
         data: dto,
         include: STOCK_INCLUDE,
+        omit: ITEM_OMIT,
+      });
+    try {
+      if (!expected) return await write(this.prisma);
+      return await this.prisma.$transaction(async (tx) => {
+        await assertExpectedLocked({
+          tx,
+          table: 'inventoryItem',
+          id,
+          expected,
+          read: (db) =>
+            db.inventoryItem.findUnique({
+              where: { id },
+              select: UPDATE_FIELDS,
+            }),
+          desired: definedFields(dto),
+          labels: CAMPO_LABEL,
+          notFoundMessage: `Ítem "${id}" no encontrado`,
+        });
+        return write(tx);
       });
     } catch (error: unknown) {
       throw this.translateKnownErrors(error);
     }
   }
 
-  /** Corrección tras conteo físico de una bodega. Delega en el service de saldos. */
+  /**
+   * Corrección tras conteo físico de una bodega. Delega en el service de
+   * saldos. Con `id` del cliente es reintentable: el mismo conteo enviado dos
+   * veces deja UN solo asiento.
+   */
   async adjust(id: string, dto: AdjustStockDto, performedById: string) {
-    await this.findOne(id);
+    return createOrReturn({
+      id: dto.id,
+      userId: performedById,
+      conflictMessage: 'Ya existe un movimiento con ese id de otro usuario',
+      findExisting: async (movementId) => {
+        const movement = await this.prisma.stockMovement.findUnique({
+          where: { id: movementId },
+        });
+        if (!movement) return null;
+        if (
+          movement.itemId !== id ||
+          movement.reason !== MovementReason.PHYSICAL_ADJUSTMENT
+        ) {
+          throw new ConflictException({
+            message: 'Ya existe un movimiento con ese id que no es este conteo',
+            code: ERROR_CODES.ID_CONFLICT,
+          });
+        }
+        return {
+          ownerId: movement.performedById,
+          result: async () => ({ item: await this.findOne(id), movement }),
+        };
+      },
+      create: async () => {
+        await this.findOne(id);
 
-    const movement = await this.stock.adjustToCount({
-      itemId: id,
-      branchId: dto.branchId,
-      countedQuantity: dto.countedQuantity,
-      performedById,
-      notes: dto.notes,
+        const movement = await this.stock.adjustToCount({
+          id: dto.id,
+          itemId: id,
+          branchId: dto.branchId,
+          countedQuantity: dto.countedQuantity,
+          expectedQuantity: dto.expectedQuantity,
+          performedById,
+          notes: dto.notes,
+        });
+
+        return { item: await this.findOne(id), movement };
+      },
     });
-
-    return { item: await this.findOne(id), movement };
   }
 
   /**

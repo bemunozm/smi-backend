@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -13,6 +14,10 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import {
+  EXPECTED_HEADER,
+  parseExpectedHeader,
+} from '../../common/concurrency/expected-fields';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import { CreateItemDto } from './dto/create-item.dto';
 import { QueryItemsDto } from './dto/query-items.dto';
@@ -62,10 +67,14 @@ export class ItemsController {
 
   @Patch(':id')
   @Roles([ROLES.ADMIN])
-  async update(@Param('id') id: string, @Body() dto: UpdateItemDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateItemDto,
+    @Headers(EXPECTED_HEADER) expected?: string,
+  ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto),
+      data: await this.service.update(id, dto, parseExpectedHeader(expected)),
       message: 'Ítem actualizado',
     };
   }

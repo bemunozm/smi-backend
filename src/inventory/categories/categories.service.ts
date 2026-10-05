@@ -5,6 +5,15 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
+import {
+  assertExpectedLocked,
+  definedFields,
+} from '../../common/concurrency/assert-expected-locked';
+import type { ExpectedFields } from '../../common/concurrency/expected-fields';
+import {
+  createOrReturn,
+  isPrimaryKeyViolation,
+} from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { QueryCategoriesDto } from './dto/query-categories.dto';
@@ -18,6 +27,13 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 const WITH_ITEM_COUNT = {
   _count: { select: { items: true } },
 } satisfies Prisma.ItemCategoryInclude;
+
+/** `createdById` es interno: no sale en ninguna respuesta. */
+const CATEGORY_OMIT = {
+  createdById: true,
+} satisfies Prisma.ItemCategoryOmit;
+
+const CAMPO_LABEL: Record<string, string> = { name: 'Nombre' };
 
 @Injectable()
 export class CategoriesService {
@@ -46,6 +62,7 @@ export class CategoriesService {
             },
           }
         : WITH_ITEM_COUNT,
+      omit: CATEGORY_OMIT,
       orderBy: { name: 'asc' },
     });
   }
@@ -54,6 +71,7 @@ export class CategoriesService {
     const category = await this.prisma.itemCategory.findUnique({
       where: { id },
       include: WITH_ITEM_COUNT,
+      omit: CATEGORY_OMIT,
     });
     if (!category) {
       throw new NotFoundException(`Categoría "${id}" no encontrada`);
@@ -61,27 +79,70 @@ export class CategoriesService {
     return category;
   }
 
-  async create(dto: CreateCategoryDto) {
-    await this.assertNombreLibre(dto.name);
-    try {
-      return await this.prisma.itemCategory.create({
-        data: { name: dto.name },
-        include: WITH_ITEM_COUNT,
-      });
-    } catch (error: unknown) {
-      throw this.mapUniqueConstraintError(error, dto.name);
-    }
+  async create(dto: CreateCategoryDto, userId: string) {
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe una categoría con ese id de otro usuario',
+      findExisting: async (id) => {
+        const owner = await this.prisma.itemCategory.findUnique({
+          where: { id },
+          select: { createdById: true },
+        });
+        if (!owner) return null;
+        return { ownerId: owner.createdById, result: () => this.findOne(id) };
+      },
+      create: async () => {
+        await this.assertNombreLibre(dto.name);
+        try {
+          return await this.prisma.itemCategory.create({
+            data: {
+              ...(dto.id ? { id: dto.id } : {}),
+              name: dto.name,
+              createdById: userId,
+            },
+            include: WITH_ITEM_COUNT,
+            omit: CATEGORY_OMIT,
+          });
+        } catch (error: unknown) {
+          // Un choque con la PK es la carrera de dos reintentos con el mismo
+          // id: lo resuelve `createOrReturn`, no es un nombre repetido.
+          if (isPrimaryKeyViolation(error)) throw error;
+          throw this.mapUniqueConstraintError(error, dto.name);
+        }
+      },
+    });
   }
 
-  async update(id: string, dto: UpdateCategoryDto) {
+  async update(id: string, dto: UpdateCategoryDto, expected?: ExpectedFields) {
     await this.findOne(id);
     if (dto.name) await this.assertNombreLibre(dto.name, id);
 
-    try {
-      return await this.prisma.itemCategory.update({
+    const write = (db: Prisma.TransactionClient) =>
+      db.itemCategory.update({
         where: { id },
         data: dto,
         include: WITH_ITEM_COUNT,
+        omit: CATEGORY_OMIT,
+      });
+    try {
+      if (!expected) return await write(this.prisma);
+      return await this.prisma.$transaction(async (tx) => {
+        await assertExpectedLocked({
+          tx,
+          table: 'itemCategory',
+          id,
+          expected,
+          read: (db) =>
+            db.itemCategory.findUnique({
+              where: { id },
+              select: { name: true },
+            }),
+          desired: definedFields(dto),
+          labels: CAMPO_LABEL,
+          notFoundMessage: `Categoría "${id}" no encontrada`,
+        });
+        return write(tx);
       });
     } catch (error: unknown) {
       throw this.mapUniqueConstraintError(error, dto.name);

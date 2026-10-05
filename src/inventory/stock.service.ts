@@ -11,6 +11,12 @@ import {
   StockMovement,
 } from '@prisma/client';
 
+import { assertExpected } from '../common/concurrency/expected-fields';
+import { ERROR_CODES } from '../common/errors/error-codes';
+import {
+  createOrReturn,
+  type ExistingRecord,
+} from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type { ItemLowStockEvent } from '../common/events/domain-events';
@@ -21,7 +27,25 @@ import type { ItemLowStockEvent } from '../common/events/domain-events';
  */
 export type PrismaClientLike = PrismaService | Prisma.TransactionClient;
 
+/**
+ * Avisos de existencia baja que una operación fue acumulando. Se emiten recién
+ * cuando la transacción que los originó confirmó: un aviso de una transacción
+ * que luego se revierte alerta de un saldo que nunca existió.
+ */
+export type PendingStockEvents = ItemLowStockEvent[];
+
+/**
+ * Transacción abierta por otro dominio, junto con el buzón de avisos que ese
+ * dominio debe vaciar con `StockService.emitPending` DESPUÉS de confirmar.
+ */
+export interface StockTransaction {
+  tx: Prisma.TransactionClient;
+  events: PendingStockEvents;
+}
+
 export interface StockMovementInput {
+  /** PK del asiento cuando el cliente la genera (reintento idempotente). */
+  id?: string;
   itemId: string;
   /**
    * Bodega cuyo saldo se mueve. **Obligatorio**: con existencias por sucursal,
@@ -43,11 +67,27 @@ export interface StockMovementInput {
   notes?: string | null;
 }
 
+export interface TransferResult {
+  reference: string;
+  out: StockMovement;
+  in: StockMovement;
+  sourceBranchName: string;
+  destinationBranchName: string;
+}
+
 export interface AdjustToCountInput {
+  /** PK del asiento de ajuste cuando el cliente la genera. */
+  id?: string;
   itemId: string;
   branchId: string;
   /** Cantidad real contada EN esa bodega. */
   countedQuantity: number;
+  /**
+   * Existencia que quien contó veía en el sistema. Si otro movimiento la
+   * cambió mientras contaba, el ajuste se rechaza (`STALE_UPDATE`) en vez de
+   * pisar ese movimiento con un conteo viejo.
+   */
+  expectedQuantity?: number;
   performedById?: string | null;
   notes?: string | null;
 }
@@ -100,22 +140,35 @@ export class StockService {
   ) {}
 
   /** Suma saldo en una bodega: compra/reposición, devolución o entrada de traspaso. */
+  receive(input: StockMovementInput): Promise<StockMovement>;
   receive(
     input: StockMovementInput,
-    tx?: Prisma.TransactionClient,
+    within: StockTransaction,
+  ): Promise<StockMovement>;
+  receive(
+    input: StockMovementInput,
+    within?: StockTransaction,
   ): Promise<StockMovement> {
-    return this.run((client) => this.applyIncoming(client, input), tx);
+    return this.run((client) => this.applyIncoming(client, input), within);
   }
 
   /**
    * Resta saldo de una bodega. Lanza `ConflictException` si no alcanza — nunca
    * deja existencia negativa.
    */
+  issue(input: StockMovementInput): Promise<StockMovement>;
   issue(
     input: StockMovementInput,
-    tx?: Prisma.TransactionClient,
+    within: StockTransaction,
+  ): Promise<StockMovement>;
+  issue(
+    input: StockMovementInput,
+    within?: StockTransaction,
   ): Promise<StockMovement> {
-    return this.run((client) => this.applyOutgoing(client, input), tx);
+    return this.run(
+      (client, events) => this.applyOutgoing(client, input, events),
+      within,
+    );
   }
 
   /**
@@ -123,25 +176,46 @@ export class StockService {
    * el saldo que el sistema tiene ahí y la registra como IN u OUT con
    * `PHYSICAL_ADJUSTMENT`. Devuelve `null` si el conteo coincide: ensuciar el
    * kardex con un asiento de cero sería ruido.
+   *
+   * La fila de saldo se bloquea antes de leerla: dos conteos (o un conteo y un
+   * movimiento) sobre la misma bodega se serializan, y la precondición
+   * `expectedQuantity` se evalúa contra el saldo que de verdad quedó.
    */
+  adjustToCount(input: AdjustToCountInput): Promise<StockMovement | null>;
   adjustToCount(
     input: AdjustToCountInput,
-    tx?: Prisma.TransactionClient,
+    within: StockTransaction,
+  ): Promise<StockMovement | null>;
+  adjustToCount(
+    input: AdjustToCountInput,
+    within?: StockTransaction,
   ): Promise<StockMovement | null> {
-    return this.run(async (client) => {
+    return this.run(async (client, events) => {
       const item = await this.findItem(client, input.itemId);
       await this.assertBranchExists(client, input.branchId);
 
-      const current = await this.balanceAt(
+      const current = await this.lockedBalanceAt(
         client,
         input.itemId,
         input.branchId,
+        input.countedQuantity,
       );
+
+      assertExpected(
+        { quantity: current },
+        input.expectedQuantity !== undefined
+          ? { quantity: input.expectedQuantity }
+          : undefined,
+        { quantity: input.countedQuantity },
+        { quantity: 'existencia' },
+      );
+
       const difference = input.countedQuantity - current;
 
       if (difference === 0) return null;
 
       const common: StockMovementInput = {
+        id: input.id,
         itemId: input.itemId,
         branchId: input.branchId,
         quantity: Math.abs(difference),
@@ -154,8 +228,8 @@ export class StockService {
 
       return difference > 0
         ? this.applyIncoming(client, common)
-        : this.applyOutgoing(client, common);
-    }, tx);
+        : this.applyOutgoing(client, common, events);
+    }, within);
   }
 
   /**
@@ -202,6 +276,9 @@ export class StockService {
    */
   async transfer(
     input: {
+      /** PK del asiento de SALIDA cuando el cliente la genera: hace al
+       *  traspaso reintentable sin duplicarse. */
+      id?: string;
       itemId: string;
       sourceBranchId: string;
       destinationBranchId: string;
@@ -212,13 +289,84 @@ export class StockService {
       notes?: string | null;
     },
     performedById: string,
-  ): Promise<{
-    reference: string;
-    out: StockMovement;
-    in: StockMovement;
-    sourceBranchName: string;
-    destinationBranchName: string;
-  }> {
+  ): Promise<TransferResult> {
+    return createOrReturn({
+      id: input.id,
+      userId: performedById,
+      conflictMessage: 'Ya existe un traspaso con ese id de otro usuario',
+      findExisting: (id) => this.findTransfer(id),
+      create: () => this.transferFresh(input, performedById),
+    });
+  }
+
+  /**
+   * El traspaso ya registrado cuya SALIDA tiene ese id, con la misma forma que
+   * devuelve uno recién hecho. Un id que pertenece a otro tipo de asiento no
+   * es un reintento de este traspaso: es 409, igual que un id ajeno.
+   */
+  private async findTransfer(
+    id: string,
+  ): Promise<ExistingRecord<TransferResult> | null> {
+    const out = await this.prisma.stockMovement.findUnique({ where: { id } });
+    if (!out) return null;
+
+    const isTransferOut =
+      out.reason === MovementReason.TRANSFER &&
+      out.direction === MovementDirection.OUT &&
+      out.reference !== null &&
+      out.destinationBranchId !== null;
+    if (!isTransferOut) {
+      throw new ConflictException({
+        message: 'Ya existe un movimiento con ese id que no es un traspaso',
+        code: ERROR_CODES.ID_CONFLICT,
+      });
+    }
+
+    const reference = out.reference!;
+    const destinationBranchId = out.destinationBranchId!;
+
+    return {
+      ownerId: out.performedById,
+      result: async () => {
+        const [incoming, branches] = await Promise.all([
+          this.prisma.stockMovement.findFirstOrThrow({
+            where: {
+              reference,
+              reason: MovementReason.TRANSFER,
+              direction: MovementDirection.IN,
+            },
+          }),
+          this.prisma.branch.findMany({
+            where: { id: { in: [out.branchId, destinationBranchId] } },
+            select: { id: true, name: true },
+          }),
+        ]);
+        const nameOf = (branchId: string) =>
+          branches.find((b) => b.id === branchId)?.name ?? branchId;
+
+        return {
+          reference,
+          out,
+          in: incoming,
+          sourceBranchName: nameOf(out.branchId),
+          destinationBranchName: nameOf(destinationBranchId),
+        };
+      },
+    };
+  }
+
+  private async transferFresh(
+    input: {
+      id?: string;
+      itemId: string;
+      sourceBranchId: string;
+      destinationBranchId: string;
+      quantity: number;
+      documentNumber?: string | null;
+      notes?: string | null;
+    },
+    performedById: string,
+  ): Promise<TransferResult> {
     if (input.sourceBranchId === input.destinationBranchId) {
       throw new ConflictException(
         'El origen y el destino del traspaso son la misma sucursal.',
@@ -231,20 +379,29 @@ export class StockService {
     ]);
 
     // `reference` se genera acá, ANTES de la transacción, para que los dos
-    // asientos lo compartan y el kardex pueda mostrarlos apareados.
-    const reference = `transfer_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    // asientos lo compartan y el kardex pueda mostrarlos apareados. Con id del
+    // cliente es determinista: un reintento vuelve a calcular la misma.
+    const reference = input.id
+      ? `transfer_${input.id}`
+      : `transfer_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-    return this.prisma.$transaction(async (tx) => {
-      const outgoing = await this.applyOutgoing(tx, {
-        itemId: input.itemId,
-        branchId: input.sourceBranchId,
-        quantity: input.quantity,
-        reason: MovementReason.TRANSFER,
-        performedById,
-        reference,
-        documentNumber: input.documentNumber ?? null,
-        notes: input.notes ?? `Traspaso a ${destination.name}`,
-      });
+    const events: PendingStockEvents = [];
+    const result = await this.prisma.$transaction(async (tx) => {
+      const outgoing = await this.applyOutgoing(
+        tx,
+        {
+          id: input.id,
+          itemId: input.itemId,
+          branchId: input.sourceBranchId,
+          quantity: input.quantity,
+          reason: MovementReason.TRANSFER,
+          performedById,
+          reference,
+          documentNumber: input.documentNumber ?? null,
+          notes: input.notes ?? `Traspaso a ${destination.name}`,
+        },
+        events,
+      );
 
       const incoming = await this.applyIncoming(tx, {
         itemId: input.itemId,
@@ -268,27 +425,52 @@ export class StockService {
         data: { sourceBranchId: input.sourceBranchId },
       });
 
+      // Con la contraparte ya anotada: es la misma forma que reconstruye un
+      // reintento al releer los asientos.
       return {
         reference,
-        out: outgoing,
-        in: incoming,
+        out: { ...outgoing, destinationBranchId: input.destinationBranchId },
+        in: { ...incoming, sourceBranchId: input.sourceBranchId },
         sourceBranchName: source.name,
         destinationBranchName: destination.name,
       };
     });
+
+    this.emitPending(events);
+    return result;
+  }
+
+  /**
+   * Emite los avisos acumulados. Quien abrió la transacción lo llama DESPUÉS de
+   * confirmarla; nunca dentro de ella ni en un reintento que no escribió nada.
+   */
+  emitPending(events: PendingStockEvents): void {
+    for (const event of events) {
+      this.eventEmitter.emit(DOMAIN_EVENTS.ITEM_LOW_STOCK, event);
+    }
   }
 
   /**
    * Corre `operation` dentro de una transacción. Si el llamador ya abrió una,
    * se reutiliza — así el descuento puede ser atómico junto con la escritura
-   * del otro dominio.
+   * del otro dominio, y es ese llamador quien emite los avisos al confirmar.
+   * Si no, la abre acá y emite apenas confirma.
    */
-  private run<T>(
-    operation: (client: PrismaClientLike) => Promise<T>,
-    tx?: Prisma.TransactionClient,
+  private async run<T>(
+    operation: (
+      client: PrismaClientLike,
+      events: PendingStockEvents,
+    ) => Promise<T>,
+    within?: StockTransaction,
   ): Promise<T> {
-    if (tx) return operation(tx);
-    return this.prisma.$transaction((newTx) => operation(newTx));
+    if (within) return operation(within.tx, within.events);
+
+    const events: PendingStockEvents = [];
+    const result = await this.prisma.$transaction((tx) =>
+      operation(tx, events),
+    );
+    this.emitPending(events);
+    return result;
   }
 
   private async applyIncoming(
@@ -319,6 +501,7 @@ export class StockService {
   private async applyOutgoing(
     client: PrismaClientLike,
     input: StockMovementInput,
+    events: PendingStockEvents,
   ): Promise<StockMovement> {
     this.assertPositive(input.quantity);
     // Se valida la bodega ANTES del descuento: sin esto, una salida contra una
@@ -363,13 +546,13 @@ export class StockService {
       balance,
     );
 
-    await this.emitIfBelowMinimum(client, input, stock, balance);
+    await this.queueIfBelowMinimum(client, input, stock, balance, events);
 
     return movement;
   }
 
   /**
-   * Avisa cuando el saldo de la bodega CRUZA su mínimo hacia abajo. Solo en el
+   * Encola el aviso cuando el saldo de la bodega CRUZA su mínimo hacia abajo. Solo en el
    * cruce, no en cada salida posterior mientras siga bajo — si no, la primera
    * mantención larga llena el centro de notificaciones y se dejan de leer.
    *
@@ -377,11 +560,12 @@ export class StockService {
    * El umbral de una bodega y el de la empresa no son la misma magnitud, y
    * heredar uno como el otro enciende la alerta en todas las filas a la vez.
    */
-  private async emitIfBelowMinimum(
+  private async queueIfBelowMinimum(
     client: PrismaClientLike,
     input: StockMovementInput,
     stock: { minimumQuantity: number } | null,
     balance: number,
+    events: PendingStockEvents,
   ): Promise<void> {
     const minimum = stock?.minimumQuantity ?? 0;
     if (minimum <= 0) return;
@@ -403,14 +587,14 @@ export class StockService {
       }),
     ]);
 
-    this.eventEmitter.emit(DOMAIN_EVENTS.ITEM_LOW_STOCK, {
+    events.push({
       itemId: input.itemId,
       itemName: item?.name ?? input.itemId,
       branchId: input.branchId,
       branchName: branch?.name ?? input.branchId,
       quantity: balance,
       minimumQuantity: minimum,
-    } satisfies ItemLowStockEvent);
+    });
   }
 
   private async explainFailedIssue(
@@ -440,9 +624,10 @@ export class StockService {
     const elsewhere = (total._sum.quantity ?? 0) - available;
     const hint = elsewhere > 0 ? ` Hay ${elsewhere} en otras sucursales.` : '';
 
-    return new ConflictException(
-      `Existencia insuficiente de "${item.name}" en ${branch?.name ?? 'la sucursal'}: disponible ${available}, solicitado ${input.quantity}.${hint}`,
-    );
+    return new ConflictException({
+      message: `Existencia insuficiente de "${item.name}" en ${branch?.name ?? 'la sucursal'}: disponible ${available}, solicitado ${input.quantity}.${hint}`,
+      code: ERROR_CODES.INSUFFICIENT_STOCK,
+    });
   }
 
   private record(
@@ -453,6 +638,7 @@ export class StockService {
   ): Promise<StockMovement> {
     return client.stockMovement.create({
       data: {
+        ...(input.id ? { id: input.id } : {}),
         itemId: input.itemId,
         branchId: input.branchId,
         direction,
@@ -483,6 +669,38 @@ export class StockService {
       select: { quantity: true },
     });
     return stock?.quantity ?? 0;
+  }
+
+  /**
+   * Saldo de una bodega bajo bloqueo de su fila (`FOR UPDATE`). Sin fila el
+   * saldo es 0 y no hay nada que bloquear: si el conteo es 0 no se crea nada;
+   * si es mayor, se crea la fila vacía para poder bloquearla y que un ingreso
+   * concurrente no se sume encima del conteo.
+   */
+  private async lockedBalanceAt(
+    client: PrismaClientLike,
+    itemId: string,
+    branchId: string,
+    countedQuantity: number,
+  ): Promise<number> {
+    const existing = await client.stock.findUnique({
+      where: { itemId_branchId: { itemId, branchId } },
+      select: { id: true },
+    });
+    if (!existing) {
+      if (countedQuantity === 0) return 0;
+      await client.stock.upsert({
+        where: { itemId_branchId: { itemId, branchId } },
+        create: { itemId, branchId, quantity: 0 },
+        update: {},
+      });
+    }
+
+    const rows = await client.$queryRaw<{ quantity: number }[]>`
+      SELECT quantity FROM stock
+      WHERE item_id = ${itemId} AND branch_id = ${branchId}
+      FOR UPDATE`;
+    return rows[0]?.quantity ?? 0;
   }
 
   private async findItem(client: PrismaClientLike, itemId: string) {

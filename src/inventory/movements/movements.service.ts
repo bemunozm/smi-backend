@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { MovementDirection, Prisma, StockMovement } from '@prisma/client';
 
+import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StockService } from '../stock.service';
 import { CreateMovementDto } from './dto/create-movement.dto';
@@ -55,6 +56,7 @@ export class MovementsService {
     performedById: string,
   ): Promise<StockMovement> {
     const input = {
+      id: dto.id,
       itemId: dto.itemId,
       branchId: dto.branchId,
       quantity: dto.quantity,
@@ -66,8 +68,24 @@ export class MovementsService {
       notes: dto.notes ?? null,
     };
 
-    return dto.direction === MovementDirection.IN
-      ? this.stock.receive(input)
-      : this.stock.issue(input);
+    // Con `id` del cliente, el reintento propio devuelve el asiento ya
+    // registrado (con su `resultingBalance` de entonces) sin mover saldo.
+    return createOrReturn({
+      id: dto.id,
+      userId: performedById,
+      conflictMessage: 'Ya existe un movimiento con ese id de otro usuario',
+      findExisting: async (id) => {
+        const movement = await this.prisma.stockMovement.findUnique({
+          where: { id },
+        });
+        return movement
+          ? { ownerId: movement.performedById, result: movement }
+          : null;
+      },
+      create: () =>
+        dto.direction === MovementDirection.IN
+          ? this.stock.receive(input)
+          : this.stock.issue(input),
+    });
   }
 }

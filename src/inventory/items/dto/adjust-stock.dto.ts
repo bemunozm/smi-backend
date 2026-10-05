@@ -3,6 +3,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
   Min,
   MinLength,
@@ -16,6 +17,12 @@ import {
  * faltante todo lo que está guardado en otra sucursal.
  */
 export class AdjustStockDto {
+  /** UUID v4 generado por el cliente: PK del asiento de ajuste, para que el
+   * reenvío offline del mismo conteo no lo duplique. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
   @IsString()
   @MinLength(1)
   branchId!: string;
@@ -25,6 +32,16 @@ export class AdjustStockDto {
   @IsNumber()
   @Min(0)
   countedQuantity!: number;
+
+  /**
+   * Existencia que quien contó veía en el sistema. Si otro movimiento la
+   * cambió mientras contaba, el conteo se rechaza (409 `STALE_UPDATE`).
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  expectedQuantity?: number;
 
   @IsOptional()
   @IsString()
