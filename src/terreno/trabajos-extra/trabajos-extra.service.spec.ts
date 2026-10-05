@@ -33,6 +33,8 @@ describe('TrabajosExtraService', () => {
     registroHorometro: { findFirst: jest.fn() },
     // La edición y su registro de cambios van en una sola transacción.
     $transaction: jest.fn(),
+    // Bloqueo de la fila (`FOR UPDATE`) cuando la edición trae `X-Expected`.
+    $queryRaw: jest.fn(),
   };
   const assertActive = jest.fn();
   const eventEmitter = { emit: jest.fn() };
@@ -608,6 +610,83 @@ describe('TrabajosExtraService', () => {
         });
         expect(args.omit).toEqual({ createdById: true });
       }
+    });
+
+    describe('X-Expected', () => {
+      it('sin precondición no bloquea la fila: el comportamiento de siempre', async () => {
+        await service.update('t1', { faena: 'Kainita' }, editor);
+
+        expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      });
+
+      it('con la base vigente aplica el cambio bajo bloqueo', async () => {
+        const res = await service.update(
+          't1',
+          { horometroFinal: 1214.5 },
+          editor,
+          { horometroFinal: 1212, actividades: ['REGULACION_CARGA'] },
+        );
+
+        expect(res.totalHoras).toBe(14.5);
+        expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+        expect(changeLog.record).toHaveBeenCalledTimes(1);
+      });
+
+      it('si el dato ya vale lo deseado el reintento pasa sin escribir ni avisar', async () => {
+        prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+          ...guardado,
+          horometroFinal: 1214.5,
+          totalHoras: 14.5,
+        });
+
+        await service.update('t1', { horometroFinal: 1214.5 }, editor, {
+          horometroFinal: 1212,
+        });
+
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(eventEmitter.emit).not.toHaveBeenCalled();
+      });
+
+      it('si alguien más lo cambió responde 409 STALE_UPDATE sin escribir', async () => {
+        const result = service.update(
+          't1',
+          { horometroFinal: 1214.5 },
+          editor,
+          {
+            horometroFinal: 1100,
+          },
+        );
+
+        await expect(result).rejects.toBeInstanceOf(ConflictException);
+        await expect(result).rejects.toMatchObject({
+          response: {
+            code: 'STALE_UPDATE',
+            message: expect.stringContaining('Horómetro final') as string,
+          },
+        });
+        expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
+      });
+
+      it('compara las actividades por contenido, no por referencia', async () => {
+        await expect(
+          service.update('t1', { faena: 'Kainita' }, editor, {
+            actividades: ['REGULACION_CARGA'],
+          }),
+        ).resolves.toBeDefined();
+      });
+
+      it('un cambio ajeno entre la lectura y el bloqueo también da 409', async () => {
+        prisma.trabajoExtraordinario.findUnique
+          .mockResolvedValueOnce(guardado)
+          .mockResolvedValueOnce({ ...guardado, faena: 'Otra' });
+
+        await expect(
+          service.update('t1', { faena: 'Kainita' }, editor, {
+            faena: 'Patillo',
+          }),
+        ).rejects.toMatchObject({ response: { code: 'STALE_UPDATE' } });
+        expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
+      });
     });
   });
 

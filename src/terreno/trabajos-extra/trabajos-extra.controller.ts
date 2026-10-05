@@ -1,8 +1,20 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import {
+  EXPECTED_HEADER,
+  parseExpectedHeader,
+} from '../../common/concurrency/expected-fields';
 import { TrabajosExtraService } from './trabajos-extra.service';
 import { CreateTrabajoExtraDto } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
@@ -43,13 +55,19 @@ export class TrabajosExtraController {
     @Param('id') id: string,
     @Body() dto: UpdateTrabajoExtraDto,
     @Session() session: UserSession,
+    @Headers(EXPECTED_HEADER) expectedHeader?: string,
   ) {
     const editor = {
       id: session.user.id,
       name: session.user.name?.trim() || session.user.email,
     };
     return {
-      data: await this.service.update(id, dto, editor),
+      data: await this.service.update(
+        id,
+        dto,
+        editor,
+        parseExpectedHeader(expectedHeader),
+      ),
       message: 'Trabajo actualizado. Se avisó al administrador.',
     };
   }

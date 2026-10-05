@@ -8,10 +8,15 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import type { TrabajoExtraordinario } from '@prisma/client';
 
+import {
+  assertExpected,
+  type ExpectedFields,
+} from '../../common/concurrency/expected-fields';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OperatorsService } from '../../operators/operators.service';
 import { assertReasonableCapturedAt } from '../../shifts/capture-time';
+import { formatBusinessDate } from '../../shifts/date-only';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type { RecordEditedEvent } from '../../common/events/domain-events';
 import {
@@ -67,6 +72,22 @@ type DatosTrabajo = Pick<
   | 'descripcion'
   | 'observaciones'
 >;
+
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
+const CAMPO_LABEL: Record<keyof DatosTrabajo, string> = {
+  equipoId: 'Equipo',
+  operatorId: 'Operador',
+  operador: 'Operador',
+  faena: 'Faena',
+  turno: 'Turno',
+  horometroInicial: 'Horómetro inicial',
+  horometroFinal: 'Horómetro final',
+  totalHoras: 'Total de horas',
+  actividades: 'Actividades',
+  otraActividad: 'Otra actividad',
+  descripcion: 'Descripción',
+  observaciones: 'Observaciones',
+};
 
 const horas = (v: unknown) =>
   `${Number(v).toLocaleString('es-CL', { maximumFractionDigits: 2 })} h`;
@@ -220,6 +241,7 @@ export class TrabajosExtraService {
     id: string,
     dto: UpdateTrabajoExtraDto,
     editor: Editor,
+    expected?: ExpectedFields,
   ): Promise<TrabajoExtraResponse> {
     const actual = await this.prisma.trabajoExtraordinario.findUnique({
       where: { id },
@@ -272,6 +294,14 @@ export class TrabajosExtraService {
           : actual.observaciones,
     });
 
+    // Falla rápido, sin tocar la base; se repite bajo bloqueo en la transacción.
+    assertExpected(
+      { ...this.datosDe(actual) },
+      expected,
+      { ...nuevo },
+      CAMPO_LABEL,
+    );
+
     const codigos: Record<string, string> = {
       [actual.equipoId]: actual.equipo.internalCode,
       [nuevo.equipoId]: codigoNuevo,
@@ -298,6 +328,21 @@ export class TrabajosExtraService {
     if (cambios.length === 0) return actual;
 
     const editado = await this.prisma.$transaction(async (tx) => {
+      if (expected) {
+        // Entre la lectura de arriba y esta transacción otra edición pudo
+        // aplicarse: se relee con la fila bloqueada antes de pisarla.
+        await tx.$queryRaw`SELECT id FROM "TrabajoExtraordinario" WHERE id = ${id} FOR UPDATE`;
+        const vigente = await tx.trabajoExtraordinario.findUnique({
+          where: { id },
+        });
+        if (!vigente) throw new NotFoundException('Registro no encontrado');
+        assertExpected(
+          { ...this.datosDe(vigente) },
+          expected,
+          { ...nuevo },
+          CAMPO_LABEL,
+        );
+      }
       const reg = await tx.trabajoExtraordinario.update({
         where: { id },
         data: nuevo,
@@ -311,7 +356,7 @@ export class TrabajosExtraService {
     this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, {
       entity: 'trabajo_extra',
       entityId: id,
-      entityLabel: `trabajo extra de ${codigoNuevo} del ${actual.fecha.toLocaleDateString('es-CL')}`,
+      entityLabel: `trabajo extra de ${codigoNuevo} del ${formatBusinessDate(actual.fecha)}`,
       editedBy: editor.name,
       changes: cambios.map(({ label, before, after }) => ({
         label,
@@ -321,6 +366,23 @@ export class TrabajosExtraService {
     } satisfies RecordEditedEvent);
 
     return editado;
+  }
+
+  private datosDe(t: DatosTrabajo): DatosTrabajo {
+    return {
+      equipoId: t.equipoId,
+      operatorId: t.operatorId,
+      operador: t.operador,
+      faena: t.faena,
+      turno: t.turno,
+      horometroInicial: t.horometroInicial,
+      horometroFinal: t.horometroFinal,
+      totalHoras: t.totalHoras,
+      actividades: t.actividades,
+      otraActividad: t.otraActividad,
+      descripcion: t.descripcion,
+      observaciones: t.observaciones,
+    };
   }
 
   /** Los cambios de un trabajo, del más reciente al más viejo. */

@@ -1,8 +1,20 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import {
+  EXPECTED_HEADER,
+  parseExpectedHeader,
+} from '../../common/concurrency/expected-fields';
 import { HallazgosService } from './hallazgos.service';
 import { CreateHallazgoDto } from './dto/create-hallazgo.dto';
 import { UpdateHallazgoDto } from './dto/update-hallazgo.dto';
@@ -45,13 +57,19 @@ export class HallazgosController {
     @Param('id') id: string,
     @Body() dto: UpdateHallazgoDto,
     @Session() session: UserSession,
+    @Headers(EXPECTED_HEADER) expectedHeader?: string,
   ) {
     const editor = {
       id: session.user.id,
       name: session.user.name?.trim() || session.user.email,
     };
     return {
-      data: await this.service.update(id, dto, editor),
+      data: await this.service.update(
+        id,
+        dto,
+        editor,
+        parseExpectedHeader(expectedHeader),
+      ),
       message: 'Hallazgo actualizado. Se avisó al administrador.',
     };
   }
