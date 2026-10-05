@@ -16,7 +16,7 @@ const LOCKABLE_TABLES = {
   actividad: 'actividad',
   registroHorometro: 'RegistroHorometro',
   hallazgo: 'Hallazgo',
-  trabajoExtra: 'TrabajoExtraordinario',
+  trabajoExtraordinario: 'TrabajoExtraordinario',
 } as const;
 
 export type LockableTable = keyof typeof LOCKABLE_TABLES;

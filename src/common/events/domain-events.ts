@@ -1,10 +1,9 @@
 /**
  * Contrato de eventos de dominio (Núcleo). Cada dominio (Terreno,
  * Mantenimiento, Inventario) emite estos eventos vía `EventEmitter2.emit(...)`
- * cuando corresponda — eso es una fase posterior de esta feature, NO se toca
- * aquí. Este archivo solo define el contrato compartido: nombre de evento +
- * shape del payload, para que `NotificationsModule` (el único consumidor por
- * ahora) pueda escucharlos con `@OnEvent(...)` de forma tipada.
+ * cuando corresponda. Este archivo solo define el contrato compartido:
+ * nombre de evento + shape del payload, para que `NotificationsModule` (el
+ * único consumidor) pueda escucharlos con `@OnEvent(...)` de forma tipada.
  *
  * Los payloads son deliberadamente livianos (ids + los campos mínimos para
  * armar un título/cuerpo de notificación) — si el listener necesita más
@@ -24,7 +23,7 @@ export const DOMAIN_EVENTS = {
 export type DomainEventName =
   (typeof DOMAIN_EVENTS)[keyof typeof DOMAIN_EVENTS];
 
-/** Emitido por Terreno (Alexander) al crear un Hallazgo. */
+/** Emitido por Terreno al crear un Hallazgo. */
 export interface HallazgoCreatedEvent {
   hallazgoId: string;
   equipoId?: string | null;
@@ -34,7 +33,7 @@ export interface HallazgoCreatedEvent {
   descripcion: string;
 }
 
-/** Emitido por Mantenimiento (Joaquín) al asignar una Orden de Trabajo. */
+/** Emitido por Mantenimiento al asignar una Orden de Trabajo. */
 export interface OrdenAssignedEvent {
   ordenId: string;
   equipoId?: string | null;
@@ -42,19 +41,19 @@ export interface OrdenAssignedEvent {
   titulo: string;
 }
 
-/** Emitido por Mantenimiento (Joaquín) al completar una Orden de Trabajo. */
+/** Emitido por Mantenimiento al completar una Orden de Trabajo. */
 export interface OrdenCompletedEvent {
   ordenId: string;
   equipoId?: string | null;
   titulo: string;
 }
 
-/** Emitido por Inventario (Amin) cuando un Insumo cruza su stockMinimo. */
+/** Emitido por Inventario cuando un Insumo cruza su stockMinimo. */
 export interface ItemLowStockEvent {
   itemId: string;
   itemName: string;
   /**
-   * La alerta es POR BODEGA (RFC-3): con existencias por sucursal, avisar
+   * La alerta es POR BODEGA: con existencias por sucursal, avisar
    * "quedan 3" sin decir dónde no le sirve a nadie — el bodeguero no sabe si
    * le habla a él.
    */
@@ -65,7 +64,7 @@ export interface ItemLowStockEvent {
 }
 
 /**
- * Emitido por `ShiftReportsService` (RFC Supervisión en Terreno) DESPUÉS de
+ * Emitido por `ShiftReportsService` DESPUÉS de
  * que la fila `ShiftExitReport` ya se confirmó en la base de
  * datos — nunca antes (ver `ShiftReportsService.create`). `fileKey` es la
  * key privada en el bucket (el listener la usa con
@@ -86,13 +85,14 @@ export interface ShiftExitReportSentEvent {
 }
 
 /**
- * Emitido por Terreno (Joaquín) al editar un registro ya enviado (Acta N.°
- * 004, R13). La edición no pide autorización, pero el administrador se entera
+ * Emitido al editar un registro ya enviado. La edición no pide autorización, pero el administrador se entera
  * de cada cambio: quién, sobre qué registro y qué dato pasó de qué a qué.
  */
 export interface RecordEditedEvent {
   entity: string;
   entityId: string;
+  /** Artículo con el que concuerda `entityLabel` («modificó el hallazgo», «modificó la tarjeta»). */
+  entityArticle: 'el' | 'la';
   /** Cómo se nombra el registro en el aviso: `trabajo extra de CM-003 del 01-10-2026`. */
   entityLabel: string;
   editedBy: string;

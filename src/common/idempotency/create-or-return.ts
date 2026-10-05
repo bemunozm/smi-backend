@@ -29,6 +29,27 @@ export interface CreateOrReturnOptions<T> {
 }
 
 /**
+ * Entrega una fila ya existente si es del usuario; si es de otro, 409
+ * `ID_CONFLICT`. Es el criterio de dueño de `createOrReturn`, expuesto para los
+ * flujos que descubren la fila ganadora por su cuenta.
+ */
+export async function resolveExisting<T>(
+  existing: ExistingRecord<T>,
+  userId: string,
+  conflictMessage: string,
+): Promise<T> {
+  if (existing.ownerId === userId) {
+    return typeof existing.result === 'function'
+      ? (existing.result as () => Promise<T>)()
+      : existing.result;
+  }
+  throw new ConflictException({
+    message: conflictMessage,
+    code: ERROR_CODES.ID_CONFLICT,
+  });
+}
+
+/**
  * Create idempotente por id del cliente, para la cola offline que reintenta
  * hasta tener respuesta.
  *
@@ -38,10 +59,13 @@ export interface CreateOrReturnOptions<T> {
  * movimientos de stock). Si el id lo ocupa otro usuario, o una fila sin
  * dueño, es 409 `ID_CONFLICT`.
  *
- * Si dos requests con el mismo id corren a la vez, el perdedor choca contra
- * la PK: se relee FUERA de la transacción (la de Postgres ya quedó abortada)
- * y se aplica el mismo criterio. Un choque contra cualquier otra columna única
- * no es una carrera y sigue su camino de error normal.
+ * Si dos requests con el mismo id corren a la vez, el perdedor puede fallar de
+ * cualquier forma: chocar contra la PK, o (en stock) encontrar el saldo ya
+ * descontado por la ganadora y responder `INSUFFICIENT_STOCK`. Por eso ante
+ * CUALQUIER error de `create()` se relee FUERA de la transacción (la de
+ * Postgres ya quedó abortada) y, si la fila existe, se resuelve con el mismo
+ * criterio de dueño; si no existe, el error original sigue su camino normal
+ * (un choque contra otra columna única, una regla de negocio, etc.).
  */
 export async function createOrReturn<T>(
   options: CreateOrReturnOptions<T>,
@@ -49,29 +73,31 @@ export async function createOrReturn<T>(
   const { id, userId, findExisting, create, conflictMessage } = options;
   if (!id) return create();
 
-  const resolve = async (existing: ExistingRecord<T>): Promise<T> => {
-    if (existing.ownerId === userId) {
-      return typeof existing.result === 'function'
-        ? (existing.result as () => Promise<T>)()
-        : existing.result;
-    }
-    throw new ConflictException({
-      message: conflictMessage,
-      code: ERROR_CODES.ID_CONFLICT,
-    });
-  };
-
   const existing = await findExisting(id);
-  if (existing) return resolve(existing);
+  if (existing) return resolveExisting(existing, userId, conflictMessage);
 
   try {
     return await create();
   } catch (error: unknown) {
-    if (isPrimaryKeyViolation(error)) {
-      const winner = await findExisting(id);
-      if (winner) return resolve(winner);
-    }
+    const winner = await findWinner(id, findExisting, error);
+    if (winner) return resolveExisting(winner, userId, conflictMessage);
     throw error;
+  }
+}
+
+/**
+ * Relee la fila ganadora tras un `create()` fallido. Si la relectura falla, se
+ * propaga el error ORIGINAL: es el que explica qué pasó con este intento.
+ */
+async function findWinner<T>(
+  id: string,
+  findExisting: (id: string) => Promise<ExistingRecord<T> | null>,
+  originalError: unknown,
+): Promise<ExistingRecord<T> | null> {
+  try {
+    return await findExisting(id);
+  } catch {
+    throw originalError;
   }
 }
 

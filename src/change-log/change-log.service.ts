@@ -71,7 +71,7 @@ export function diffFields<T>(
 }
 
 /**
- * Trazabilidad de cambios a registros ya enviados (Acta N.° 004, R13).
+ * Trazabilidad de cambios a registros ya enviados.
  * Ver el modelo `ChangeLog` en `schema.prisma`.
  */
 @Injectable()
@@ -81,7 +81,8 @@ export class ChangeLogService {
   /**
    * Guarda un cambio. Recibe el cliente de la transacción para que la fila
    * se escriba junto con la edición o no se escriba: una edición sin su
-   * registro es justo lo que R13 prohíbe.
+   * registro es justo lo que el historial debe impedir:
+   * reescribir un cambio ya registrado.
    */
   record(
     tx: Prisma.TransactionClient,
