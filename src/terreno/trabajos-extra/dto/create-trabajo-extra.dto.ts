@@ -27,6 +27,21 @@ export const ACTIVIDADES = [
   'OTRO',
 ] as const;
 
+/**
+ * Cómo se lee cada actividad en el registro de cambios y en el aviso al
+ * administrador. Repite las etiquetas de la pantalla (`types/trabajosExtra.ts`
+ * en el frontend): un aviso que dijera `HACER_PETRIL` no lo entiende nadie.
+ */
+export const ACTIVIDAD_LABEL: Record<string, string> = {
+  REGULACION_CARGA: 'Regulación y carga',
+  LIMPIEZA_CANCHA: 'Limpieza de cancha',
+  SOLTAR_MATERIAL: 'Soltar material',
+  LIMPIEZA_SILOS: 'Limpieza de silos',
+  HACER_PETRIL: 'Hacer pretil',
+  ARREGLO_CANCHA: 'Arreglo cancha',
+  OTRO: 'Otro',
+};
+
 export class CreateTrabajoExtraDto {
   @IsString()
   equipoId!: string;
