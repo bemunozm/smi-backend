@@ -14,10 +14,8 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
-import {
-  EXPECTED_HEADER,
-  parseExpectedHeader,
-} from '../../common/concurrency/expected-fields';
+import { ExpectedFields } from '../../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { QueryCategoriesDto } from './dto/query-categories.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -67,11 +65,11 @@ export class CategoriesController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateCategoryDto,
-    @Headers(EXPECTED_HEADER) expected?: string,
+    @ExpectedFields() expected?: ExpectedValues,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto, parseExpectedHeader(expected)),
+      data: await this.service.update(id, dto, expected),
       message: 'Categoría actualizada',
     };
   }

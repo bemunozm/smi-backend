@@ -9,11 +9,12 @@ import {
   assertExpectedLocked,
   definedFields,
 } from '../../common/concurrency/assert-expected-locked';
-import type { ExpectedFields } from '../../common/concurrency/expected-fields';
+import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import {
   createOrReturn,
   isPrimaryKeyViolation,
+  resolveExisting,
 } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StockService, type PendingStockEvents } from '../stock.service';
@@ -38,9 +39,6 @@ const STOCK_INCLUDE = {
   },
   category: { select: { id: true, name: true } },
 } satisfies Prisma.InventoryItemInclude;
-
-/** `createdById` es interno: no sale en ninguna respuesta. */
-const ITEM_OMIT = { createdById: true } satisfies Prisma.InventoryItemOmit;
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
 const CAMPO_LABEL: Record<string, string> = {
@@ -78,7 +76,6 @@ export class ItemsService {
     return this.prisma.inventoryItem.findMany({
       where: this.buildWhere(filters),
       include: STOCK_INCLUDE,
-      omit: ITEM_OMIT,
       orderBy: { name: 'asc' },
     });
   }
@@ -87,7 +84,6 @@ export class ItemsService {
     const item = await this.prisma.inventoryItem.findUnique({
       where: { id },
       include: STOCK_INCLUDE,
-      omit: ITEM_OMIT,
     });
     if (!item) throw new NotFoundException(`Ítem "${id}" no encontrado`);
     return item;
@@ -168,7 +164,6 @@ export class ItemsService {
         return tx.inventoryItem.findUniqueOrThrow({
           where: { id: created.id },
           include: STOCK_INCLUDE,
-          omit: ITEM_OMIT,
         });
       });
       this.stock.emitPending(events);
@@ -181,14 +176,13 @@ export class ItemsService {
     }
   }
 
-  async update(id: string, dto: UpdateItemDto, expected?: ExpectedFields) {
+  async update(id: string, dto: UpdateItemDto, expected?: ExpectedValues) {
     await this.findOne(id);
     const write = (db: Prisma.TransactionClient) =>
       db.inventoryItem.update({
         where: { id },
         data: dto,
         include: STOCK_INCLUDE,
-        omit: ITEM_OMIT,
       });
     try {
       if (!expected) return await write(this.prisma);
@@ -220,29 +214,33 @@ export class ItemsService {
    * veces deja UN solo asiento.
    */
   async adjust(id: string, dto: AdjustStockDto, performedById: string) {
+    const conflictMessage =
+      'Ya existe un movimiento con ese id de otro usuario';
+    const findExisting = async (movementId: string) => {
+      const movement = await this.prisma.stockMovement.findUnique({
+        where: { id: movementId },
+      });
+      if (!movement) return null;
+      if (
+        movement.itemId !== id ||
+        movement.reason !== MovementReason.PHYSICAL_ADJUSTMENT
+      ) {
+        throw new ConflictException({
+          message: 'Ya existe un movimiento con ese id que no es este conteo',
+          code: ERROR_CODES.ID_CONFLICT,
+        });
+      }
+      return {
+        ownerId: movement.performedById,
+        result: async () => ({ item: await this.findOne(id), movement }),
+      };
+    };
+
     return createOrReturn({
       id: dto.id,
       userId: performedById,
-      conflictMessage: 'Ya existe un movimiento con ese id de otro usuario',
-      findExisting: async (movementId) => {
-        const movement = await this.prisma.stockMovement.findUnique({
-          where: { id: movementId },
-        });
-        if (!movement) return null;
-        if (
-          movement.itemId !== id ||
-          movement.reason !== MovementReason.PHYSICAL_ADJUSTMENT
-        ) {
-          throw new ConflictException({
-            message: 'Ya existe un movimiento con ese id que no es este conteo',
-            code: ERROR_CODES.ID_CONFLICT,
-          });
-        }
-        return {
-          ownerId: movement.performedById,
-          result: async () => ({ item: await this.findOne(id), movement }),
-        };
-      },
+      conflictMessage,
+      findExisting,
       create: async () => {
         await this.findOne(id);
 
@@ -255,6 +253,17 @@ export class ItemsService {
           performedById,
           notes: dto.notes,
         });
+
+        if (!movement && dto.id) {
+          // Sin asiento: el conteo coincidía con el sistema, o una request con
+          // el MISMO id ganó la carrera y ya lo aplicó (esta vio la diferencia
+          // en cero tras esperar el bloqueo). Se relee para no responder
+          // `movement: null` a un reintento cuyo asiento sí existe.
+          const winner = await findExisting(dto.id);
+          if (winner) {
+            return resolveExisting(winner, performedById, conflictMessage);
+          }
+        }
 
         return { item: await this.findOne(id), movement };
       },

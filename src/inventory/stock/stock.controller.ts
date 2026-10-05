@@ -35,9 +35,8 @@ export class StockController {
 
   /**
    * Traspaso entre sucursales. ADMIN y SUPERVISOR: mueve existencia entre
-   * bodegas, que es una decisión de operación y no de taller. (La autorización
-   * definitiva quedó abierta en RFC-3 — si el equipo define otra cosa, se
-   * cambia acá.)
+   * bodegas, que es una decisión de operación y no de taller. (Si el equipo define otra
+   * autorización para traspasos, se cambia acá.)
    */
   @Post('transfer')
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])

@@ -29,6 +29,7 @@ describe('MovementsService.create', () => {
     itemId: 'item_1',
     branchId: 'branch_1',
     direction: MovementDirection.OUT,
+    reason: MovementReason.INTERVENTION,
     quantity: 5,
     resultingBalance: 45,
     performedById: USER,
@@ -79,6 +80,54 @@ describe('MovementsService.create', () => {
       response: { code: ERROR_CODES.ID_CONFLICT },
     });
     expect(issue).not.toHaveBeenCalled();
+  });
+
+  describe('el replay solo acepta un movimiento manual del mismo tipo', () => {
+    it.each([
+      ['un traspaso', MovementReason.TRANSFER],
+      ['un ajuste por conteo', MovementReason.PHYSICAL_ADJUSTMENT],
+    ])(
+      'un id que es %s es 409 ID_CONFLICT, aunque sea del mismo usuario',
+      async (_label, reason) => {
+        findUnique.mockResolvedValue({ ...stored, reason });
+
+        await expect(service.create(dto, USER)).rejects.toMatchObject({
+          response: { code: ERROR_CODES.ID_CONFLICT },
+        });
+        expect(issue).not.toHaveBeenCalled();
+        expect(receive).not.toHaveBeenCalled();
+      },
+    );
+
+    it('un id de una entrada reutilizado en una salida es 409 ID_CONFLICT', async () => {
+      findUnique.mockResolvedValue({
+        ...stored,
+        direction: MovementDirection.IN,
+      });
+
+      await expect(service.create(dto, USER)).rejects.toMatchObject({
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+    });
+
+    it('un id de otro ítem es 409 ID_CONFLICT', async () => {
+      findUnique.mockResolvedValue({ ...stored, itemId: 'item_2' });
+
+      await expect(service.create(dto, USER)).rejects.toMatchObject({
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+    });
+  });
+
+  it('reintento concurrente de una salida ya aplicada: devuelve el asiento ganador, no INSUFFICIENT_STOCK', async () => {
+    findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(stored);
+    issue.mockRejectedValue(
+      Object.assign(new Error('Existencia insuficiente'), {
+        response: { code: ERROR_CODES.INSUFFICIENT_STOCK },
+      }),
+    );
+
+    await expect(service.create(dto, USER)).resolves.toBe(stored);
   });
 
   it('carrera sobre la PK: el perdedor devuelve el asiento ganador', async () => {

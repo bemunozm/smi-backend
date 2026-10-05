@@ -338,6 +338,30 @@ describe('ItemsService', () => {
       );
     });
 
+    it('el perdedor de una carrera con el mismo id (ve diferencia 0 tras el bloqueo) devuelve el asiento de la ganadora, no movement null', async () => {
+      movementFindUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(movement);
+      findUnique.mockResolvedValue({ id: 'i1' });
+      adjustToCount.mockResolvedValue(null);
+
+      const res = await service.adjust('i1', dto, 'u1');
+
+      expect(res.movement).toBe(movement);
+    });
+
+    it('si la que ganó la carrera con ese id es de otro usuario: 409 ID_CONFLICT', async () => {
+      movementFindUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ ...movement, performedById: 'otro' });
+      findUnique.mockResolvedValue({ id: 'i1' });
+      adjustToCount.mockResolvedValue(null);
+
+      await expect(service.adjust('i1', dto, 'u1')).rejects.toMatchObject({
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+    });
+
     it('un conteo que coincide no deja asiento (movement null)', async () => {
       movementFindUnique.mockResolvedValue(null);
       findUnique.mockResolvedValue({ id: 'i1' });

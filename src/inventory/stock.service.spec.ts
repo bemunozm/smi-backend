@@ -411,7 +411,7 @@ describe('StockService', () => {
         'user_1',
       );
 
-      // Es la decisión de RFC-3 D4: el saldo de cada bodega se deriva leyendo
+      // El saldo de cada bodega se deriva leyendo
       // solo sus propios asientos, sin interpretar el signo según de qué lado
       // se mire.
       expect(result.out).toMatchObject({
@@ -487,8 +487,84 @@ describe('StockService', () => {
         ),
       ).rejects.toBeInstanceOf(ConflictException);
 
-      expect(stockUpsert).not.toHaveBeenCalled();
+      // La fila vacía del destino solo existe para bloquearla; la entrada nunca
+      // llegó a acreditarse.
+      expect(stockUpsert).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: { quantity: { increment: 10 } },
+        }),
+      );
       expect(movementCreate).not.toHaveBeenCalled();
+    });
+
+    describe('bloqueo de las filas de saldo', () => {
+      /** Las `branchId` bloqueadas con `FOR UPDATE`, en el orden en que se pidieron. */
+      function lockedBranchIds(): string[] {
+        return queryRaw.mock.calls.map((call: unknown[]) => call[2] as string);
+      }
+
+      const transferOf = (
+        sourceBranchId: string,
+        destinationBranchId: string,
+      ) =>
+        service.transfer(
+          {
+            itemId: 'item_1',
+            sourceBranchId,
+            destinationBranchId,
+            quantity: 10,
+          },
+          'user_1',
+        );
+
+      it('bloquea las dos filas en orden por branchId, sin importar la dirección', async () => {
+        mockTransferOk();
+
+        await transferOf('branch_1', 'branch_2');
+        const ida = lockedBranchIds();
+        queryRaw.mockClear();
+        await transferOf('branch_2', 'branch_1');
+        const vuelta = lockedBranchIds();
+
+        // A→B y B→A piden las filas en el mismo orden: no pueden esperarse
+        // mutuamente (deadlock).
+        expect(ida).toEqual(['branch_1', 'branch_2']);
+        expect(vuelta).toEqual(['branch_1', 'branch_2']);
+      });
+
+      it('bloquea ANTES de mover el saldo', async () => {
+        mockTransferOk();
+        const orden: string[] = [];
+        queryRaw.mockImplementation(() => {
+          orden.push('lock');
+          return Promise.resolve([]);
+        });
+        stockUpdateMany.mockImplementation(() => {
+          orden.push('descuento');
+          return Promise.resolve({ count: 1 });
+        });
+
+        await transferOf('branch_1', 'branch_2');
+
+        expect(orden).toEqual(['lock', 'lock', 'descuento']);
+      });
+
+      it('crea vacía solo la fila del destino para poder bloquearla', async () => {
+        mockTransferOk();
+
+        await transferOf('branch_2', 'branch_1');
+
+        const llamadas = stockUpsert.mock.calls as [
+          { create: { itemId: string; branchId: string; quantity: number } },
+        ][];
+        const vacias = llamadas
+          .map(([args]) => args)
+          .filter((args) => args.create.quantity === 0);
+        expect(vacias).toHaveLength(1);
+        expect(vacias[0]).toMatchObject({
+          create: { itemId: 'item_1', branchId: 'branch_1', quantity: 0 },
+        });
+      });
     });
   });
 
@@ -800,6 +876,36 @@ describe('StockService', () => {
       expect(stockUpdateMany).not.toHaveBeenCalled();
       expect(movementCreate).not.toHaveBeenCalled();
       expect(emit).not.toHaveBeenCalled();
+    });
+
+    it('la entrada del replay se identifica por ítem, destino, origen y autor, no solo por la reference', async () => {
+      movementFindUnique.mockResolvedValue({
+        id: ID,
+        itemId: 'item_1',
+        branchId: 'branch_1',
+        destinationBranchId: 'branch_2',
+        direction: MovementDirection.OUT,
+        reason: MovementReason.TRANSFER,
+        reference: `transfer_${ID}`,
+        performedById: 'user_1',
+      });
+      movementFindFirstOrThrow.mockResolvedValue({ id: 'mov_in' });
+      branchFindMany.mockResolvedValue([]);
+
+      await service.transfer(input, 'user_1');
+
+      // Un asiento manual con la misma `reference` no cumple estos filtros.
+      expect(movementFindFirstOrThrow).toHaveBeenCalledWith({
+        where: {
+          reference: `transfer_${ID}`,
+          reason: MovementReason.TRANSFER,
+          direction: MovementDirection.IN,
+          itemId: 'item_1',
+          branchId: 'branch_2',
+          sourceBranchId: 'branch_1',
+          performedById: 'user_1',
+        },
+      });
     });
 
     it('id ocupado por otro usuario: 409 ID_CONFLICT', async () => {

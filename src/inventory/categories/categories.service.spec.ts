@@ -67,7 +67,6 @@ describe('CategoriesService', () => {
       expect(create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: { name: 'Filtros', createdById: USER },
-          omit: { createdById: true },
         }),
       );
     });

@@ -9,7 +9,7 @@ import {
   assertExpectedLocked,
   definedFields,
 } from '../../common/concurrency/assert-expected-locked';
-import type { ExpectedFields } from '../../common/concurrency/expected-fields';
+import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import {
   createOrReturn,
   isPrimaryKeyViolation,
@@ -27,11 +27,6 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 const WITH_ITEM_COUNT = {
   _count: { select: { items: true } },
 } satisfies Prisma.ItemCategoryInclude;
-
-/** `createdById` es interno: no sale en ninguna respuesta. */
-const CATEGORY_OMIT = {
-  createdById: true,
-} satisfies Prisma.ItemCategoryOmit;
 
 const CAMPO_LABEL: Record<string, string> = { name: 'Nombre' };
 
@@ -62,7 +57,6 @@ export class CategoriesService {
             },
           }
         : WITH_ITEM_COUNT,
-      omit: CATEGORY_OMIT,
       orderBy: { name: 'asc' },
     });
   }
@@ -71,7 +65,6 @@ export class CategoriesService {
     const category = await this.prisma.itemCategory.findUnique({
       where: { id },
       include: WITH_ITEM_COUNT,
-      omit: CATEGORY_OMIT,
     });
     if (!category) {
       throw new NotFoundException(`Categoría "${id}" no encontrada`);
@@ -102,7 +95,6 @@ export class CategoriesService {
               createdById: userId,
             },
             include: WITH_ITEM_COUNT,
-            omit: CATEGORY_OMIT,
           });
         } catch (error: unknown) {
           // Un choque con la PK es la carrera de dos reintentos con el mismo
@@ -114,7 +106,7 @@ export class CategoriesService {
     });
   }
 
-  async update(id: string, dto: UpdateCategoryDto, expected?: ExpectedFields) {
+  async update(id: string, dto: UpdateCategoryDto, expected?: ExpectedValues) {
     await this.findOne(id);
     if (dto.name) await this.assertNombreLibre(dto.name, id);
 
@@ -123,7 +115,6 @@ export class CategoriesService {
         where: { id },
         data: dto,
         include: WITH_ITEM_COUNT,
-        omit: CATEGORY_OMIT,
       });
     try {
       if (!expected) return await write(this.prisma);

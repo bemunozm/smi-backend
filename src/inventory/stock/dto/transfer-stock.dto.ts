@@ -15,7 +15,7 @@ import {
  *
  * El traspaso NO es un asiento con dos sucursales: son **dos** asientos (salida
  * en el origen + entrada en el destino) que comparten `reference` y llevan
- * `reason = TRANSFER` (RFC-3 D4). Así el saldo de cada bodega se deriva leyendo
+ * `reason = TRANSFER`. Así el saldo de cada bodega se deriva leyendo
  * únicamente sus propios asientos, sin tener que interpretar el signo según de
  * qué lado se mire.
  */

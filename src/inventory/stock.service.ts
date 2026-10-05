@@ -101,13 +101,14 @@ export interface AdjustToCountInput {
  * siempre cuadra con la existencia: no hay forma de mover uno sin el otro.
  *
  * A diferencia del modelo anterior, **no hay total denormalizado que mantener**
- * (RFC-3): `Stock` es la única fuente del saldo y el consolidado se calcula
+ * `Stock` es la única fuente del saldo y el consolidado se calcula
  * sumando sus filas.
  *
  * ## Uso desde otro dominio
  *
  * ```ts
- * await this.prisma.$transaction(async (tx) => {
+ * const events: PendingStockEvents = [];
+ * const intervention = await this.prisma.$transaction(async (tx) => {
  *   const intervention = await tx.intervencion.create({ data: { ... } });
  *
  *   for (const line of dto.items) {
@@ -121,12 +122,15 @@ export interface AdjustToCountInput {
  *         equipmentId: order.equipmentId,
  *         reference: intervention.id,
  *       },
- *       tx, // ← la bitácora y los descuentos son todo-o-nada
+ *       { tx, events }, // ← la bitácora y los descuentos son todo-o-nada
  *     );
  *   }
  *
  *   return intervention;
  * });
+ * // Los avisos (`ITEM_LOW_STOCK`) se emiten SOLO tras confirmar la
+ * // transacción: dentro de ella, un rollback dejaría avisos de algo que no pasó.
+ * this.stock.emitPending(events);
  * ```
  *
  * Si algún ítem no alcanza EN ESA BODEGA, `issue` lanza `ConflictException`
@@ -268,7 +272,7 @@ export class StockService {
   /**
    * Traspaso entre bodegas: **dos asientos en UNA transacción** (salida en el
    * origen + entrada en el destino) que comparten `reference` y llevan
-   * `reason = TRANSFER` (RFC-3 D4).
+   * `reason = TRANSFER`.
    *
    * Que sea una sola transacción es lo que impide el peor resultado posible:
    * que la existencia salga de una bodega y no llegue a la otra. Si el origen
@@ -329,11 +333,18 @@ export class StockService {
       ownerId: out.performedById,
       result: async () => {
         const [incoming, branches] = await Promise.all([
+          // La entrada se identifica por TODO lo que la hace la contraparte de
+          // esta salida: la `reference` sola la puede repetir un asiento
+          // manual con el mismo texto.
           this.prisma.stockMovement.findFirstOrThrow({
             where: {
               reference,
               reason: MovementReason.TRANSFER,
               direction: MovementDirection.IN,
+              itemId: out.itemId,
+              branchId: destinationBranchId,
+              sourceBranchId: out.branchId,
+              performedById: out.performedById,
             },
           }),
           this.prisma.branch.findMany({
@@ -387,6 +398,13 @@ export class StockService {
 
     const events: PendingStockEvents = [];
     const result = await this.prisma.$transaction(async (tx) => {
+      await this.lockTransferRows(
+        tx,
+        input.itemId,
+        input.sourceBranchId,
+        input.destinationBranchId,
+      );
+
       const outgoing = await this.applyOutgoing(
         tx,
         {
@@ -438,6 +456,37 @@ export class StockService {
 
     this.emitPending(events);
     return result;
+  }
+
+  /**
+   * Bloquea las dos filas de saldo del traspaso EN ORDEN por `branchId`, antes
+   * de mover nada. Sin un orden común, A→B y B→A del mismo ítem se esperan
+   * entre sí (cada una retiene el saldo de su origen y pide el del destino) y
+   * Postgres aborta una con un deadlock. La fila del destino puede no existir
+   * todavía: se crea vacía (se revierte con la transacción si el traspaso
+   * falla) para tener algo que bloquear. La del origen no se crea: sin ella el
+   * traspaso falla por existencia insuficiente.
+   */
+  private async lockTransferRows(
+    client: PrismaClientLike,
+    itemId: string,
+    sourceBranchId: string,
+    destinationBranchId: string,
+  ): Promise<void> {
+    const branchIds = [sourceBranchId, destinationBranchId].sort();
+    for (const branchId of branchIds) {
+      if (branchId === destinationBranchId) {
+        await client.stock.upsert({
+          where: { itemId_branchId: { itemId, branchId } },
+          create: { itemId, branchId, quantity: 0 },
+          update: {},
+        });
+      }
+      await client.$queryRaw`
+        SELECT id FROM stock
+        WHERE item_id = ${itemId} AND branch_id = ${branchId}
+        FOR UPDATE`;
+    }
   }
 
   /**
