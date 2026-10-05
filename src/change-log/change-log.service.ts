@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
+import { normalizeComparable } from '../common/concurrency/expected-fields';
+import { formatNumber } from '../common/format/number';
 import { PrismaService } from '../common/prisma/prisma.service';
 
 /** Quién edita: sale de la sesión, nunca del body. */
@@ -43,9 +45,8 @@ export interface ComparableField<T> {
  */
 const vacio = (v: unknown): string => {
   if (v == null || v === '') return '—';
-  return typeof v === 'string' ||
-    typeof v === 'number' ||
-    typeof v === 'boolean'
+  if (typeof v === 'number') return formatNumber(v);
+  return typeof v === 'string' || typeof v === 'boolean'
     ? String(v)
     : JSON.stringify(v);
 };
@@ -53,9 +54,11 @@ const vacio = (v: unknown): string => {
 /**
  * Compara dos versiones de un registro y devuelve solo lo que cambió.
  *
- * Se compara el valor **legible** y no el crudo: dos arreglos con las mismas
- * actividades son distintos para `!==` pero iguales para quien lee el
- * registro, y un cambio que no se ve no tiene por qué avisarse.
+ * La comparación es por contenido (`normalizeComparable`): dos arreglos con
+ * las mismas actividades, un texto con espacios en los bordes o `null` frente
+ * a texto vacío no son un cambio. No se compara el texto legible porque el
+ * formato redondea los números, y una diferencia que se escribe en la base
+ * tiene que quedar en el historial aunque se vea igual.
  */
 export function diffFields<T>(
   before: T,
@@ -63,10 +66,15 @@ export function diffFields<T>(
   fields: readonly ComparableField<T>[],
 ): FieldChange[] {
   return fields.flatMap(({ field, label, format }) => {
+    if (
+      normalizeComparable(before[field]) === normalizeComparable(after[field])
+    ) {
+      return [];
+    }
     const leer = format ?? vacio;
-    const a = leer(before[field]);
-    const b = leer(after[field]);
-    return a === b ? [] : [{ field, label, before: a, after: b }];
+    return [
+      { field, label, before: leer(before[field]), after: leer(after[field]) },
+    ];
   });
 }
 

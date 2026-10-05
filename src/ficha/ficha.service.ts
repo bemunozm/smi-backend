@@ -9,6 +9,7 @@ import {
   TrabajoExtraordinario,
 } from '@prisma/client';
 
+import { formatNumber } from '../common/format/number';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { EventoFicha, FichaEquipo, ResumenFicha } from './dto/ficha.dto';
@@ -174,7 +175,7 @@ export class FichaService {
       id: registro.id,
       tipo: 'COMBUSTIBLE',
       fecha: registro.fecha.toISOString(),
-      titulo: `Carga de combustible ${registro.litros} L`,
+      titulo: `Carga de combustible ${formatNumber(registro.litros)} L`,
       detalle: `Tipo: ${registro.tipo}`,
       meta: {
         litros: registro.litros,
@@ -230,8 +231,10 @@ export class FichaService {
       tipo: 'HOROMETRO',
       fecha: registro.fecha.toISOString(),
       titulo: `Registro de horómetro — turno ${registro.turno}`,
-      detalle: `Operador: ${registro.operador}. Inicial: ${registro.valorInicial}${
-        registro.valorFinal !== null ? `, final: ${registro.valorFinal}` : ''
+      detalle: `Operador: ${registro.operador}. Inicial: ${formatNumber(registro.valorInicial)}${
+        registro.valorFinal !== null
+          ? `, final: ${formatNumber(registro.valorFinal)}`
+          : ''
       }`,
       meta: {
         operador: registro.operador,

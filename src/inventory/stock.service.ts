@@ -17,6 +17,7 @@ import {
   createOrReturn,
   type ExistingRecord,
 } from '../common/idempotency/create-or-return';
+import { formatNumber } from '../common/format/number';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type { ItemLowStockEvent } from '../common/events/domain-events';
@@ -227,7 +228,7 @@ export class StockService {
         performedById: input.performedById,
         notes:
           input.notes ??
-          `Conteo físico de ${item.name}: ${current} en sistema → ${input.countedQuantity} real`,
+          `Conteo físico de ${item.name}: ${formatNumber(current)} en sistema → ${formatNumber(input.countedQuantity)} real`,
       };
 
       return difference > 0
@@ -671,10 +672,13 @@ export class StockService {
     ]);
 
     const elsewhere = (total._sum.quantity ?? 0) - available;
-    const hint = elsewhere > 0 ? ` Hay ${elsewhere} en otras sucursales.` : '';
+    const hint =
+      elsewhere > 0
+        ? ` Hay ${formatNumber(elsewhere)} en otras sucursales.`
+        : '';
 
     return new ConflictException({
-      message: `Existencia insuficiente de "${item.name}" en ${branch?.name ?? 'la sucursal'}: disponible ${available}, solicitado ${input.quantity}.${hint}`,
+      message: `Existencia insuficiente de "${item.name}" en ${branch?.name ?? 'la sucursal'}: disponible ${formatNumber(available)}, solicitado ${formatNumber(input.quantity)}.${hint}`,
       code: ERROR_CODES.INSUFFICIENT_STOCK,
     });
   }

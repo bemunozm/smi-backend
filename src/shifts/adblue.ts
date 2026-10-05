@@ -1,3 +1,4 @@
+import { formatNumber } from '../common/format/number';
 import {
   registerDecorator,
   type ValidationArguments,
@@ -21,7 +22,7 @@ export function adBlueError(adBlue: unknown, liters: unknown): string | null {
       liters <= 0 ||
       liters > ADBLUE_MAX_LITERS
     ) {
-      return `Si cargaste AdBlue, indica los litros (mayor que 0 y hasta ${ADBLUE_MAX_LITERS} L)`;
+      return `Si cargaste AdBlue, indica los litros (mayor que 0 y hasta ${formatNumber(ADBLUE_MAX_LITERS)} L)`;
     }
     return null;
   }

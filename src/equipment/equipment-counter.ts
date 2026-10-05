@@ -24,6 +24,8 @@
 import { BadRequestException } from '@nestjs/common';
 import { ControlUnit, Prisma } from '@prisma/client';
 
+import { formatNumber } from '../common/format/number';
+
 /** Contadores vigentes de la ficha del equipo que gobiernan la reconciliación
  * : solo uno de los dos aplica, según `controlUnit`. */
 export interface EquipoContador {
@@ -66,7 +68,7 @@ export async function reconcileEquipmentCounter(
       return { belowPrevious: true };
     }
     throw new BadRequestException(
-      `La lectura (${nuevoValor} ${unidad}) no puede ser menor que el ${nombreContador} actual del equipo (${vigente} ${unidad})`,
+      `La lectura (${formatNumber(nuevoValor)} ${unidad}) no puede ser menor que el ${nombreContador} actual del equipo (${formatNumber(vigente)} ${unidad})`,
     );
   }
 

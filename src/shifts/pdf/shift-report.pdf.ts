@@ -5,6 +5,7 @@
  */
 import type { Content, Table, TDocumentDefinitions } from 'pdfmake/interfaces';
 
+import { formatNumber } from '../../common/format/number';
 import { BUSINESS_TIME_ZONE } from '../../common/dates/business-time';
 
 /** Encabezado de texto del PDF — la razón social del cliente hasta que llegue
@@ -73,13 +74,6 @@ export function formatSantiagoDateTime(date: Date): string {
     minute: '2-digit',
     hour12: false,
   }).format(date);
-}
-
-function formatNumber(value: number): string {
-  return value.toLocaleString('es-CL', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
 }
 
 function buildCardRow(card: ShiftReportCardInput): Table['body'][number] {

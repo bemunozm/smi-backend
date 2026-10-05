@@ -11,6 +11,7 @@ import { assertExpectedLocked } from '../../common/concurrency/assert-expected-l
 import { type ExpectedValues } from '../../common/concurrency/expected-fields';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { formatNumber } from '../../common/format/number';
 import { OperatorsService } from '../../operators/operators.service';
 import { resolveCapturedAt } from '../../common/dates/capture-time';
 import { formatBusinessDate } from '../../common/dates/business-time';
@@ -98,8 +99,7 @@ function datosDe(t: DatosTrabajo): DatosTrabajo {
   };
 }
 
-const horas = (v: unknown) =>
-  `${Number(v).toLocaleString('es-CL', { maximumFractionDigits: 2 })} h`;
+const horas = (v: unknown) => `${formatNumber(Number(v))} h`;
 
 @Injectable()
 export class TrabajosExtraService {
@@ -391,7 +391,7 @@ export class TrabajosExtraService {
      */
     if (datos.horometroFinal < datos.horometroInicial) {
       throw new BadRequestException(
-        `El horómetro final (${datos.horometroFinal}) no puede ser menor que el inicial (${datos.horometroInicial}).`,
+        `El horómetro final (${formatNumber(datos.horometroFinal)}) no puede ser menor que el inicial (${formatNumber(datos.horometroInicial)}).`,
       );
     }
 

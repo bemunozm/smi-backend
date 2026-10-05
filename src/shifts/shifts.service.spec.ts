@@ -1373,7 +1373,7 @@ describe('ShiftsService', () => {
               field: 'adBlueLiters',
               label: 'Litros de AdBlue',
               before: '—',
-              after: '12.5',
+              after: '12,5',
             },
           ],
         );

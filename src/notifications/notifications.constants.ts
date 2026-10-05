@@ -13,6 +13,7 @@ import type {
   RecordEditedEvent,
   ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
+import { formatNumber } from '../common/format/number';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 
 export interface NotificationTemplate {
@@ -103,7 +104,7 @@ export function buildItemLowStockTemplate(
     titulo: `Stock bajo: ${event.itemName}`,
     // La bodega va en el cuerpo porque es lo que vuelve accionable el aviso:
     // sin ella, quien lo lee no sabe si le toca a él reponer.
-    cuerpo: `Quedan ${event.quantity} en ${event.branchName} (mínimo ${event.minimumQuantity})`,
+    cuerpo: `Quedan ${formatNumber(event.quantity)} en ${event.branchName} (mínimo ${formatNumber(event.minimumQuantity)})`,
   };
 }
 

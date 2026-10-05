@@ -643,7 +643,7 @@ describe('HorometroService', () => {
             session,
           ),
         ).rejects.toThrow(
-          'La lectura (130 km) no puede ser menor que el kilometraje actual del equipo (5000 km)',
+          'La lectura (130 km) no puede ser menor que el kilometraje actual del equipo (5.000 km)',
         );
         expect(tx.equipment.updateMany).not.toHaveBeenCalled();
       });

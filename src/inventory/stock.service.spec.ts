@@ -623,6 +623,27 @@ describe('StockService', () => {
     });
   });
 
+  describe('cantidades en los mensajes', () => {
+    it('la existencia insuficiente se lee con coma decimal y separador de miles', async () => {
+      stockUpdateMany.mockResolvedValue({ count: 0 });
+      stockFindUnique.mockResolvedValue({ quantity: 1234.5 });
+      stockAggregate.mockResolvedValue({ _sum: { quantity: 3234.5 } });
+
+      const error = await service
+        .issue({
+          itemId: 'item_1',
+          branchId: 'branch_1',
+          quantity: 2000.75,
+          reason: MovementReason.INTERVENTION,
+        })
+        .catch((e: unknown) => e);
+
+      expect((error as ConflictException).message).toContain(
+        'disponible 1.234,5, solicitado 2.000,75. Hay 2.000 en otras sucursales.',
+      );
+    });
+  });
+
   describe('id del cliente en el asiento', () => {
     it('el asiento nace con el id que mandó el cliente', async () => {
       stockUpsert.mockResolvedValue({ quantity: 50 });

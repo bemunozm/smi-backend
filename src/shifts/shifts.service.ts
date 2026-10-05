@@ -44,6 +44,7 @@ import { toEditor } from '../change-log/current-editor.decorator';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
+import { formatNumber } from '../common/format/number';
 import { formatBusinessDate } from '../common/dates/business-time';
 import {
   computeClientClockSkewMs,
@@ -487,7 +488,7 @@ export class ShiftsService {
 
     if (dto.valorFinal < card.valorInicial) {
       throw new BadRequestException({
-        message: `La lectura final (${dto.valorFinal}) no puede ser menor que la inicial (${card.valorInicial})`,
+        message: `La lectura final (${formatNumber(dto.valorFinal)}) no puede ser menor que la inicial (${formatNumber(card.valorInicial)})`,
         code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
       });
     }
@@ -747,7 +748,7 @@ export class ShiftsService {
       despues.valorFinal < despues.valorInicial
     ) {
       throw new BadRequestException({
-        message: `La lectura final (${despues.valorFinal}) no puede ser menor que la inicial (${despues.valorInicial})`,
+        message: `La lectura final (${formatNumber(despues.valorFinal)}) no puede ser menor que la inicial (${formatNumber(despues.valorInicial)})`,
         code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
       });
     }
