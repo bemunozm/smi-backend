@@ -1,5 +1,5 @@
 /**
- * Gate e2e de las escrituras de oficina que la cola offline reintenta:
+ * Prueba e2e de las escrituras de oficina que la cola offline reintenta:
  * creates idempotentes por id del cliente, movimientos de stock sin duplicar,
  * precondición por campo (`X-Expected`) en los PATCH, y cierre de turno de
  * Flota con `closeClientId`. App Nest real (mismo pipeline que `main.ts`),
@@ -39,6 +39,7 @@ import {
 } from '../src/common/config/env';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { ApiEnvelope, ErrorEnvelope } from './helpers/api-envelope';
+import { expectNoCreatedById } from './helpers/assert-no-internal-fields';
 import { bootstrapApp } from './helpers/bootstrap-app';
 import {
   baseEquipmentPayload,
@@ -370,6 +371,7 @@ maybeDescribe('Escrituras de oficina reintentables (e2e)', () => {
       );
       const row = await prisma.equipment.findUniqueOrThrow({
         where: { id: payload.id },
+        select: { createdById: true },
       });
       expect(row.createdById).not.toBeNull();
     });
@@ -1150,6 +1152,72 @@ maybeDescribe('Escrituras de oficina reintentables (e2e)', () => {
         .expect(400);
     });
 
+    describe('forma del header (nunca un 500)', () => {
+      const patchBranch = async (header: string, id: string) =>
+        adminAgent
+          .patch(`/api/branches/${id}`)
+          .set('X-Expected', header)
+          .send({ address: 'X' });
+
+      it('un header de más de 8 KB -> 400', async () => {
+        const branch = await newBranch('Header gigante');
+
+        const response = await patchBranch(
+          expectedHeader({ address: 'a'.repeat(9000) }),
+          branch.id,
+        );
+
+        expect(response.status).toBe(400);
+      });
+
+      it('un anidamiento profundo -> 400, no un RangeError', async () => {
+        const branch = await newBranch('Header profundo');
+        const profundo = '['.repeat(2500) + ']'.repeat(2500);
+
+        const response = await patchBranch(
+          encodeURIComponent(`{"address":${profundo}}`),
+          branch.id,
+        );
+
+        expect(response.status).toBe(400);
+      });
+
+      it.each([
+        ['un objeto', { address: { a: 1 } }],
+        ['un arreglo con objetos', { address: [{ a: 1 }] }],
+        ['un arreglo anidado', { address: [[1]] }],
+      ])('un valor que es %s -> 400', async (label, expected) => {
+        const branch = await newBranch(`Header forma ${label}`);
+
+        const response = await patchBranch(expectedHeader(expected), branch.id);
+
+        expect(response.status).toBe(400);
+      });
+
+      it('las claves __proto__ y constructor se ignoran: ni 500 ni contaminación', async () => {
+        const branch = await newBranch('Header proto');
+
+        const response = await patchBranch(
+          encodeURIComponent('{"__proto__":1,"constructor":"x","toString":2}'),
+          branch.id,
+        );
+
+        expect(response.status).toBe(200);
+        expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+      });
+
+      it('un campo heredado no cuenta como campo de la fila', async () => {
+        const branch = await newBranch('Header heredado');
+
+        const response = await patchBranch(
+          expectedHeader({ hasOwnProperty: 'otra-cosa' }),
+          branch.id,
+        );
+
+        expect(response.status).toBe(200);
+      });
+    });
+
     it('estado y asignación del equipo', async () => {
       const equipo = await newEquipment();
       const operator = await newOperator();
@@ -1281,6 +1349,168 @@ maybeDescribe('Escrituras de oficina reintentables (e2e)', () => {
         .send({ estado: 'COMPLETADA' })
         .expect(409);
       expect((staleActividad.body as ErrorEnvelope).code).toBe('STALE_UPDATE');
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  describe('createdById nunca sale, en ningún nivel de la respuesta', () => {
+    it('equipo con sucursal base: detalle, lista y replay del create', async () => {
+      const branch = await newBranch('Base');
+      const payload = {
+        id: randomUUID(),
+        ...baseEquipmentPayload(nextCode()),
+        homeBranchId: branch.id,
+      };
+      equipmentIds.push(payload.id);
+
+      const created = await adminAgent
+        .post('/api/equipment')
+        .send(payload)
+        .expect(201);
+      const replay = await adminAgent
+        .post('/api/equipment')
+        .send(payload)
+        .expect(201);
+      const detail = await mantenedorAgent
+        .get(`/api/equipment/${payload.id}`)
+        .expect(200);
+      const list = await mantenedorAgent.get('/api/equipment').expect(200);
+
+      expectNoCreatedById(created.body);
+      expectNoCreatedById(replay.body);
+      expectNoCreatedById(detail.body);
+      expectNoCreatedById(list.body);
+      // La sucursal sí viaja en la ficha, solo que sin el dueño.
+      expect(
+        (detail.body as ApiEnvelope<{ homeBranch: IdData }>).data.homeBranch.id,
+      ).toBe(branch.id);
+    });
+
+    it('el replay del create de equipo responde la misma forma que el create', async () => {
+      const branch = await newBranch('Forma');
+      const payload = {
+        id: randomUUID(),
+        ...baseEquipmentPayload(nextCode()),
+        homeBranchId: branch.id,
+      };
+      equipmentIds.push(payload.id);
+
+      const created = await adminAgent
+        .post('/api/equipment')
+        .send(payload)
+        .expect(201);
+      const replay = await adminAgent
+        .post('/api/equipment')
+        .send(payload)
+        .expect(201);
+
+      const keys = (res: { body: unknown }) =>
+        Object.keys((res.body as ApiEnvelope<IdData>).data).sort();
+      expect(keys(replay)).toEqual(keys(created));
+    });
+
+    it('documentos, ítems, categorías, sucursales y operadores', async () => {
+      const equipo = await newEquipment();
+      const branch = await newBranch('Lectura');
+      const item = await newItem(branch.id, 10);
+      const operator = await newOperator();
+      const documentId = randomUUID();
+
+      const document = await supervisorAgent
+        .post(`/api/equipment/${equipo.id}/documents`)
+        .send({ id: documentId, type: 'INSURANCE' })
+        .expect(201);
+      const documents = await supervisorAgent
+        .get(`/api/equipment/${equipo.id}/documents`)
+        .expect(200);
+      const itemDetail = await mantenedorAgent
+        .get(`/api/inventory/items/${item.id}`)
+        .expect(200);
+      const itemList = await mantenedorAgent
+        .get('/api/inventory/items')
+        .expect(200);
+      const categories = await mantenedorAgent
+        .get('/api/inventory/categories')
+        .expect(200);
+      const branches = await mantenedorAgent.get('/api/branches').expect(200);
+      const operators = await supervisorAgent.get('/api/operators').expect(200);
+      const operatorDetail = await supervisorAgent
+        .get(`/api/operators/${operator.id}`)
+        .expect(200);
+
+      for (const res of [
+        document,
+        documents,
+        itemDetail,
+        itemList,
+        categories,
+        branches,
+        operators,
+        operatorDetail,
+      ]) {
+        expectNoCreatedById(res.body);
+      }
+    });
+
+    it('órdenes, intervenciones, actividades, umbrales y combustible', async () => {
+      const equipo = await newEquipment();
+      const ordenId = randomUUID();
+      ordenIds.push(ordenId);
+
+      const orden = await adminAgent
+        .post('/api/mantenimiento/ordenes')
+        .send({
+          id: ordenId,
+          equipoId: equipo.id,
+          titulo: `Orden lectura ${RUN_ID}`,
+          tareas: [{ texto: 'Revisar' }],
+        })
+        .expect(201);
+      const ordenes = await adminAgent
+        .get('/api/mantenimiento/ordenes')
+        .expect(200);
+      const ordenDetail = await adminAgent
+        .get(`/api/mantenimiento/ordenes/${ordenId}`)
+        .expect(200);
+      const intervencion = await mantenedorAgent
+        .post(`/api/mantenimiento/ordenes/${ordenId}/intervenciones`)
+        .send({ id: randomUUID(), tipo: 'CORRECTIVA', detalle: 'Ajuste' })
+        .expect(201);
+      const intervenciones = await mantenedorAgent
+        .get(`/api/mantenimiento/ordenes/${ordenId}/intervenciones`)
+        .expect(200);
+      const actividades = await adminAgent
+        .get('/api/mantenimiento/actividades')
+        .expect(200);
+      const umbrales = await adminAgent
+        .get('/api/mantenimiento/umbrales')
+        .expect(200);
+      const combustible = await supervisorAgent
+        .post('/api/combustible')
+        .send({
+          id: randomUUID(),
+          equipoId: equipo.id,
+          litros: 30,
+          tipo: 'PETROLEO',
+        })
+        .expect(201);
+      const combustibles = await supervisorAgent
+        .get('/api/combustible')
+        .expect(200);
+
+      for (const res of [
+        orden,
+        ordenes,
+        ordenDetail,
+        intervencion,
+        intervenciones,
+        actividades,
+        umbrales,
+        combustible,
+        combustibles,
+      ]) {
+        expectNoCreatedById(res.body);
+      }
     });
   });
 

@@ -1,7 +1,6 @@
 /**
- * Gate e2e de Trabajos extra (RFC "Supervisión en Terreno": operador del
- * catálogo en Trabajos extra + snapshot único) — ejercita el
- * contrato de `POST /api/trabajos-extra` contra una app Nest real (mismo
+ * Prueba e2e de Trabajos extra (operador del catálogo + snapshot único) —
+ * ejercita el contrato de `POST /api/trabajos-extra` contra una app Nest real (mismo
  * pipeline que `main.ts`, vía `configureApp`) y Postgres REAL (sin mocks):
  * operador del catálogo obligatorio, snapshot armado por el servidor, y la
  * guarda de borrado de `OperatorsService.remove` cuando el operador tiene
@@ -310,7 +309,7 @@ maybeDescribe('Trabajos extra — operador del catálogo (e2e)', () => {
       expect((response.body as ErrorEnvelope).code).toBe('ID_CONFLICT');
     });
 
-    it('capturedAt queda como fecha; uno absurdo -> 400 INVALID_CAPTURE_TIME', async () => {
+    it('capturedAt queda como fecha; fuera de ventana usa la hora del servidor; formato inválido -> 400 INVALID_CAPTURE_TIME', async () => {
       const equipo = await createFreshEquipo('IDEM4');
       const operador = await createOperator(`Operador Fecha E2E ${RUN_ID}`);
       const capturedAt = new Date(Date.now() - 2 * 3_600_000);
@@ -328,12 +327,29 @@ maybeDescribe('Trabajos extra — operador del catálogo (e2e)', () => {
         capturedAt.getTime(),
       );
 
-      const bad = await supervisorAgent
+      // Fuera de ventana no rechaza: la fecha es la hora del servidor.
+      const antes = Date.now();
+      const fueraDeVentana = await supervisorAgent
         .post('/api/trabajos-extra')
         .send({
           ...baseTrabajoExtraPayload(equipo.id, operador.id),
           id: randomUUID(),
           capturedAt: '2001-01-01T00:00:00.000Z',
+        })
+        .expect(201);
+      expect(
+        new Date(
+          (fueraDeVentana.body as ApiEnvelope<TrabajoExtraData>).data
+            .fecha as string,
+        ).getTime(),
+      ).toBeGreaterThanOrEqual(antes - 5000);
+
+      const bad = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send({
+          ...baseTrabajoExtraPayload(equipo.id, operador.id),
+          id: randomUUID(),
+          capturedAt: '2026-W01',
         })
         .expect(400);
       expect((bad.body as ErrorEnvelope).code).toBe('INVALID_CAPTURE_TIME');

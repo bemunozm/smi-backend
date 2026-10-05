@@ -1,7 +1,5 @@
 /**
- * Gate e2e completo de Supervisión en Terreno, Módulo A (RFC "Supervisión en
- * Terreno: Módulo A real + offline + roles/operadores + cierre de R2", Fase
- * 7 — único punto del plan donde corre este archivo): ejercita el contrato
+ * Prueba e2e completa de Supervisión en Terreno, Módulo A: ejercita el contrato
  * de replay offline (`src/shifts/*`) contra una app Nest real (mismo
  * pipeline que `main.ts`, vía `configureApp`) y contra Postgres + MinIO
  * REALES (sin mocks) — abrir tarjeta, subir foto, cerrar, reportar salida, y
@@ -51,7 +49,7 @@ import {
   DEFAULT_DEV_STORAGE_SECRET_ACCESS_KEY,
 } from '../src/common/config/env';
 import { DOMAIN_EVENTS } from '../src/common/events/domain-events';
-import { todayInBusinessTimeZone } from '../src/shifts/date-only';
+import { todayInBusinessTimeZone } from '../src/common/dates/business-time';
 import { ApiEnvelope, ErrorEnvelope } from './helpers/api-envelope';
 import { bootstrapApp } from './helpers/bootstrap-app';
 import {
@@ -275,8 +273,8 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
     supervisorAUserId = supervisorAUser.id;
     adminUserId = adminUser.id;
 
-    // Segundo supervisor, creado fresco por el test (RFC Supervisión en
-    // Terreno solo siembra UN supervisor) — necesario para el escenario de
+    // Segundo supervisor, creado fresco por el test (el seed solo
+    // siembra UN supervisor) — necesario para el escenario de
     // dueño de tarjeta. Se limpia en `afterAll` vía la API real
     // (`DELETE /api/users/:id`, Better Auth admin), no a mano en Prisma.
     const createUserResponse = await adminAgent
@@ -697,7 +695,7 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
         .expect(400);
     });
 
-    it('shiftDate fuera de la ventana [-8, +1] días -> 400 INVALID_SHIFT_DATE', async () => {
+    it('shiftDate fuera de la ventana [-30, +1] días -> 400 INVALID_SHIFT_DATE', async () => {
       const equipoResponse = await adminAgent
         .post('/api/equipment')
         .send(baseEquipmentPayload(internalCode('BADDATE2')))
@@ -706,7 +704,7 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
       createdEquipmentIds.push(equipo.id);
 
       const farPast = todayInBusinessTimeZone(
-        new Date(Date.now() - 20 * 24 * 60 * 60 * 1000),
+        new Date(Date.now() - 40 * 24 * 60 * 60 * 1000),
       );
 
       const response = await supervisorAgent

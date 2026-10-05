@@ -1,5 +1,5 @@
 /**
- * Gate e2e de Hallazgos — idempotencia del alta para el reenvío offline:
+ * Prueba e2e de Hallazgos — idempotencia del alta para el reenvío offline:
  * `POST /api/hallazgos` con `id` del cliente contra una app Nest real (mismo
  * pipeline que `main.ts`, vía `configureApp`), Postgres y MinIO REALES.
  *
@@ -352,10 +352,22 @@ maybeDescribe('Hallazgos — alta idempotente (e2e)', () => {
     expect(row.createdAt.getTime()).toBeGreaterThan(capturedAt.getTime());
   });
 
-  it('un capturedAt absurdo -> 400 INVALID_CAPTURE_TIME', async () => {
+  it('un capturedAt fuera de ventana no rechaza: la fecha es la hora del servidor', async () => {
+    const antes = Date.now();
     const response = await supervisorAgent
       .post('/api/hallazgos')
       .send(hallazgoPayload({ capturedAt: '2001-01-01T00:00:00.000Z' }))
+      .expect(201);
+
+    const data = (response.body as ApiEnvelope<HallazgoData>).data;
+    createdHallazgoIds.push(data.id);
+    expect(new Date(data.fecha).getTime()).toBeGreaterThanOrEqual(antes - 5000);
+  });
+
+  it('un capturedAt con formato inválido -> 400 INVALID_CAPTURE_TIME', async () => {
+    const response = await supervisorAgent
+      .post('/api/hallazgos')
+      .send(hallazgoPayload({ capturedAt: '2026-W01' }))
       .expect(400);
 
     expect((response.body as ErrorEnvelope).code).toBe('INVALID_CAPTURE_TIME');
@@ -380,6 +392,7 @@ maybeDescribe('Hallazgos — alta idempotente (e2e)', () => {
     createdHallazgoIds.push(data.id);
     const row = await prisma.hallazgo.findUniqueOrThrow({
       where: { id: data.id },
+      select: { createdById: true },
     });
     expect(row.createdById).not.toBeNull();
   });
