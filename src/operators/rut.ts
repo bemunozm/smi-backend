@@ -1,6 +1,5 @@
 /**
- * Utilidades puras para el RUT chileno (catálogo de Operadores, RFC
- * Supervisión en Terreno). Sin dependencias de Nest/class-validator/Prisma a
+ * Utilidades puras para el RUT chileno (catálogo de Operadores). Sin dependencias de Nest/class-validator/Prisma a
  * propósito — se testean a secas y las reusa tanto el DTO (`IsChileanRut`,
  * ver `dto/is-chilean-rut.validator.ts`) como `OperatorsService` para
  * persistir siempre la forma canónica.

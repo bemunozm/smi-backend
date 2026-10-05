@@ -12,8 +12,7 @@ import { IsDateOnly } from '../date-only';
 import { SHIFT_TYPES, type ShiftType } from '../shift-type';
 
 export class OpenShiftCardDto {
-  /** UUID v4 generado por el CLIENTE — es el PK de `RegistroHorometro` (RFC
-   * Supervisión en Terreno §Diseño): permite que "abrir tarjeta" sea
+  /** UUID v4 generado por el CLIENTE — es el PK de `RegistroHorometro`: permite que "abrir tarjeta" sea
    * idempotente sin ida y vuelta al servidor antes de poder escribir (clave
    * para el flujo offline). */
   @IsUUID('4')

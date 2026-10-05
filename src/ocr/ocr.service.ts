@@ -29,7 +29,7 @@
  * Notas de deploy (VPS):
  * - Requiere `python3` + `ocr-python/requirements.txt` instalado
  *   (`onnxruntime`, `tokenizers`, `numpy`, `opencv-python-headless`,
- *   `pillow`) — YA NO requiere `tesseract-ocr`. Configurable por env
+ *   `pillow`) — no requiere `tesseract-ocr`. Configurable por env
  *   `PYTHON_BIN`/`OCR_MODELS_DIR`/`OCR_THREADS` (ver
  *   `src/common/config/env.ts`).
  * - Los modelos (`ocr-python/models/`, ~300MB) NO van en git — se copian a

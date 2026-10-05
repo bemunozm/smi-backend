@@ -296,15 +296,27 @@ describe('ShiftReportsService', () => {
       expect(storage.deleteBestEffort).toHaveBeenCalled();
     });
 
-    it('requestedAt absurdo (>24h futuro) se rechaza con INVALID_CAPTURE_TIME', async () => {
+    it('requestedAt fuera de la ventana (>24h futuro) no rechaza: se guarda la hora del servidor', async () => {
       const dto = baseDto({ requestedAt: iso(25 * 60 * 60 * 1000) });
+      const antes = Date.now();
+      await service.create(dto, buildSession('sup_1'));
+
+      const [{ data }] = prisma.shiftExitReport.create.mock.calls[0] as [
+        { data: { requestedAt: Date } },
+      ];
+      expect(data.requestedAt.getTime()).toBeGreaterThanOrEqual(antes);
+      expect(data.requestedAt.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it('requestedAt con formato inválido sigue siendo 400 INVALID_CAPTURE_TIME', async () => {
+      const dto = baseDto({ requestedAt: '2026-W01' });
       await expect(
         service.create(dto, buildSession('sup_1')),
       ).rejects.toMatchObject({ response: { code: 'INVALID_CAPTURE_TIME' } });
       expect(prisma.shiftExitReport.findUnique).not.toHaveBeenCalled();
     });
 
-    it('shiftDate de más de 8 días de antigüedad se rechaza con INVALID_SHIFT_DATE, ANTES de buscar el turno', async () => {
+    it('shiftDate de más de 30 días de antigüedad se rechaza con INVALID_SHIFT_DATE, ANTES de buscar el turno', async () => {
       const dto = baseDto({ shiftDate: '2020-01-01' });
       await expect(
         service.create(dto, buildSession('sup_1')),

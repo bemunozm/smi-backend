@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsUUID,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -14,11 +15,18 @@ import {
  *
  * El traspaso NO es un asiento con dos sucursales: son **dos** asientos (salida
  * en el origen + entrada en el destino) que comparten `reference` y llevan
- * `reason = TRANSFER` (RFC-3 D4). Así el saldo de cada bodega se deriva leyendo
+ * `reason = TRANSFER`. Así el saldo de cada bodega se deriva leyendo
  * únicamente sus propios asientos, sin tener que interpretar el signo según de
  * qué lado se mire.
  */
 export class TransferStockDto {
+  /** UUID v4 generado por el cliente: PK del asiento de SALIDA y clave de
+   * idempotencia del traspaso. Opcional para no romper a un cliente que no lo
+   * manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
   @IsString()
   @MinLength(1)
   itemId!: string;

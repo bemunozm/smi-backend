@@ -25,7 +25,7 @@ describe('CreateEquipmentDocumentDto — fileKey', () => {
     expect(await validate(dto)).toHaveLength(0);
   });
 
-  it('rechaza una ruta legacy /uploads/... (ya NO es el contrato)', async () => {
+  it('rechaza una ruta legacy /uploads/... (no es el contrato)', async () => {
     const dto = plainToInstance(CreateEquipmentDocumentDto, {
       ...base,
       fileKey: '/uploads/x.pdf',

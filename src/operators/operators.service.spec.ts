@@ -1,9 +1,13 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { buildSession, prismaError } from '../common/testing/fixtures';
 import { OperatorsService } from './operators.service';
+
+const USER = 'user_1';
+const OMIT_RUT = { rut: true };
 
 describe('OperatorsService', () => {
   let service: OperatorsService;
@@ -103,7 +107,7 @@ describe('OperatorsService', () => {
         await service.findAll({}, buildSession('u1', 'MANTENEDOR'));
 
         expect(findMany).toHaveBeenCalledWith(
-          expect.objectContaining({ omit: { rut: true } }),
+          expect.objectContaining({ omit: OMIT_RUT }),
         );
       });
     });
@@ -123,7 +127,9 @@ describe('OperatorsService', () => {
 
       await service.findOne('op_1');
 
-      expect(findUnique).toHaveBeenCalledWith({ where: { id: 'op_1' } });
+      expect(findUnique).toHaveBeenCalledWith({
+        where: { id: 'op_1' },
+      });
     });
 
     it('MANTENEDOR no ve rut vía findOne', async () => {
@@ -133,7 +139,7 @@ describe('OperatorsService', () => {
 
       expect(findUnique).toHaveBeenCalledWith({
         where: { id: 'op_1' },
-        omit: { rut: true },
+        omit: OMIT_RUT,
       });
     });
 
@@ -142,7 +148,9 @@ describe('OperatorsService', () => {
 
       await service.findOne('op_1', buildSession('u1', 'SUPERVISOR'));
 
-      expect(findUnique).toHaveBeenCalledWith({ where: { id: 'op_1' } });
+      expect(findUnique).toHaveBeenCalledWith({
+        where: { id: 'op_1' },
+      });
     });
 
     it('sigue lanzando 404 si no existe, aun con la sesión redactada', async () => {
@@ -159,9 +167,11 @@ describe('OperatorsService', () => {
       const dto = { name: 'Patricio Rojas' };
       create.mockResolvedValue({ id: 'op_1', ...dto, rut: null });
 
-      const result = await service.create(dto);
+      const result = await service.create(dto, USER);
 
-      expect(create).toHaveBeenCalledWith({ data: dto });
+      expect(create).toHaveBeenCalledWith({
+        data: { ...dto, createdById: USER },
+      });
       expect(result).toEqual({ id: 'op_1', ...dto, rut: null });
     });
 
@@ -173,10 +183,10 @@ describe('OperatorsService', () => {
         rut: '12345678-5',
       });
 
-      await service.create(dto);
+      await service.create(dto, USER);
 
       expect(create).toHaveBeenCalledWith({
-        data: { name: dto.name, rut: '12345678-5' },
+        data: { name: dto.name, rut: '12345678-5', createdById: USER },
       });
     });
 
@@ -184,19 +194,57 @@ describe('OperatorsService', () => {
       const dto = { name: 'Marcelo Soto', rut: '11111111-1' };
       create.mockRejectedValue(prismaError('P2002', { target: ['rut'] }));
 
-      await expect(service.create(dto)).rejects.toBeInstanceOf(
+      await expect(service.create(dto, USER)).rejects.toBeInstanceOf(
         ConflictException,
       );
-      await expect(service.create(dto)).rejects.toThrow(
+      await expect(service.create(dto, USER)).rejects.toThrow(
         'Ya existe un operador con el RUT "11111111-1"',
       );
+    });
+
+    describe('id del cliente (reintento offline)', () => {
+      const ID = '11111111-1111-4111-8111-111111111111';
+
+      it('replay del mismo usuario: devuelve la fila sin crear', async () => {
+        findUnique
+          .mockResolvedValueOnce({ createdById: USER })
+          .mockResolvedValueOnce({ id: ID, name: 'Patricio' });
+
+        const result = await service.create({ id: ID, name: 'Patricio' }, USER);
+
+        expect(result).toEqual({ id: ID, name: 'Patricio' });
+        expect(create).not.toHaveBeenCalled();
+      });
+
+      it('id ocupado por otro usuario: 409 ID_CONFLICT', async () => {
+        findUnique.mockResolvedValueOnce({ createdById: 'otro' });
+
+        await expect(
+          service.create({ id: ID, name: 'Patricio' }, USER),
+        ).rejects.toMatchObject({
+          response: { code: ERROR_CODES.ID_CONFLICT },
+        });
+      });
+
+      it('P2002 por RUT repetido NO es una carrera: el 409 de siempre', async () => {
+        findUnique.mockResolvedValue(null);
+        create.mockRejectedValue(prismaError('P2002', { target: ['rut'] }));
+
+        const error = await service
+          .create({ id: ID, name: 'P', rut: '11111111-1' }, USER)
+          .catch((e: unknown) => e);
+
+        expect((error as ConflictException).message).toBe(
+          'Ya existe un operador con el RUT "11111111-1"',
+        );
+      });
     });
 
     it('re-lanza errores de Prisma no reconocidos sin envolverlos', async () => {
       const otro = prismaError('P2025');
       create.mockRejectedValue(otro);
 
-      await expect(service.create({ name: 'X' })).rejects.toBe(otro);
+      await expect(service.create({ name: 'X' }, USER)).rejects.toBe(otro);
     });
   });
 

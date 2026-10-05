@@ -216,7 +216,7 @@ export class NotificationsService {
 
   /** Único punto de escritura de una fila `Notification` — reusado por los 3
    * caminos que crean una (`createForUser`, `notifyRolesWithAttachment`,
-   * `notifyRecipient`), antes duplicado con el mismo `data` en cada uno. */
+   * `notifyRecipient`), para no repetir el mismo `data` en cada uno. */
   private createNotificationRow(
     userId: string,
     input: CreateNotificationInput,

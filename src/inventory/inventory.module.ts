@@ -10,7 +10,7 @@ import { StockController } from './stock/stock.controller';
 import { StockService } from './stock.service';
 
 /**
- * Dominio Inventario (Joaquín) — RFC-3.
+ * Dominio Inventario.
  *
  * `StockService` se EXPORTA porque es el contrato que consumen los otros
  * dominios para mover existencias (Mantenimiento, Actividades y trabajos

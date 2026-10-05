@@ -1,19 +1,19 @@
 // Prisma schema — tablas de autenticación (Better Auth) + modelos de dominio.
 //
 // Orden de las secciones:
-//   1. Better Auth (Benjamín)      — generado por `npm run auth:schema`, no editar a mano.
-//   2. Flota (Benjamín)            — Equipment, Branch (RFC T01, opción A — en inglés).
-//   3. Inventario (Joaquín)        — InventoryItem, ItemCategory, Stock,
-//                                    StockMovement, PartCompatibility (RFC-3).
-//   4. Operación en Terreno (Alex) — RegistroCombustible, RegistroHorometro,
+//   1. Better Auth                 — generado por `npm run auth:schema`, no editar a mano.
+//   2. Flota                       — Equipment, Branch (en inglés).
+//   3. Inventario                  — InventoryItem, ItemCategory, Stock,
+//                                    StockMovement, PartCompatibility.
+//   4. Operación en Terreno        — RegistroCombustible, RegistroHorometro,
 //                                    TrabajoExtraordinario, Hallazgo.
 //
-// Convenciones de este schema (guía §11 — migración gradual por módulo, cada
+// Convenciones de este schema (migración gradual por módulo, cada
 // dueño renombra su dominio a inglés al tocarlo):
 //   - IDs: `String @id @default(cuid())` en TODAS las tablas de dominio.
 //   - Enums Prisma para los vocabularios cerrados de Flota/Inventario. Las
-//     columnas de Terreno siguen como `String` (decisión de su dueño); migrarlas
-//     a enum es un cambio suyo, no mío.
+//     columnas de Terreno siguen como `String`; migrarlas a enum es un cambio
+//     aparte.
 //   - `user.role` sigue siendo String: lo exige el plugin `admin` de Better Auth.
 //   - Referencias a usuarios (`responsableId`) son `String` SIN foreign key: la
 //     tabla `user` la regenera el CLI de Better Auth y una back-relation nuestra
@@ -38,8 +38,7 @@ model User {
   updatedAt     DateTime  @updatedAt
   /// Valores válidos: ADMIN | SUPERVISOR | MANTENEDOR (ver src/auth/roles.ts).
   /// El operador NO es un rol de usuario — es un catálogo propio (`Operator`,
-  /// más abajo), sin acceso a la plataforma (RFC Supervisión en Terreno,
-  /// anexo "el operador deja de ser usuario de la plataforma", 28/09).
+  /// más abajo), sin acceso a la plataforma.
   /// String (no enum Prisma) a propósito: el admin plugin de Better Auth tipa
   /// el rol como string dinámico; un enum Prisma introduciría fricción de tipos.
   role          String    @default("MANTENEDOR")
@@ -103,7 +102,7 @@ model Verification {
 }
 
 // ============================================================================
-// Núcleo (Benjamín): Notificaciones
+// Núcleo: Notificaciones
 // ============================================================================
 
 /// Notificación in-app dirigida a un usuario. `userId` es soft ref a
@@ -125,7 +124,7 @@ model Notification {
   @@map("notification")
 }
 
-/// Trazabilidad de cambios a un registro ya enviado (Acta N.° 004, R13).
+/// Historial de quién cambió qué en un registro ya enviado.
 ///
 /// Editar un reporte o un trabajo extraordinario no pide autorización previa,
 /// pero cada cambio deja una fila acá: quién, cuándo y qué dato pasó de qué
@@ -151,12 +150,12 @@ model ChangeLog {
 }
 
 // ============================================================================
-// Dominio: Flota (Benjamín) — modelo rediseñado en inglés (RFC T01, opción A).
-// El dominio de Inventario también quedó en inglés (RFC-3); su relación con la
-// unidad apunta a `Equipment`.
+// Dominio: Flota — modelo en inglés.
+// El dominio de Inventario también está en inglés; su relación con la unidad
+// apunta a `Equipment`.
 // ============================================================================
 
-/// Clase de la unidad — filtro principal de Flota (RFC T01 §2, R8).
+/// Clase de la unidad — filtro principal de Flota.
 enum EquipmentClass {
   LIGHT
   HEAVY
@@ -188,13 +187,18 @@ model Branch {
 
   homedEquipment Equipment[]
 
-  // Inventario (Joaquín, RFC-3). Las tres relaciones de movimiento son la misma
+  // Inventario. Las tres relaciones de movimiento son la misma
   // tabla vista desde tres ángulos: los asientos que mueven ESTA bodega, y los
   // traspasos en los que figura como origen o como destino.
   stocks         Stock[]
   stockMovements StockMovement[] @relation("StockMovementBranch")
   transfersOut   StockMovement[] @relation("StockMovementSource")
   transfersIn    StockMovement[] @relation("StockMovementDestination")
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@map("branch")
 }
@@ -217,7 +221,7 @@ model Equipment {
   year           Int?
 
   controlUnit      ControlUnit @map("control_unit")
-  /// Valor ACTUAL de uso de la máquina (guía §4): vive acá como columna, no
+  /// Valor ACTUAL de uso de la máquina: vive acá como columna, no
   /// como tabla. El historial de lecturas por turno es `RegistroHorometro`.
   /// Nullable y gobernado por `controlUnit`: solo uno de los dos aplica.
   currentHourmeter Float?      @map("current_hourmeter")
@@ -231,15 +235,14 @@ model Equipment {
   /// Foto de la unidad (fidelidad 1:1 con el artefacto de Flota). Guarda la
   /// KEY del objeto en el bucket de storage (R2/MinIO, ver `StorageService`),
   /// NUNCA una URL — la URL firmada se resuelve on-read (`sign()`), nunca se
-  /// persiste (ver Diseño del RFC R2-storage, "Contrato de la API").
+  /// persiste.
   photoKey String? @map("photo_key")
 
   /// Asignación de uso ACTUAL de la unidad (operador + supervisor a cargo
   /// ahora mismo) — NO es historial de sesiones, eso queda como follow-up.
   /// `inUse` no es columna: se deriva en el service como `!!currentOperatorId`.
   ///
-  /// `currentOperatorId` es FK REAL a `Operator` (RFC Supervisión en Terreno,
-  /// anexo "el operador deja de ser usuario de la plataforma", 28/09): el
+  /// `currentOperatorId` es FK REAL a `Operator`: el
   /// operador es un catálogo propio nuestro, así que SÍ se permite la
   /// relación Prisma — a diferencia de `currentSupervisorId`, que sigue
   /// siendo un soft ref a `user.id` (String, SIN `@relation`, mismo criterio
@@ -256,11 +259,11 @@ model Equipment {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  // Inventario (Joaquín, RFC-3)
+  // Inventario
   stockMovements      StockMovement[]
   partCompatibilities PartCompatibility[]
 
-  // Operación en Terreno (Alexander)
+  // Operación en Terreno
   combustibles  RegistroCombustible[]
   horometros    RegistroHorometro[]
   trabajosExtra TrabajoExtraordinario[]
@@ -268,9 +271,14 @@ model Equipment {
 
   /// Documentos del equipo (revisión técnica, seguro, permiso de circulación,
   /// certificaciones, otros) con archivo adjunto y CRUD propio — reemplaza
-  /// las columnas planas `technicalInspectionExpiry`/`insuranceExpiry` (R1/R2)
-  /// de la primera versión de Flota. Ver `EquipmentDocument`.
+  /// las columnas planas `technicalInspectionExpiry`/`insuranceExpiry`.
+  /// Ver `EquipmentDocument`.
   documents EquipmentDocument[]
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@index([equipmentClass])
   @@index([status])
@@ -280,9 +288,9 @@ model Equipment {
 }
 
 /// Tipo de documento de un `EquipmentDocument`. `TECHNICAL_INSPECTION`/
-/// `INSURANCE` reemplazan a las columnas planas R1/R2 de la versión anterior;
-/// `CIRCULATION_PERMIT`/`CERTIFICATION`/`OTHER` cubren los documentos que ya
-/// se venían pidiendo pero no tenían dónde vivir.
+/// `INSURANCE` reemplazan a las columnas planas de vencimiento;
+/// `CIRCULATION_PERMIT`/`CERTIFICATION`/`OTHER` cubren el resto de los
+/// documentos del equipo.
 enum EquipmentDocumentType {
   TECHNICAL_INSPECTION
   INSURANCE
@@ -292,16 +300,15 @@ enum EquipmentDocumentType {
 }
 
 /// Documento de un equipo, con archivo adjunto (sube por `POST /api/files` +
-/// claim en `EquipmentDocumentService`, ver Diseño del RFC R2-storage; acá
+/// claim en `EquipmentDocumentService`; acá
 /// solo se guarda la KEY del objeto, nunca una URL) y vigencia opcional. A
 /// diferencia de `currentHourmeter`/`photoKey` (dato ACTUAL de la ficha,
 /// columna plana), un equipo puede tener VARIOS documentos del mismo tipo
 /// (ej. dos certificaciones distintas) — de ahí la tabla propia con CRUD
 /// dedicado en vez de columnas en `Equipment`. El estado de vigencia
 /// (VIGENTE/POR_VENCER/VENCIDO/SIN_DATO) se deriva on-read en
-/// `EquipmentDocumentService` (mismo `buildDocumentExpiryInfo` que antes vivía
-/// en `EquipmentService`, ahora en `src/equipment/document-expiry.ts`), no se
-/// persiste.
+/// `EquipmentDocumentService` (`buildDocumentExpiryInfo` en
+/// `src/equipment/document-expiry.ts`), no se persiste.
 model EquipmentDocument {
   id String @id @default(cuid())
 
@@ -322,12 +329,17 @@ model EquipmentDocument {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@index([equipmentId])
   @@map("equipment_document")
 }
 
 // ============================================================================
-// Dominio: Inventario (Joaquín) — RFC-3, opción A. Modelo en inglés.
+// Dominio: Inventario. Modelo en inglés.
 //
 // El cambio de fondo respecto del modelo anterior: la existencia deja de ser
 // una columna del ítem y pasa a la tabla `Stock` (ítem × sucursal). No hay
@@ -335,17 +347,17 @@ model EquipmentDocument {
 // diferencia con el diseño previo (`Insumo.stock`), que obligaba a mantener dos
 // números sincronizados a mano.
 //
-// ⚠️ ASUNCIÓN EXPLÍCITA DE T01 — SIN TRAZABILIDAD DE LOTE.
-// RFC-3 dejó abierto "lote/serie/vencimiento (pendiente de Sima)". Este modelo
-// se cierra asumiendo que NO se trazan: el saldo se identifica por
+// ⚠️ ASUNCIÓN EXPLÍCITA — SIN TRAZABILIDAD DE LOTE.
+// Lote/serie/vencimiento está pendiente de confirmar con el cliente. Este modelo
+// asume que NO se trazan: el saldo se identifica por
 // (ítem × sucursal) y nada más.
 //
-// Si Sima confirma que hay que trazarlos, esto NO se resuelve agregando una
+// Si el cliente confirma que hay que trazarlos, esto NO se resuelve agregando una
 // columna: cambia la clave del saldo a (ítem × sucursal × lote), `Stock` pasa a
 // tener una fila por lote, `StockMovement` necesita el lote, y el descuento
 // tiene que elegir de cuál lote sale (FIFO / por vencimiento). Es una segunda
 // migración y una reescritura del servicio de existencias, no un parche.
-// Presupuestarlo así al replanificar.
+// Hay que presupuestarlo así.
 // ============================================================================
 
 enum UnitOfMeasure {
@@ -373,6 +385,11 @@ model ItemCategory {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   items InventoryItem[]
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@map("item_category")
 }
@@ -406,6 +423,11 @@ model InventoryItem {
   stocks          Stock[]
   movements       StockMovement[]
   compatibilities PartCompatibility[]
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@index([name])
   @@index([type])
@@ -458,7 +480,7 @@ enum MovementReason {
   INTERVENTION // Consumo por mantención
   ACTIVITY // Consumo por actividad/tarea
   EXTRAORDINARY_WORK // Consumo en un trabajo facturable
-  TRANSFER // Traspaso entre sucursales (RFC-3 D4: dos asientos)
+  TRANSFER // Traspaso entre sucursales (dos asientos)
 }
 
 /// Kardex: un asiento por cada entrada/salida, con el saldo resultante.
@@ -556,9 +578,8 @@ model PartCompatibility {
 }
 
 // ============================================================================
-// Dominio: Operación en Terreno (Alexander)
-// Las relaciones ahora apuntan al `Equipment` real de Flota. Los modelos de
-// abajo no fueron modificados salvo por eso.
+// Dominio: Operación en Terreno
+// Las relaciones apuntan al `Equipment` real de Flota.
 // ============================================================================
 
 model RegistroCombustible {
@@ -569,7 +590,7 @@ model RegistroCombustible {
   tipo     String // PETROLEO | BENCINA
   fotoUrl  String? // legacy: URL servida por /api/uploads (Terreno, sigue viva)
   /// Key del objeto en el bucket de storage (R2/MinIO), aditiva sobre
-  /// `fotoUrl` legacy — ver Diseño del RFC R2-storage, "Combustible". Sin
+  /// `fotoUrl` legacy. Sin
   /// `@map` a propósito: este modelo, igual que el resto de Terreno, no sigue
   /// la convención snake_case del resto del schema (ver comentario de
   /// cabecera de esta sección).
@@ -580,29 +601,32 @@ model RegistroCombustible {
   fotoKey  String?
   fecha    DateTime  @default(now())
 
-  /// Vínculo 1:1 opcional con la tarjeta de turno que originó esta carga
-  /// (RFC Supervisión en Terreno, Fase 1): al cerrar una tarjeta con
-  /// `fuelLiters > 0`, Fase 2 crea ACÁ la carga con la misma `pumpPhotoKey`
+  /// Vínculo 1:1 opcional con la tarjeta de turno que originó esta carga:
+  /// al cerrar una tarjeta con
+  /// `fuelLiters > 0`, el cierre crea ACÁ la carga con la misma `pumpPhotoKey`
   /// del cierre, para que aparezca sola en la ficha y en el historial de
   /// combustible sin duplicar la foto. `SetNull` y no `Cascade`: borrar la
   /// tarjeta (excepcional) no debe arrastrarse la carga ya registrada.
   registroHorometroId String?            @unique @map("registro_horometro_id")
   registroHorometro   RegistroHorometro? @relation(fields: [registroHorometroId], references: [id], onDelete: SetNull)
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 }
 
-/// Tarjeta de turno de Supervisión en Terreno (RFC Supervisión en Terreno,
-/// Fase 1 — schema/migración; los endpoints `POST /api/shift-cards*` son
-/// Fase 2). El modelo reutilizado es `RegistroHorometro` (no una tabla
+/// Tarjeta de turno de Supervisión en Terreno (endpoints `POST
+/// /api/shift-cards*`). El modelo reutilizado es `RegistroHorometro` (no una tabla
 /// nueva): el índice único parcial `RegistroHorometro_equipo_id_open_turno_key`
 /// (ver migración `20260921153343_horometro_open_turno_unique_index`) ya
 /// garantiza un solo turno abierto por equipo a nivel de base de datos, y
 /// `reconcileEquipmentCounter`/`openShift`/la ficha ya lo consumen.
 ///
-/// El PK sigue siendo `id String @default(cuid())` a propósito: Fase 2 pasa a
-/// generarlo desde el cliente (UUID v4, para que "abrir tarjeta" sea
-/// idempotente sin ida y vuelta al servidor) — ese cambio de estrategia de
-/// generación no requiere migración de schema, solo que el caller mande el
-/// `id`.
+/// El PK es `id String @default(cuid())`, pero la apertura de tarjeta lo
+/// recibe desde el cliente (UUID v4, para que "abrir tarjeta" sea
+/// idempotente sin ida y vuelta al servidor): basta con que el caller mande
+/// el `id`.
 model RegistroHorometro {
   id               String    @id @default(cuid())
   equipoId         String    @map("equipo_id")
@@ -616,7 +640,7 @@ model RegistroHorometro {
 
   /// Flujo ENTRADA/SALIDA en dos pasos (Flota): "turno abierto" = `valorFinal
   /// == null`. Al cerrar (`PATCH /horometro/:id/salida`, o `POST
-  /// /api/shift-cards/:id/close` en Fase 2) se completa este campo junto con
+  /// /api/shift-cards/:id/close`) se completa este campo junto con
   /// `valorFinal` — queda `null` mientras el turno está abierto.
   fechaSalida DateTime? // hora de SALIDA (reloj del dispositivo)
 
@@ -628,7 +652,7 @@ model RegistroHorometro {
 
   /// Supervisor que abrió la tarjeta — soft ref a `user.id` (sin FK, mismo
   /// criterio que el resto del schema: la tabla `user` la regenera el CLI de
-  /// Better Auth). Se graba en el create vía `@Session()` (Fase 2).
+  /// Better Auth). Se graba en el create vía `@Session()`.
   supervisorId String? @map("supervisor_id")
 
   /// Operador del catálogo propio (`Operator`), aditivo sobre `operador`
@@ -640,13 +664,13 @@ model RegistroHorometro {
   operator   Operator? @relation(fields: [operatorId], references: [id], onDelete: SetNull)
 
   /// Litros cargados al cierre (Módulo A). Mismo tipo que
-  /// `RegistroCombustible.litros` — si es > 0, Fase 2 crea la carga
+  /// `RegistroCombustible.litros` — si es > 0, el cierre crea la carga
   /// vinculada (`RegistroCombustible.registroHorometroId`) con esta misma
   /// `pumpPhotoKey`.
   fuelLiters    Float?  @map("fuel_liters")
   /// Key del objeto en el bucket de storage (R2/MinIO) de la foto del
   /// surtidor/horómetro al cierre. Reemplaza a `fotoUrlSalida` (legacy,
-  /// pública, eliminada en esta misma migración) — nunca una URL, se firma
+  /// pública) — nunca una URL, se firma
   /// on-read igual que el resto de Flota (ver `StorageService.sign`).
   /// ADVERTENCIA (info, auditoría de seguridad): cuando `fuelLiters > 0`,
   /// `RegistroCombustible.fotoKey` de la carga vinculada (ver
@@ -659,19 +683,19 @@ model RegistroHorometro {
   /// Observaciones libres del supervisor al cierre.
   observaciones String?
 
-  /// AdBlue cargado al cierre de turno (Acta N.° 004, R12). `adBlueLiters`
+  /// AdBlue cargado al cierre de turno (el cliente exige registrarlo al cerrar). `adBlueLiters`
   /// solo tiene valor cuando `adBlue` es `true`.
   adBlue       Boolean @default(false) @map("ad_blue")
   adBlueLiters Float?  @map("ad_blue_liters")
 
-  /// UUID generado por el cliente al cerrar la tarjeta (Fase 2): permite que
+  /// UUID generado por el cliente al cerrar la tarjeta: permite que
   /// un reintento de "cerrar" (por red offline) sea idempotente — releer por
   /// este id en vez de volver a aplicar el cierre. `@unique` es la garantía
   /// dura contra dos cierres con clientClientId distintos coincidiendo.
   closeClientId String? @unique @map("close_client_id")
 
   /// `true` cuando el valor inicial ingresado por el supervisor fue MENOR que
-  /// el contador vigente del equipo y el modo warn (Fase 2) lo aceptó sin
+  /// el contador vigente del equipo y el modo warn lo aceptó sin
   /// mover el contador ni rechazar — auditoría de una posible lectura
   /// errónea, no un bloqueo.
   belowPreviousReading Boolean @default(false) @map("below_previous_reading")
@@ -683,8 +707,8 @@ model RegistroHorometro {
 
   /// Desfase detectado entre el reloj del dispositivo y el del servidor al
   /// abrir/cerrar (`clientTimestamp - serverTimestamp`, en ms) — se audita,
-  /// nunca se usa para rechazar salvo que sea absurdo (Fase 2: > 24 h futuro
-  /// o > 7 días de antigüedad).
+  /// nunca se usa para rechazar salvo que sea absurdo (> 24 h en el futuro
+  /// o > 7 días atrás).
   clientClockSkewMs Int? @map("client_clock_skew_ms")
 
   /// Carga de combustible 1:1 creada al cierre cuando `fuelLiters > 0` (ver
@@ -697,13 +721,13 @@ model RegistroHorometro {
 
 /// Turno de Supervisión en Terreno: agrupa las tarjetas (`RegistroHorometro`)
 /// que un supervisor abre en una fecha+tipo de turno. Clave natural
-/// `(supervisorId, date, type)` — Fase 2 lo crea con upsert por esa clave al
+/// `(supervisorId, date, type)` — se crea con upsert por esa clave al
 /// abrir la primera tarjeta del turno, nunca con un endpoint `createShift`
-/// propio. Contrato compartido con el Módulo B (reporte diario, Alexander).
+/// propio. Contrato compartido con el Módulo B (reporte diario).
 model Shift {
   id   String   @id @default(cuid())
   /// Sin hora: el turno es "el día X", no un instante. La API lo sirve como
-  /// string `YYYY-MM-DD` (Fase 2, capa de servicio) — acá es `@db.Date` para
+  /// string `YYYY-MM-DD` (capa de servicio) — acá es `@db.Date` para
   /// que dos turnos del mismo día no puedan diferir por zona horaria.
   date DateTime @db.Date
   /// DIURNO | NOCTURNO — `String` y no enum Prisma, mismo criterio que
@@ -724,7 +748,7 @@ model Shift {
   @@map("shift")
 }
 
-/// Reporte de salida de turno (Módulo A, Fase 3: PDF + envío). El PK es el
+/// Reporte de salida de turno (Módulo A: PDF + envío). El PK es el
 /// UUID que genera el cliente al pedir el reporte (idempotencia: reintentar
 /// con el mismo id devuelve el mismo reporte en vez de generar el PDF de
 /// nuevo). Un `Shift` puede tener MÁS de un reporte — se permite reenviar si
@@ -754,9 +778,8 @@ model ShiftExitReport {
   @@map("shift_exit_report")
 }
 
-/// Catálogo propio de operadores de Supervisión en Terreno (RFC, decisión
-/// 28/09: "Operadores = catálogo propio"), reemplaza el arreglo
-/// `OPERADORES` hardcodeado en `RegistroEquipoView.tsx` del frontend. CRUD
+/// Catálogo propio de operadores de Supervisión en Terreno (el operador no es
+/// usuario de la plataforma). CRUD
 /// clonado de `src/branch/*`: lectura abierta a cualquier sesión, escritura
 /// ADMIN/SUPERVISOR, borrado ADMIN con guarda de uso (409 si algún
 /// `RegistroHorometro` lo referencia).
@@ -774,15 +797,18 @@ model Operator {
 
   horometros RegistroHorometro[]
 
-  /// Asignación de uso ACTUAL de Flota (`Equipment.currentOperatorId`, RFC
-  /// Supervisión en Terreno, anexo "el operador deja de ser usuario de la
-  /// plataforma") — inverso de la FK real agregada en esa migración.
+  /// Asignación de uso ACTUAL de Flota (`Equipment.currentOperatorId`) —
+  /// inverso de la FK real.
   assignedEquipment Equipment[]
 
-  /// Trabajos extraordinarios asignados a este operador del catálogo (RFC
-  /// Supervisión en Terreno, Anexo 2 "operador del catálogo en Trabajos
-  /// extra") — inverso de `TrabajoExtraordinario.operatorId`.
+  /// Trabajos extraordinarios asignados a este operador del catálogo —
+  /// inverso de `TrabajoExtraordinario.operatorId`.
   trabajosExtra TrabajoExtraordinario[]
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@map("operator")
 }
@@ -798,8 +824,8 @@ model TrabajoExtraordinario {
   /// desactiva después). Nullable por las filas legacy (texto libre sin match
   /// determinístico en el catálogo, ver migración de backfill); para las
   /// filas NUEVAS es obligatorio a nivel de servicio
-  /// (`CreateTrabajoExtraDto.operatorId`) — el cliente ya no puede mandar
-  /// `operador` directamente (RFC Supervisión en Terreno, Anexo 2). `SetNull`:
+  /// (`CreateTrabajoExtraDto.operatorId`) — el cliente no puede mandar
+  /// `operador` directamente. `SetNull`:
   /// borrar/desactivar un operador no debe borrar el historial de trabajos
   /// que lo referencian.
   operatorId       String?   @map("operator_id")
@@ -809,15 +835,15 @@ model TrabajoExtraordinario {
   horometroInicial Float
   horometroFinal   Float
   totalHoras       Float
-  /// Actividades del trabajo. Son VARIAS: la especificación del 21/09 pide
+  /// Actividades del trabajo. Son VARIAS: se permite
   /// multi-selección, porque una misma salida suele mezclar tareas — soltar
   /// material y después limpiar la cancha es un trabajo, no dos.
   /// Valores: REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL |
   /// LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA.
   actividades      String[]
   /// Texto libre de la opción «Otro», para la tarea que no estaba en la lista.
-  /// Null cuando no se eligió «Otro». El catálogo administrable que pide R7 es
-  /// un paso posterior; esto es la válvula de escape mientras tanto.
+  /// Null cuando no se eligió «Otro». Es la válvula de escape mientras no exista
+  /// un catálogo administrable de actividades.
   otraActividad    String?   @map("otra_actividad")
   descripcion      String
   observaciones    String?
@@ -860,7 +886,7 @@ model Hallazgo {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Dominio Mantenimiento (dueño: Joaquín). Órdenes de trabajo, bitácora de
+// 4. Dominio Mantenimiento. Órdenes de trabajo, bitácora de
 // intervención, motor preventivo y actividades.
 //
 // Referencias a otros dominios (equipoId → Equipo de Flota, insumoId → Insumo
@@ -868,7 +894,7 @@ model Hallazgo {
 // user.id de Better Auth) se mantienen como "soft refs": String sin relación
 // Prisma. Esas tablas ya existen, pero se dejan desacopladas por ahora para no
 // atar esta migración a las de Flota/Inventario/Terreno; convertirlas a FK real
-// es un cambio a coordinar con Amin/Alexander. Relaciones Prisma reales SOLO
+// es un cambio a coordinar con esos dominios. Relaciones Prisma reales SOLO
 // entre tablas propias de este dominio.
 // ---------------------------------------------------------------------------
 
@@ -911,7 +937,7 @@ enum OrigenActividad {
 
 model OrdenTrabajo {
   id             String         @id @default(cuid())
-  equipoId       String // soft ref → Equipo (Flota/Amin)
+  equipoId       String // soft ref → Equipo (Flota)
   asignadoAId    String? // soft ref → user.id
   titulo         String
   estado         EstadoOT       @default(PENDIENTE)
@@ -923,6 +949,11 @@ model OrdenTrabajo {
   intervenciones Intervencion[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@index([estado])
   @@index([equipoId])
@@ -954,6 +985,11 @@ model Intervencion {
   insumos        IntervencionInsumo[]
   fecha          DateTime             @default(now())
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@index([ordenId])
   @@map("intervencion")
 }
@@ -962,7 +998,7 @@ model IntervencionInsumo {
   id             String       @id @default(cuid())
   intervencionId String
   intervencion   Intervencion @relation(fields: [intervencionId], references: [id], onDelete: Cascade)
-  insumoId       String // soft ref → Insumo (Inventario/Amin)
+  insumoId       String // soft ref → Insumo (Inventario)
   cantidad       Int
 
   @@index([intervencionId])
@@ -974,6 +1010,11 @@ model UmbralMantenimiento {
   tipoEquipo     String
   tipoMantencion String
   umbralHoras    Int
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@map("umbral_mantenimiento")
 }
@@ -989,6 +1030,11 @@ model Actividad {
   estado      EstadoActividad @default(PENDIENTE)
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@map("actividad")
 }

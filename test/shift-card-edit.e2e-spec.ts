@@ -1,6 +1,6 @@
 /**
- * Gate e2e de AdBlue al cierre (Acta N.° 004, R12) y de la edición de
- * tarjetas ya enviadas (R13): `POST /api/shift-cards/:id/close` con AdBlue,
+ * Prueba e2e de AdBlue al cierre y de la edición de
+ * tarjetas ya enviadas: `POST /api/shift-cards/:id/close` con AdBlue,
  * `PATCH /api/shift-cards/:id` y `GET /api/shift-cards/:id/changes` contra una
  * app Nest real (mismo pipeline que `main.ts`, vía `configureApp`) y Postgres
  * + MinIO REALES.
@@ -42,7 +42,7 @@ import {
   DEFAULT_DEV_STORAGE_SECRET_ACCESS_KEY,
 } from '../src/common/config/env';
 import { DOMAIN_EVENTS } from '../src/common/events/domain-events';
-import { todayInBusinessTimeZone } from '../src/shifts/date-only';
+import { todayInBusinessTimeZone } from '../src/common/dates/business-time';
 import { ApiEnvelope, ErrorEnvelope } from './helpers/api-envelope';
 import { bootstrapApp } from './helpers/bootstrap-app';
 import {

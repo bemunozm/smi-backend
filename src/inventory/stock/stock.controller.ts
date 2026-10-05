@@ -3,6 +3,7 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import { formatNumber } from '../../common/format/number';
 import { StockService } from '../stock.service';
 import { SetMinimumDto } from './dto/set-minimum.dto';
 import { TransferStockDto } from './dto/transfer-stock.dto';
@@ -35,9 +36,8 @@ export class StockController {
 
   /**
    * Traspaso entre sucursales. ADMIN y SUPERVISOR: mueve existencia entre
-   * bodegas, que es una decisión de operación y no de taller. (La autorización
-   * definitiva quedó abierta en RFC-3 — si el equipo define otra cosa, se
-   * cambia acá.)
+   * bodegas, que es una decisión de operación y no de taller. (Si el equipo define otra
+   * autorización para traspasos, se cambia acá.)
    */
   @Post('transfer')
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
@@ -48,7 +48,7 @@ export class StockController {
     const result = await this.service.transfer(dto, session.user.id);
     return {
       data: result,
-      message: `Traspaso registrado: ${dto.quantity} de ${result.sourceBranchName} a ${result.destinationBranchName}`,
+      message: `Traspaso registrado: ${formatNumber(dto.quantity)} de ${result.sourceBranchName} a ${result.destinationBranchName}`,
     };
   }
 }

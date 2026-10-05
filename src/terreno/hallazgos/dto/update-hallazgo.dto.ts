@@ -1,7 +1,7 @@
 import { IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 
 /**
- * Edición de un hallazgo ya registrado (Acta N.° 004, R13): corrige un error
+ * Edición de un hallazgo ya registrado: corrige un error
  * humano —el equipo equivocado, una prioridad mal elegida, una descripción a
  * medias— sin autorización previa, pero con registro de quién cambió qué. Se
  * manda solo lo que cambió.

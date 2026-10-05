@@ -10,8 +10,8 @@ import { ShiftsController } from './shifts.controller';
 import { ShiftsService } from './shifts.service';
 
 /**
- * Supervisión en Terreno, Módulo A (RFC Supervisión en Terreno, Fases 2-3).
- * Módulo nuevo y propio — NO vive dentro de `TerrenoModule` (Alexander):
+ * Supervisión en Terreno, Módulo A.
+ * Módulo propio — NO vive dentro de `TerrenoModule`:
  * reutiliza `RegistroHorometro` como tabla, pero es un dominio/flujo aparte
  * (abrir/cerrar en dos pasos con idempotencia por id de cliente), igual que
  * Flota (`HorometroModule`) también escribe sobre esa misma tabla sin vivir

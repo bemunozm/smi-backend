@@ -44,7 +44,7 @@ interface UploadFileResponse {
   message: string;
 }
 
-// Solo SUPERVISOR/ADMIN suben archivos de Flota (ver Diseño del RFC).
+// Solo SUPERVISOR/ADMIN suben archivos de Flota.
 @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
 @Controller('files')
 export class FilesController {
@@ -55,7 +55,7 @@ export class FilesController {
    * previsualizarlo. El caller (formulario de Flota) todavía no lo asocia a
    * ningún equipo/registro — eso pasa al hacer submit del formulario, cuando
    * el servicio de dominio "reclama" la key (ver `StorageService.claimTmp`,
-   * Fase 2, fuera de este módulo).
+   * fuera de este módulo).
    */
   @Post()
   @UseInterceptors(
@@ -64,7 +64,7 @@ export class FilesController {
       // `fields:0`/`parts:1` asumen que el cliente manda ÚNICAMENTE la parte
       // `file` (confirmado: `uploadFile`/`uploadImage`/`fuelReadingOcr` del
       // front solo appendean `'file'`) — reduce la superficie de DoS por
-      // multipart abusivo (hallazgo MEDIO M2 de la revisión de seguridad).
+      // multipart abusivo.
       limits: {
         fileSize: MAX_FILE_SIZE_BYTES,
         files: 1,

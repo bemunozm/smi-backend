@@ -3,9 +3,22 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ERROR_CODES } from '../errors/error-codes';
 
 /** Valores base que el cliente vio al empezar a editar: `{ campo: valorBase }`. */
-export type ExpectedFields = Record<string, unknown>;
+export type ExpectedValues = Record<string, unknown>;
 
 export const EXPECTED_HEADER = 'x-expected';
+
+/**
+ * Tope del header ya codificado. Node corta los headers sobre 16 KB con un
+ * 431 que el cliente offline trata como error de negocio; 8 KB deja margen y
+ * sobra para los campos editables de cualquier registro.
+ */
+export const EXPECTED_HEADER_MAX_LENGTH = 8 * 1024;
+
+const isPrimitive = (value: unknown): boolean =>
+  value === null ||
+  typeof value === 'string' ||
+  typeof value === 'number' ||
+  typeof value === 'boolean';
 
 /**
  * Lee el header opcional `X-Expected`. Sin header (o vacío) no hay
@@ -13,8 +26,13 @@ export const EXPECTED_HEADER = 'x-expected';
  */
 export function parseExpectedHeader(
   raw: string | undefined,
-): ExpectedFields | undefined {
+): ExpectedValues | undefined {
   if (raw === undefined || raw.trim() === '') return undefined;
+  if (raw.length > EXPECTED_HEADER_MAX_LENGTH) {
+    throw new BadRequestException(
+      `El header X-Expected supera el máximo de ${EXPECTED_HEADER_MAX_LENGTH} caracteres`,
+    );
+  }
 
   // Los navegadores rechazan valores de header fuera de Latin-1 y la base
   // puede llevar texto libre («—», comillas tipográficas, emojis): el cliente
@@ -32,7 +50,24 @@ export function parseExpectedHeader(
       'El header X-Expected debe ser un objeto { campo: valorBase }',
     );
   }
-  return parsed as ExpectedFields;
+
+  // Solo valores comparables: un objeto anidado no tiene forma de coincidir
+  // con una columna y obligaría a recorrerlo (o serializarlo) sin tope.
+  // Los arreglos de primitivos son las listas (las actividades de un trabajo).
+  const entries = Object.entries(parsed);
+  const invalido = entries.find(
+    ([, value]) =>
+      !(
+        isPrimitive(value) ||
+        (Array.isArray(value) && value.every((item) => isPrimitive(item)))
+      ),
+  );
+  if (invalido) {
+    throw new BadRequestException(
+      `El valor de «${invalido[0]}» en X-Expected debe ser texto, número, booleano, null o una lista de ellos`,
+    );
+  }
+  return Object.fromEntries(entries);
 }
 
 /**
@@ -65,18 +100,21 @@ export function normalizeComparable(value: unknown): unknown {
  */
 export function assertExpected(
   current: Record<string, unknown>,
-  expected: ExpectedFields | undefined,
+  expected: ExpectedValues | undefined,
   desired: Record<string, unknown>,
   labels: Record<string, string> = {},
 ): void {
   if (!expected) return;
 
   const stale = Object.keys(expected).filter((field) => {
-    if (!(field in current)) return false;
+    // `Object.hasOwn`: `in` también ve lo heredado (`constructor`, `toString`).
+    if (!Object.hasOwn(current, field)) return false;
     const actual = normalizeComparable(current[field]);
     // Un campo que el body no toca no cambia: se compara contra lo vigente,
     // así no genera ni un falso pase ni un falso conflicto.
-    const deseado = field in desired ? desired[field] : current[field];
+    const deseado = Object.hasOwn(desired, field)
+      ? desired[field]
+      : current[field];
     return (
       actual !== normalizeComparable(expected[field]) &&
       actual !== normalizeComparable(deseado)
@@ -84,7 +122,11 @@ export function assertExpected(
   });
   if (stale.length === 0) return;
 
-  const nombres = stale.map((field) => labels[field] ?? field).join(', ');
+  // Dos campos pueden compartir etiqueta (el id y el nombre de un operador):
+  // se nombra una sola vez.
+  const nombres = [
+    ...new Set(stale.map((field) => labels[field] ?? field)),
+  ].join(', ');
   throw new ConflictException({
     message: `El registro cambió mientras lo editabas (${nombres}). Revisa los datos actuales antes de guardar.`,
     code: ERROR_CODES.STALE_UPDATE,

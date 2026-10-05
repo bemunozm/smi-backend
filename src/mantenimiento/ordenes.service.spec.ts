@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import { OrdenesService } from './ordenes.service';
@@ -40,6 +41,7 @@ describe('OrdenesService', () => {
   const tareaOTUpdate = jest.fn();
   const userFindMany = jest.fn();
   const emit = jest.fn();
+  const queryRaw = jest.fn();
 
   beforeEach(async () => {
     ordenTrabajoFindMany.mockReset();
@@ -50,6 +52,7 @@ describe('OrdenesService', () => {
     tareaOTUpdate.mockReset();
     userFindMany.mockReset();
     emit.mockReset();
+    queryRaw.mockReset();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,6 +71,17 @@ describe('OrdenesService', () => {
               update: tareaOTUpdate,
             },
             user: { findMany: userFindMany },
+            // Con `X-Expected` la escritura va en una transacción que bloquea
+            // la fila: el mock ejecuta el callback con el mismo cliente.
+            $queryRaw: queryRaw,
+            $transaction: (fn: (tx: unknown) => unknown) =>
+              fn({
+                ordenTrabajo: {
+                  findUnique: ordenTrabajoFindUnique,
+                  update: ordenTrabajoUpdate,
+                },
+                $queryRaw: queryRaw,
+              }),
           },
         },
         { provide: EventEmitter2, useValue: { emit } },
@@ -231,6 +245,150 @@ describe('OrdenesService', () => {
         titulo: 'Título editado',
       });
 
+      expect(emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('create con id del cliente (reintento offline)', () => {
+    const ID = '11111111-1111-4111-8111-111111111111';
+    const dto = {
+      id: ID,
+      equipoId: 'CM-003',
+      titulo: 'Frenos con baja respuesta',
+      tareas: [{ texto: 'Medir espesor de balatas' }],
+    };
+
+    it('replay del mismo usuario: devuelve la orden sin crear otra', async () => {
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce({ createdById: 'u1' })
+        .mockResolvedValueOnce({ ...MOCK_ORDEN, id: ID });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      const result = await service.create(dto, 'u1');
+
+      expect(result.id).toBe(ID);
+      expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+    });
+
+    it('id ocupado por otro usuario: 409 ID_CONFLICT', async () => {
+      ordenTrabajoFindUnique.mockResolvedValueOnce({ createdById: 'otro' });
+
+      await expect(service.create(dto, 'u1')).rejects.toMatchObject({
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+      expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+    });
+
+    it('crea con el id del cliente y el dueño', async () => {
+      ordenTrabajoFindUnique.mockResolvedValueOnce(null);
+      ordenTrabajoCreate.mockResolvedValue({ ...MOCK_ORDEN, id: ID });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      await service.create(dto, 'u1');
+
+      const [{ data }] = ordenTrabajoCreate.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({ id: ID, createdById: 'u1' });
+    });
+  });
+
+  describe('update con X-Expected', () => {
+    beforeEach(() => {
+      queryRaw.mockResolvedValue([{ id: 'orden_1' }]);
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+    });
+
+    it('si otro cambió el estado: 409 STALE_UPDATE, no escribe y no emite', async () => {
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce({ ...MOCK_ORDEN, estado: 'PENDIENTE' })
+        .mockResolvedValueOnce({
+          estado: 'CANCELADA',
+          asignadoAId: null,
+          prioridad: 'CRITICA',
+          titulo: 'Frenos con baja respuesta',
+        });
+
+      await expect(
+        service.update(
+          'orden_1',
+          { estado: 'COMPLETADA' },
+          { estado: 'PENDIENTE' },
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ERROR_CODES.STALE_UPDATE },
+      });
+      expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it('la transición se evalúa contra el estado bajo bloqueo y el evento sale tras confirmar', async () => {
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce({ ...MOCK_ORDEN, estado: 'PENDIENTE' })
+        .mockResolvedValueOnce({
+          estado: 'PENDIENTE',
+          asignadoAId: 'user_mantenedor',
+          prioridad: 'CRITICA',
+          titulo: 'Frenos con baja respuesta',
+        });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'COMPLETADA',
+      });
+
+      await service.update(
+        'orden_1',
+        { estado: 'COMPLETADA' },
+        { estado: 'PENDIENTE' },
+      );
+
+      expect(emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.ORDEN_COMPLETED,
+        expect.objectContaining({ ordenId: 'orden_1' }),
+      );
+    });
+
+    it('el reintento de una edición ya aplicada pasa sin emitir de nuevo', async () => {
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce({ ...MOCK_ORDEN, estado: 'COMPLETADA' })
+        .mockResolvedValueOnce({
+          estado: 'COMPLETADA',
+          asignadoAId: 'user_mantenedor',
+          prioridad: 'CRITICA',
+          titulo: 'Frenos con baja respuesta',
+        });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'COMPLETADA',
+      });
+
+      await service.update(
+        'orden_1',
+        { estado: 'COMPLETADA' },
+        { estado: 'PENDIENTE' },
+      );
+
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it('si la escritura falla dentro de la transacción no se emite nada', async () => {
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce({ ...MOCK_ORDEN, estado: 'PENDIENTE' })
+        .mockResolvedValueOnce({
+          estado: 'PENDIENTE',
+          asignadoAId: 'user_mantenedor',
+          prioridad: 'CRITICA',
+          titulo: 'Frenos con baja respuesta',
+        });
+      ordenTrabajoUpdate.mockRejectedValue(new Error('boom'));
+
+      await expect(
+        service.update(
+          'orden_1',
+          { estado: 'COMPLETADA' },
+          { estado: 'PENDIENTE' },
+        ),
+      ).rejects.toThrow('boom');
       expect(emit).not.toHaveBeenCalled();
     });
   });

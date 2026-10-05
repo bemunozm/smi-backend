@@ -18,7 +18,7 @@ import { OcrService, type OcrFuelReadingResult } from './ocr.service';
  * `uploads/`: la foto de litros nunca se persiste en disco (se procesa
  * en memoria y se descarta, ver `memoryStorage()` abajo), solo acepta
  * imágenes (no PDF), y mantener el módulo autocontenido facilita separarlo
- * en su propio PR más adelante (ver instrucciones de la tarea).
+ * del resto.
  */
 export function fuelReadingImageFilter(
   _req: Request,

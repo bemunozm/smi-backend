@@ -6,10 +6,9 @@ import {
 } from './env';
 
 /**
- * Cubre el fix del máximo de `STORAGE_SIGNED_URL_TTL_SECONDS` (RFC
- * R2-storage): bajó de 604800 a 403200 porque
+ * Cubre el máximo de `STORAGE_SIGNED_URL_TTL_SECONDS` (403200):
  * `StorageService.sign` firma con `expiresIn = TTL + floor(TTL/2)` (ventana
- * estable, ver `storage.service.ts`) — con el máximo viejo (604800) eso daba
+ * estable, ver `storage.service.ts`), así que un TTL de 604800 daría
  * expiresIn=907200, por encima del límite real de SigV4 (604800), y
  * `getSignedUrl` lo rechaza.
  */
@@ -18,7 +17,7 @@ describe('parseStorageSignedUrlTtlSeconds', () => {
     expect(parseStorageSignedUrlTtlSeconds(undefined)).toBe(3600);
   });
 
-  it('acepta el nuevo máximo (403200) — MAX + floor(MAX/2) da EXACTO el límite real de SigV4 (604800)', () => {
+  it('acepta el máximo (403200) — MAX + floor(MAX/2) da EXACTO el límite real de SigV4 (604800)', () => {
     const ttl = parseStorageSignedUrlTtlSeconds(
       String(MAX_STORAGE_SIGNED_URL_TTL_SECONDS),
     );
@@ -28,7 +27,7 @@ describe('parseStorageSignedUrlTtlSeconds', () => {
     expect(ttl + windowSeconds).toBe(604800);
   });
 
-  it('rechaza un valor por encima del nuevo máximo', () => {
+  it('rechaza un valor por encima del máximo', () => {
     expect(() =>
       parseStorageSignedUrlTtlSeconds(
         String(MAX_STORAGE_SIGNED_URL_TTL_SECONDS + 1),
@@ -36,7 +35,7 @@ describe('parseStorageSignedUrlTtlSeconds', () => {
     ).toThrow(/STORAGE_SIGNED_URL_TTL_SECONDS/);
   });
 
-  it('el viejo máximo (604800) ya NO es válido', () => {
+  it('604800 no es válido (excede el máximo)', () => {
     expect(() => parseStorageSignedUrlTtlSeconds('604800')).toThrow();
   });
 

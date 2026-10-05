@@ -1,5 +1,5 @@
 /**
- * Gate e2e de `PATCH /api/equipment/:id/assignment` — operadores del catálogo
+ * Prueba e2e de `PATCH /api/equipment/:id/assignment` — operadores del catálogo
  * (`Operator`, FK real desde `Equipment.currentOperatorId`): ejercita el
  * contrato contra una app Nest real (mismo pipeline que `main.ts`, vía
  * `configureApp`) y Postgres REAL (sin mocks) — asignar un operador activo,

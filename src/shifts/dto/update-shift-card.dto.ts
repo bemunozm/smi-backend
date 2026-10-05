@@ -18,7 +18,7 @@ import { ADBLUE_MAX_LITERS } from '../adblue';
 const isPresent = (_: unknown, value: unknown): boolean => value !== undefined;
 
 /**
- * Edición de una tarjeta de turno ya enviada (Acta N.° 004, R13). Se manda
+ * Edición de una tarjeta de turno ya enviada. Se manda
  * solo lo que cambió; al menos un campo (lo verifica `ShiftsService.update`,
  * que ve el body completo). Mismos límites que al abrir y al cerrar.
  *

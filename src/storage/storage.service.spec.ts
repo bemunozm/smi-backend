@@ -152,7 +152,7 @@ describe('StorageService', () => {
       );
     });
 
-    it('el 400 de NoSuchKey trae code TMP_KEY_EXPIRED en el body (RFC Supervisión en Terreno)', async () => {
+    it('el 400 de NoSuchKey trae code TMP_KEY_EXPIRED en el body', async () => {
       const tmpKey = buildTmpKey(USER_ID, 'jpg');
       const noSuchKeyError = Object.assign(new Error('not found'), {
         name: 'NoSuchKey',
@@ -203,7 +203,7 @@ describe('StorageService', () => {
         date: new Date('2026-09-28T12:00:00.000Z'),
       });
 
-      // M3: la key ya NO es determinística — lleva un sufijo aleatorio por
+      // La key no es determinística — lleva un sufijo aleatorio por
       // intento (ver storage-keys.spec.ts), así que acá se matchea el shape,
       // no el string exacto.
       expect(key).toMatch(/^reports\/shift-exit\/2026\/09\/report-1-.+\.pdf$/);
@@ -225,7 +225,7 @@ describe('StorageService', () => {
       );
     });
 
-    it('M3: dos subidas con el mismo id producen keys distintas', async () => {
+    it('dos subidas con el mismo id producen keys distintas', async () => {
       sendSpy.mockResolvedValue({});
       const first = await service.putServerFile(
         'shift-exit-report',
@@ -422,9 +422,8 @@ describe('StorageService', () => {
   describe('onModuleInit', () => {
     // `warnIfUsingDevCredentials` dispara siempre que `NODE_ENV !==
     // 'production'` — estos
-    // tests fuerzan `NODE_ENV = 'production'` para aislar el warn del
-    // `HeadBucket` (que es lo que ya cubrían antes de ese hallazgo) del warn
-    // de credenciales dev, que se prueba aparte más abajo.
+    // tests fuerzan `NODE_ENV = 'production'` para aislar el `HeadBucket` del
+    // warn de credenciales dev, que se prueba aparte más abajo.
     const originalNodeEnv = process.env.NODE_ENV;
 
     afterEach(() => {

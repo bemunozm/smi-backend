@@ -1,48 +1,62 @@
 import { BadRequestException } from '@nestjs/common';
 
 import {
-  assertReasonableCapturedAt,
   computeClientClockSkewMs,
   MAX_FUTURE_CAPTURE_SKEW_MS,
   MAX_PAST_CAPTURE_SKEW_MS,
+  resolveCapturedAt,
   resolveCapturedAtWithFallback,
 } from './capture-time';
 
 const NOW = new Date('2026-09-28T12:00:00.000Z');
 
-describe('assertReasonableCapturedAt', () => {
-  it('acepta la hora actual', () => {
-    expect(() => assertReasonableCapturedAt(NOW, NOW)).not.toThrow();
+describe('resolveCapturedAt', () => {
+  it('sin valor usa la hora del servidor, sin desfase', () => {
+    expect(resolveCapturedAt(undefined, NOW)).toEqual({
+      at: NOW,
+      discardedSkewMs: undefined,
+    });
+    expect(resolveCapturedAt('', NOW).at).toBe(NOW);
   });
 
-  it('acepta hasta 24h en el futuro', () => {
-    const capturedAt = new Date(NOW.getTime() + MAX_FUTURE_CAPTURE_SKEW_MS);
-    expect(() => assertReasonableCapturedAt(capturedAt, NOW)).not.toThrow();
+  it('usa la hora del dispositivo si está dentro de la ventana', () => {
+    const value = new Date(NOW.getTime() - 60_000).toISOString();
+    const result = resolveCapturedAt(value, NOW);
+    expect(result.at.toISOString()).toBe(value);
+    expect(result.discardedSkewMs).toBeUndefined();
   });
 
-  it('rechaza más de 24h en el futuro', () => {
-    const capturedAt = new Date(NOW.getTime() + MAX_FUTURE_CAPTURE_SKEW_MS + 1);
-    expect(() => assertReasonableCapturedAt(capturedAt, NOW)).toThrow(
-      BadRequestException,
-    );
+  it('acepta justo 24 h en el futuro y justo 7 días atrás', () => {
+    const future = new Date(NOW.getTime() + MAX_FUTURE_CAPTURE_SKEW_MS);
+    const past = new Date(NOW.getTime() - MAX_PAST_CAPTURE_SKEW_MS);
+    expect(resolveCapturedAt(future.toISOString(), NOW).at).toEqual(future);
+    expect(resolveCapturedAt(past.toISOString(), NOW).at).toEqual(past);
   });
 
-  it('acepta hasta 7 días de antigüedad', () => {
-    const capturedAt = new Date(NOW.getTime() - MAX_PAST_CAPTURE_SKEW_MS);
-    expect(() => assertReasonableCapturedAt(capturedAt, NOW)).not.toThrow();
+  it('más de 24 h en el futuro: no rechaza, usa la hora del servidor y deja el desfase', () => {
+    const device = new Date(NOW.getTime() + MAX_FUTURE_CAPTURE_SKEW_MS + 1);
+    const result = resolveCapturedAt(device.toISOString(), NOW);
+    expect(result.at).toBe(NOW);
+    expect(result.discardedSkewMs).toBe(-(MAX_FUTURE_CAPTURE_SKEW_MS + 1));
   });
 
-  it('rechaza más de 7 días de antigüedad', () => {
-    const capturedAt = new Date(NOW.getTime() - MAX_PAST_CAPTURE_SKEW_MS - 1);
-    expect(() => assertReasonableCapturedAt(capturedAt, NOW)).toThrow(
-      BadRequestException,
-    );
+  it('más de 7 días atrás: no rechaza, usa la hora del servidor y deja el desfase', () => {
+    const device = new Date(NOW.getTime() - MAX_PAST_CAPTURE_SKEW_MS - 1);
+    const result = resolveCapturedAt(device.toISOString(), NOW);
+    expect(result.at).toBe(NOW);
+    expect(result.discardedSkewMs).toBe(MAX_PAST_CAPTURE_SKEW_MS + 1);
   });
 
-  it('rechaza una fecha no parseable (NaN) con INVALID_CAPTURE_TIME', () => {
+  it('un desfase que desborda INTEGER se descarta, sin lanzar', () => {
+    const result = resolveCapturedAt('1970-01-01T00:00:00Z', NOW);
+    expect(result.at).toBe(NOW);
+    expect(result.discardedSkewMs).toBeUndefined();
+  });
+
+  it('un formato que no es fecha sigue siendo 400 INVALID_CAPTURE_TIME', () => {
     expect.assertions(2);
     try {
-      assertReasonableCapturedAt(new Date('2026-W01'), NOW);
+      resolveCapturedAt('2026-W01', NOW);
     } catch (error: unknown) {
       expect(error).toBeInstanceOf(BadRequestException);
       expect((error as BadRequestException).getResponse()).toMatchObject({

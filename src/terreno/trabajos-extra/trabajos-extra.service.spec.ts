@@ -29,12 +29,12 @@ describe('TrabajosExtraService', () => {
       findMany: jest.fn(),
       update: jest.fn(),
     },
-    // Se mockea para probar que un turno abierto ya NO bloquea el trabajo.
+    // Se mockea para probar que un turno abierto no bloquea el trabajo.
     registroHorometro: { findFirst: jest.fn() },
     // La edición y su registro de cambios van en una sola transacción.
     $transaction: jest.fn(),
     // Bloqueo de la fila (`FOR UPDATE`) cuando la edición trae `X-Expected`.
-    $queryRaw: jest.fn(),
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 't1' }]),
   };
   const assertActive = jest.fn();
   const eventEmitter = { emit: jest.fn() };
@@ -326,6 +326,7 @@ describe('TrabajosExtraService', () => {
       return new Prisma.PrismaClientKnownRequestError('unique', {
         code: 'P2002',
         clientVersion: 'test',
+        meta: { target: ['id'] },
       });
     }
 
@@ -349,19 +350,41 @@ describe('TrabajosExtraService', () => {
       const data = createdData();
       expect('id' in data).toBe(false);
       expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(before);
-      expect(prisma.trabajoExtraordinario.findFirst).not.toHaveBeenCalled();
+      expect(prisma.trabajoExtraordinario.findUnique).not.toHaveBeenCalled();
     });
 
-    it('rechaza un capturedAt absurdo con 400 y no escribe', async () => {
+    it('un capturedAt fuera de ventana no rechaza: se guarda con la hora del servidor', async () => {
+      const antes = Date.now();
+
+      await createAs({ ...payload, capturedAt: '2001-01-01T00:00:00.000Z' });
+
+      const [args] = prisma.trabajoExtraordinario.create.mock.calls[0] as [
+        { data: { fecha: Date } },
+      ];
+      expect(args.data.fecha.getTime()).toBeGreaterThanOrEqual(antes);
+    });
+
+    it('un capturedAt con formato inválido es 400 y no escribe', async () => {
       await expect(
-        createAs({ ...payload, capturedAt: '2001-01-01T00:00:00.000Z' }),
+        createAs({ ...payload, capturedAt: '2026-W01' }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
     });
 
+    it('guarda las observaciones vacías como null, no como texto vacío', async () => {
+      await createAs({ ...payload, observaciones: '   ' });
+
+      const [args] = prisma.trabajoExtraordinario.create.mock.calls[0] as [
+        { data: { observaciones: string | null } },
+      ];
+      expect(args.data.observaciones).toBeNull();
+    });
+
     it('el reintento del mismo usuario devuelve la fila existente sin re-evaluar reglas, aunque el operador se haya desactivado', async () => {
       const existing = { id: ID, operador: 'Juan Rojas' };
-      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(existing);
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(existing);
       assertActive.mockRejectedValue(
         new ConflictException({
           message: 'inactivo',
@@ -381,7 +404,9 @@ describe('TrabajosExtraService', () => {
 
     it('el reintento de una fila ya creada no revalida capturedAt', async () => {
       const existing = { id: ID };
-      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(existing);
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(existing);
 
       const res = await createAs({
         ...payload,
@@ -392,7 +417,9 @@ describe('TrabajosExtraService', () => {
     });
 
     it('otro usuario con el mismo id -> 409 ID_CONFLICT', async () => {
-      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({ id: ID });
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        createdById: 'otro',
+      });
 
       await expect(createAs(payload)).rejects.toMatchObject({
         status: 409,
@@ -402,7 +429,9 @@ describe('TrabajosExtraService', () => {
     });
 
     it('una fila legacy sin dueño con ese id -> 409 ID_CONFLICT', async () => {
-      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({ id: ID });
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        createdById: null,
+      });
 
       await expect(createAs(payload)).rejects.toMatchObject({
         response: { code: 'ID_CONFLICT' },
@@ -411,8 +440,9 @@ describe('TrabajosExtraService', () => {
 
     it('carrera P2002: relee y devuelve la fila propia', async () => {
       const winner = { id: ID };
-      prisma.trabajoExtraordinario.findFirst
+      prisma.trabajoExtraordinario.findUnique
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ createdById: USER_ID })
         .mockResolvedValueOnce(winner);
       prisma.trabajoExtraordinario.create.mockRejectedValueOnce(p2002());
 
@@ -422,7 +452,7 @@ describe('TrabajosExtraService', () => {
     it('carrera P2002 contra otro usuario -> 409 ID_CONFLICT', async () => {
       prisma.trabajoExtraordinario.findUnique
         .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ id: ID });
+        .mockResolvedValueOnce({ createdById: 'otro' });
       prisma.trabajoExtraordinario.create.mockRejectedValueOnce(p2002());
 
       await expect(createAs(payload)).rejects.toMatchObject({
@@ -431,12 +461,12 @@ describe('TrabajosExtraService', () => {
     });
   });
   /**
-   * Acta N.° 004, R13: un trabajo ya registrado se edita sin autorización,
+   * Un trabajo ya registrado se edita sin autorización,
    * pero cada cambio queda registrado (quién, qué dato, antes y después) y
    * se le avisa al administrador.
    */
   describe('update', () => {
-    const editor = { id: 'u1', name: 'Limbert Villacorta' };
+    const editor = { id: 'u1', name: 'Supervisor de Prueba' };
     const guardado = {
       id: 't1',
       equipoId: 'e1',
@@ -502,7 +532,7 @@ describe('TrabajosExtraService', () => {
         expect.objectContaining({
           entity: 'trabajo_extra',
           entityId: 't1',
-          editedBy: 'Limbert Villacorta',
+          editedBy: 'Supervisor de Prueba',
           changes: [
             { label: 'Operador', before: 'Juan Rojas', after: 'Pedro Soto' },
           ],
@@ -546,7 +576,7 @@ describe('TrabajosExtraService', () => {
       expect(assertActive).not.toHaveBeenCalled();
     });
 
-    /** `operador` (texto libre) ya no es un campo editable: ver `UpdateTrabajoExtraDto`. */
+    /** `operador` (texto libre) no es un campo editable: ver `UpdateTrabajoExtraDto`. */
     it('el DTO de edición rechaza `operador` de texto libre', async () => {
       const dto = plainToInstance(UpdateTrabajoExtraDto, { operador: 'X' });
       const errores = await validate(dto, {
@@ -581,42 +611,115 @@ describe('TrabajosExtraService', () => {
       await expect(
         service.update('t1', { horometroFinal: 1100 }, editor),
       ).rejects.toThrow(/no puede ser menor/);
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
       expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
 
+    /** La regla se evalúa sobre la fila vigente, no sobre una lectura previa. */
+    it('valida el horómetro contra el inicial vigente bajo el bloqueo', async () => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        ...guardado,
+        horometroInicial: 1213,
+        horometroFinal: 1220,
+      });
+
+      await expect(
+        service.update('t1', { horometroFinal: 1212 }, editor),
+      ).rejects.toThrow(/no puede ser menor/);
+      expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
+    });
+
     /** Guardar sin cambiar nada no es un cambio: no se registra ni se avisa. */
-    it('no registra ni avisa si nada cambió', async () => {
+    it('no escribe, no registra ni avisa si nada cambió', async () => {
       await service.update('t1', { faena: 'Patillo' }, editor);
 
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
       expect(changeLog.record).not.toHaveBeenCalled();
       expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
 
-    /** El PATCH devuelve la misma forma que el listado: con `equipo`, sin `createdById`. */
-    it('las queries de la edición piden equipo y omiten createdById', async () => {
+    it('un cambio ajeno de OTRO campo confirmado antes del bloqueo no se revierte ni se registra como propio', async () => {
+      // La fila vigente (leída bajo el bloqueo) ya trae la descripción que
+      // otra persona corrigió después de que ésta empezó a editar.
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        ...guardado,
+        descripcion: 'Carga de material y despeje',
+      });
+
+      await service.update('t1', { faena: 'Kainita' }, editor, {
+        faena: 'Patillo',
+      });
+
+      const [args] = prisma.trabajoExtraordinario.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(args.data.descripcion).toBe('Carga de material y despeje');
+      expect(args.data.faena).toBe('Kainita');
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'trabajo_extra',
+        't1',
+        editor,
+        [
+          {
+            field: 'faena',
+            label: 'Faena',
+            before: 'Patillo',
+            after: 'Kainita',
+          },
+        ],
+      );
+    });
+
+    it('lo mismo sin X-Expected: el valor nuevo parte siempre de la fila vigente', async () => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        ...guardado,
+        turno: 'NOCTURNO',
+      });
+
       await service.update('t1', { faena: 'Kainita' }, editor);
 
-      for (const fn of [
-        prisma.trabajoExtraordinario.findUnique,
-        prisma.trabajoExtraordinario.update,
-      ]) {
-        const [args] = fn.mock.calls[0] as [
-          { include: unknown; omit: unknown },
-        ];
+      const [args] = prisma.trabajoExtraordinario.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(args.data.turno).toBe('NOCTURNO');
+    });
+
+    it('guarda las observaciones vacías como null', async () => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        ...guardado,
+        observaciones: 'algo',
+      });
+
+      await service.update('t1', { observaciones: '' }, editor);
+
+      const [args] = prisma.trabajoExtraordinario.update.mock.calls[0] as [
+        { data: { observaciones: string | null } },
+      ];
+      expect(args.data.observaciones).toBeNull();
+    });
+
+    /** El PATCH devuelve la misma forma que el listado: con `equipo`. El `createdById` lo omite el cliente de Prisma. */
+    it('las queries de la edición piden equipo', async () => {
+      await service.update('t1', { faena: 'Kainita' }, editor);
+
+      const lecturaBloqueada = prisma.trabajoExtraordinario.findUnique.mock
+        .calls[1] as [{ include: unknown }];
+      const escritura = prisma.trabajoExtraordinario.update.mock.calls[0] as [
+        { include: unknown },
+      ];
+      for (const [args] of [lecturaBloqueada, escritura]) {
         expect(args.include).toEqual({
           equipo: { select: { internalCode: true } },
         });
-        expect(args.omit).toEqual({ createdById: true });
       }
     });
 
     describe('X-Expected', () => {
-      it('sin precondición no bloquea la fila: el comportamiento de siempre', async () => {
+      it('bloquea la fila siempre, también sin precondición', async () => {
         await service.update('t1', { faena: 'Kainita' }, editor);
 
-        expect(prisma.$queryRaw).not.toHaveBeenCalled();
+        expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
       });
 
       it('con la base vigente aplica el cambio bajo bloqueo', async () => {
@@ -643,7 +746,8 @@ describe('TrabajosExtraService', () => {
           horometroFinal: 1212,
         });
 
-        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
+        expect(changeLog.record).not.toHaveBeenCalled();
         expect(eventEmitter.emit).not.toHaveBeenCalled();
       });
 
@@ -675,10 +779,11 @@ describe('TrabajosExtraService', () => {
         ).resolves.toBeDefined();
       });
 
-      it('un cambio ajeno entre la lectura y el bloqueo también da 409', async () => {
-        prisma.trabajoExtraordinario.findUnique
-          .mockResolvedValueOnce(guardado)
-          .mockResolvedValueOnce({ ...guardado, faena: 'Otra' });
+      it('un cambio ajeno confirmado antes del bloqueo da 409', async () => {
+        prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+          ...guardado,
+          faena: 'Otra',
+        });
 
         await expect(
           service.update('t1', { faena: 'Kainita' }, editor, {
@@ -690,10 +795,9 @@ describe('TrabajosExtraService', () => {
     });
   });
 
-  describe('forma de la respuesta (equipo incluido, createdById oculto)', () => {
+  describe('forma de la respuesta (equipo incluido)', () => {
     const ID = 'b3b6a1f2-6c5e-4d0e-9a55-0f4f0a7d2c11';
     const INCLUDE = { equipo: { select: { internalCode: true } } };
-    const OMIT = { createdById: true };
     const payload: CreateTrabajoExtraDto = {
       id: ID,
       equipoId: 'e1',
@@ -717,10 +821,11 @@ describe('TrabajosExtraService', () => {
         { include: unknown; omit: unknown },
       ];
       expect(args.include).toEqual(INCLUDE);
-      expect(args.omit).toEqual(OMIT);
+      // El `createdById` lo omite el cliente de Prisma, no cada consulta.
+      expect(args.omit).toBeUndefined();
     }
 
-    it('create y findAll piden el mismo include y omiten createdById; la respuesta lleva equipo', async () => {
+    it('create y findAll piden el mismo include; la respuesta lleva equipo', async () => {
       prisma.trabajoExtraordinario.create.mockResolvedValue(row);
       prisma.trabajoExtraordinario.findMany.mockResolvedValue([row]);
 
@@ -734,32 +839,36 @@ describe('TrabajosExtraService', () => {
     });
 
     it('el replay idempotente usa la misma forma de query que create', async () => {
-      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(row);
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(row);
 
       const res = await createAs(payload);
 
-      expectQueryShape(prisma.trabajoExtraordinario.findFirst);
+      expectQueryShape(prisma.trabajoExtraordinario.findUnique, 1);
       expect(res).toHaveProperty('equipo', { internalCode: 'CA-011' });
     });
 
     it('la relectura tras P2002 usa la misma forma de query que create', async () => {
-      prisma.trabajoExtraordinario.findFirst
+      prisma.trabajoExtraordinario.findUnique
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ createdById: USER_ID })
         .mockResolvedValueOnce(row);
       prisma.trabajoExtraordinario.create.mockRejectedValueOnce(
         new Prisma.PrismaClientKnownRequestError('unique', {
           code: 'P2002',
           clientVersion: 'test',
+          meta: { target: ['id'] },
         }),
       );
 
       const res = await createAs(payload);
 
-      expectQueryShape(prisma.trabajoExtraordinario.findFirst, 1);
+      expectQueryShape(prisma.trabajoExtraordinario.findUnique, 2);
       expect(res).toHaveProperty('equipo', { internalCode: 'CA-011' });
     });
 
-    it('findOne omite createdById en la query', async () => {
+    it('findOne pide el mismo include', async () => {
       prisma.trabajoExtraordinario.findUnique.mockResolvedValue(row);
 
       await service.findOne(ID);
@@ -767,15 +876,19 @@ describe('TrabajosExtraService', () => {
       expectQueryShape(prisma.trabajoExtraordinario.findUnique);
     });
 
-    it('el chequeo de propiedad filtra por dueño en la query, sin leer createdById', async () => {
-      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(row);
+    it('el chequeo de propiedad solo lee createdById: la fila completa sale por findOne', async () => {
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(row);
 
       await createAs(payload);
 
-      const [args] = prisma.trabajoExtraordinario.findFirst.mock.calls[0] as [
-        { where: unknown },
-      ];
-      expect(args.where).toEqual({ id: ID, createdById: USER_ID });
+      const [ownerQuery] = prisma.trabajoExtraordinario.findUnique.mock
+        .calls[0] as [{ where: unknown; select: unknown }];
+      expect(ownerQuery).toEqual({
+        where: { id: ID },
+        select: { createdById: true },
+      });
     });
   });
 });

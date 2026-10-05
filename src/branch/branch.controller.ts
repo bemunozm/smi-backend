@@ -4,14 +4,18 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
+import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { BranchService } from './branch.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { QueryBranchDto } from './dto/query-branch.dto';
@@ -24,7 +28,7 @@ function assertNonEmptyId(id: string): void {
 }
 
 /**
- * Dominio Plataforma (Benjamín): sucursales/bodegas base. La LECTURA queda
+ * Dominio Plataforma: sucursales/bodegas base. La LECTURA queda
  * abierta a cualquier rol autenticado — la usan los selectores de Flota
  * (`Equipment.homeBranch`) y, a futuro, de Inventario. La ESCRITURA es
  * ADMIN/SUPERVISOR, mismo criterio que el cambio de estado de `Equipment`.
@@ -46,19 +50,23 @@ export class BranchController {
 
   @Post()
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
-  async create(@Body() dto: CreateBranchDto) {
+  async create(@Body() dto: CreateBranchDto, @Session() session: UserSession) {
     return {
-      data: await this.service.create(dto),
+      data: await this.service.create(dto, session.user.id),
       message: 'Sucursal creada',
     };
   }
 
   @Patch(':id')
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
-  async update(@Param('id') id: string, @Body() dto: UpdateBranchDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateBranchDto,
+    @ExpectedFields() expected?: ExpectedValues,
+  ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto),
+      data: await this.service.update(id, dto, expected),
       message: 'Sucursal actualizada',
     };
   }

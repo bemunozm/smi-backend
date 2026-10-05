@@ -11,8 +11,7 @@ import { IsDateOnly } from '../date-only';
 import { SHIFT_TYPES, type ShiftType } from '../shift-type';
 
 export class CreateShiftReportDto {
-  /** UUID v4 generado por el CLIENTE — idempotencia (RFC Supervisión en
-   * Terreno §Reporte), mismo patrón que `OpenShiftCardDto.id`. */
+  /** UUID v4 generado por el CLIENTE — idempotencia, mismo patrón que `OpenShiftCardDto.id`. */
   @IsUUID('4')
   id!: string;
 

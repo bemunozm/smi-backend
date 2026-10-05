@@ -332,7 +332,7 @@ describe('FichaService', () => {
     });
   });
 
-  describe('meta.fotoUrl del combustible — firmado ANTES de mapear (RFC R2-storage)', () => {
+  describe('meta.fotoUrl del combustible — firmado ANTES de mapear', () => {
     it('con fotoKey, meta.fotoUrl trae la URL firmada (NO la legacy)', async () => {
       mockearOrigenesVacios();
       combustibleFindMany.mockResolvedValue([
@@ -379,8 +379,8 @@ describe('FichaService', () => {
     });
   });
 
-  describe('meta.fotoUrl del hallazgo — firmado ANTES de mapear (cierre de R2, RFC Supervisión en Terreno)', () => {
-    it('con fotoKey, meta.fotoUrl trae la URL firmada (antes del fix devolvía siempre fotoUrl, ignorando fotoKey)', async () => {
+  describe('meta.fotoUrl del hallazgo — firmado ANTES de mapear', () => {
+    it('con fotoKey, meta.fotoUrl trae la URL firmada (no devuelve el fotoUrl legacy)', async () => {
       mockearOrigenesVacios();
       hallazgoFindMany.mockResolvedValue([
         {

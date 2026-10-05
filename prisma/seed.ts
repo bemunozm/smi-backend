@@ -2,9 +2,9 @@
  * Seed de desarrollo. Tres partes:
  *  1. Usuarios (Better Auth): un usuario por rol vía `auth.api.createUser`
  *     (contraseña hasheada como Better Auth espera).
- *  2. Flota + Inventario (Amin): equipos con estados variados, insumos (algunos
+ *  2. Flota + Inventario: equipos con estados variados, insumos (algunos
  *     bajo mínimo) y movimientos que arman un kardex real.
- *  3. Operación en Terreno (Alexander): registros de ejemplo de sus 4 tablas,
+ *  3. Operación en Terreno: registros de ejemplo de sus 4 tablas,
  *     colgados de los equipos que siembra Flota.
  *
  * Reutiliza el MISMO singleton `prismaClient` que usa `auth.ts` (una sola pool),
@@ -40,10 +40,8 @@ interface SeedUser {
 }
 
 /**
- * Sin usuario OPERADOR: el operador dejó de ser un rol de la plataforma (RFC
- * Supervisión en Terreno, anexo "el operador deja de ser usuario de la
- * plataforma", 28/09) — ahora es un catálogo propio, sembrado aparte por
- * `seedOperators()`.
+ * Sin usuario OPERADOR: el operador no es un rol de la plataforma; es un
+ * catálogo propio, sembrado aparte por `seedOperators()`.
  */
 const SEED_USERS: SeedUser[] = [
   { name: 'Admin SMI', email: 'admin@smi.local', role: ROLES.ADMIN },
@@ -93,10 +91,10 @@ async function seedUsers(): Promise<void> {
 }
 
 // ============================================================================
-// Flota (Benjamín) + Inventario (Joaquín)
+// Flota + Inventario
 // ============================================================================
 
-/** Sucursales base (Plataforma/Benjamín) — homean a los equipos de Flota. */
+/** Sucursales base — homean a los equipos de Flota. */
 const BRANCHES = [
   { name: 'Casa Matriz', address: 'Iquique' },
   { name: 'Faena', address: 'Faena minera, s/n' },
@@ -386,7 +384,7 @@ const ITEMS: readonly SeedItem[] = [
   },
 ];
 
-/** Siembra las sucursales base (Plataforma/Benjamín) que homean a la flota. */
+/** Siembra las sucursales base que homean a la flota. */
 async function seedBranches(): Promise<Branch[]> {
   const branches: Branch[] = [];
   for (const branch of BRANCHES) {
@@ -451,10 +449,9 @@ async function seedFlotaEInventario(
           currentHourmeter: equipo.horometroActual,
           currentMileage: equipo.kilometrajeActual,
           homeBranchId: branches[HOME_BRANCH_INDEX[index]].id,
-          // Sin foto en el seed: `photoKey` ahora es la key de un objeto real
-          // en el bucket de storage (R2/MinIO) — un placeholder picsum.photos
-          // ya no sirve (no es una key `equipment-photos/...` válida, ver RFC
-          // R2-storage). Subir una foto real queda a mano, vía la UI.
+          // Sin foto en el seed: `photoKey` es la key de un objeto real en el
+          // bucket de storage (R2/MinIO); un placeholder picsum.photos no es
+          // una key `equipment-photos/...` válida. Subir una foto real queda a mano, vía la UI.
         },
       }),
     );
@@ -501,7 +498,7 @@ async function seedFlotaEInventario(
     }
   }
 
-  // Un par de movimientos de los otros tipos, para que el kardex de la demo no
+  // Un par de movimientos de los otros tipos, para que el kardex de desarrollo no
   // sea solo compras y consumos.
   const grease = await prismaClient.inventoryItem.findUniqueOrThrow({
     where: { sku: 'GRA-001' },
@@ -542,7 +539,7 @@ async function seedFlotaEInventario(
 }
 
 // ============================================================================
-// Operación en Terreno (Alexander) — cuelga de los equipos de Flota
+// Operación en Terreno — cuelga de los equipos de Flota
 // ============================================================================
 
 async function seedTerreno(equipos: Equipment[]): Promise<void> {
@@ -594,10 +591,9 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
     ],
   });
 
-  // RFC Supervisión en Terreno, Anexo 2 ("operador del catálogo en Trabajos
-  // extra + snapshot único"): los trabajos extra sembrados usan operadores
-  // REALES del catálogo — `seedOperators()` corre ANTES que esta función en
-  // `seed()` a propósito, para que estos dos ya existan. `operatorId` +
+  // Los trabajos extra sembrados usan operadores REALES del catálogo —
+  // `seedOperators()` corre ANTES que esta función en `seed()` a propósito,
+  // para que estos dos ya existan. `operatorId` +
   // `operador` = el mismo nombre, igual que arma el SERVIDOR en
   // `TrabajosExtraService.create` (el cliente ya no manda `operador`).
   const [trabajoExtraOperador1, trabajoExtraOperador2] = await Promise.all([
@@ -670,13 +666,13 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
 }
 
 // ============================================================================
-// Supervisión en Terreno (Benjamín) — catálogo de operadores
+// Supervisión en Terreno — catálogo de operadores
 // ============================================================================
 
 /**
  * Nombres de la maqueta del Módulo A (`RegistroEquipoView.tsx`, arreglo
  * `OPERADORES`), sembrados sin RUT hasta que llegue la nómina real del
- * cliente (insumo pendiente, Acta 003 — RFC Supervisión en Terreno).
+ * cliente (insumo pendiente).
  */
 const OPERATOR_NAMES = [
   'Patricio Rojas',
@@ -699,7 +695,7 @@ const OPERATOR_NAMES = [
  * así que un rerun de `npm run db:seed` no duplica filas, a diferencia del
  * resto del dominio (que `limpiarDatosDeDominio` borra y recrea entero en
  * cada corrida). Operadores queda fuera de esa limpieza a propósito: es un
- * catálogo, no datos de demo desechables.
+ * catálogo, no datos de desarrollo desechables.
  */
 async function seedOperators(): Promise<void> {
   let creados = 0;
@@ -718,21 +714,20 @@ async function seedOperators(): Promise<void> {
 }
 
 // ============================================================================
-// Flota (Benjamín) — asignación de uso ACTUAL
+// Flota — asignación de uso ACTUAL
 // ============================================================================
 
-/** Índices en `EQUIPOS` que quedan "en uso" en la demo: 4 unidades OPERATIONAL. */
+/** Índices en `EQUIPOS` que quedan "en uso" en desarrollo: 4 unidades OPERATIONAL. */
 const EN_USO_INDEX = [0, 1, 5, 6] as const;
 
 /**
  * Asigna operador + supervisor ACTUALES a algunas unidades operativas, para
  * que el listado se vea "en uso" con datos reales (fidelidad 1:1 con el
  * artefacto de referencia de Flota). `operatorId` es del CATÁLOGO
- * (`Operator`, sembrado por `seedOperators()` — RFC Supervisión en Terreno,
- * anexo "el operador deja de ser usuario de la plataforma": el operador ya
- * no es un usuario). En dev solo existe UN usuario seed por rol de
+ * (`Operator`, sembrado por `seedOperators()`; el operador no es un
+ * usuario). En dev solo existe UN usuario seed por rol de
  * plataforma (`supervisor@smi.local`), así que se repite entre las 4
- * unidades — aceptable para demo; en producción cada supervisor tiene su
+ * unidades — aceptable en desarrollo; en producción cada supervisor tiene su
  * propia cuenta.
  */
 async function seedAsignacionesFlota(
@@ -796,11 +791,10 @@ async function seed(): Promise<void> {
   await limpiarDatosDeDominio();
 
   // Los movimientos de inventario quedan imputados al admin del seed, para que
-  // la columna "responsable" del kardex no salga vacía en la demo. Se
+  // la columna "responsable" del kardex no salga vacía. Se
   // resuelve acá también el supervisor seed: lo usa la asignación de uso de
-  // Flota (`seedAsignacionesFlota`) al final. El operador YA NO es un
-  // usuario (anexo "el operador deja de ser usuario de la plataforma") — se
-  // resuelve más abajo, del catálogo, después de `seedOperators()`.
+  // Flota (`seedAsignacionesFlota`) al final. El operador no es un
+  // usuario: se resuelve más abajo, del catálogo, después de `seedOperators()`.
   const [admin, supervisor] = await Promise.all([
     prismaClient.user.findUnique({
       where: { email: 'admin@smi.local' },
@@ -821,14 +815,13 @@ async function seed(): Promise<void> {
     branches,
     categories,
   );
-  // `seedOperators()` ANTES que `seedTerreno(equipos)` (RFC Supervisión en
-  // Terreno, Anexo 2): los trabajos extra sembrados ahora referencian
-  // operadores del catálogo, así que el catálogo tiene que existir primero.
+  // `seedOperators()` ANTES que `seedTerreno(equipos)`: los trabajos extra
+  // sembrados referencian operadores del catálogo, así que el catálogo tiene que existir primero.
   await seedOperators();
   await seedTerreno(equipos);
 
   // Primer nombre de `OPERATOR_NAMES` — cualquiera del catálogo sirve para
-  // la demo de "en uso" de Flota.
+  // el estado "en uso" de Flota.
   const operador = await prismaClient.operator.findFirst({
     where: { name: OPERATOR_NAMES[0] },
     select: { id: true },
@@ -839,7 +832,7 @@ async function seed(): Promise<void> {
     supervisor?.id ?? null,
   );
 
-  // Dominio Mantenimiento (Joaquín): corre al final; resuelve el asignadoAId
+  // Dominio Mantenimiento: corre al final; resuelve el asignadoAId
   // buscando al mantenedor seed por email. No depende de Flota/Terreno (soft refs).
   await seedMantenimiento();
 }

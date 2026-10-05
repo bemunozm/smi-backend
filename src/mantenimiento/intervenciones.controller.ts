@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
@@ -37,9 +38,14 @@ export class IntervencionesController {
   async create(
     @Param('ordenId') ordenId: string,
     @Body() dto: CreateIntervencionDto,
+    @Session() session: UserSession,
   ): Promise<IntervencionDetailResponse> {
     assertNonEmptyId(ordenId, 'ordenId');
-    const data = await this.intervencionesService.create(ordenId, dto);
+    const data = await this.intervencionesService.create(
+      ordenId,
+      dto,
+      session.user.id,
+    );
     return { data, message: 'Intervención registrada' };
   }
 }

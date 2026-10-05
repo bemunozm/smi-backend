@@ -13,6 +13,7 @@ import type {
   RecordEditedEvent,
   ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
+import { formatNumber } from '../common/format/number';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 
 export interface NotificationTemplate {
@@ -24,9 +25,7 @@ export interface NotificationTemplate {
 /**
  * `hallazgo.created` → MANTENEDOR + ADMIN.
  *
- * Reemplaza a SUPERVISOR + ADMIN (requerimientos §5.1): en el Acta N.° 004
- * (R11) el cliente pidió que la alerta llegue directo a quienes reparan y al
- * administrador. El supervisor es quien registra el hallazgo en terreno, así
+ * La alerta va directo a quienes reparan y al administrador. El supervisor es quien registra el hallazgo en terreno, así
  * que avisarle a él —y a los demás supervisores— no acercaba la falla a nadie
  * que la pueda resolver.
  */
@@ -105,11 +104,11 @@ export function buildItemLowStockTemplate(
     titulo: `Stock bajo: ${event.itemName}`,
     // La bodega va en el cuerpo porque es lo que vuelve accionable el aviso:
     // sin ella, quien lo lee no sabe si le toca a él reponer.
-    cuerpo: `Quedan ${event.quantity} en ${event.branchName} (mínimo ${event.minimumQuantity})`,
+    cuerpo: `Quedan ${formatNumber(event.quantity)} en ${event.branchName} (mínimo ${formatNumber(event.minimumQuantity)})`,
   };
 }
 
-/** `shift.exit-report` → solo ADMIN (RFC Supervisión en Terreno). */
+/** `shift.exit-report` → solo ADMIN. */
 export const SHIFT_EXIT_REPORT_ROLES: readonly Role[] = [ROLES.ADMIN];
 
 function pluralizeEquipo(cardCount: number): string {
@@ -130,7 +129,7 @@ export function buildShiftExitReportSentTemplate(
 }
 
 /**
- * `record.edited` → ADMIN (Acta N.° 004, R13): editar un registro enviado no
+ * `record.edited` → ADMIN: editar un registro enviado no
  * pide autorización, pero el administrador se entera de cada cambio.
  */
 export const RECORD_EDITED_ROLES: readonly Role[] = [ROLES.ADMIN];
@@ -145,7 +144,7 @@ export function buildRecordEditedTemplate(
 ): NotificationTemplate {
   return {
     tipo: DOMAIN_EVENTS.RECORD_EDITED,
-    titulo: `${event.editedBy} modificó el ${event.entityLabel}`,
+    titulo: `${event.editedBy} modificó ${event.entityArticle} ${event.entityLabel}`,
     cuerpo: event.changes
       .map((c) => `${c.label}: ${c.before} → ${c.after}`)
       .join('\n'),

@@ -1,8 +1,7 @@
 /**
  * Detección de tipo de archivo por bytes reales (magic numbers) — nunca por
  * el nombre/extensión que mandó el cliente ni por el `Content-Type` del
- * request, ambos falsificables (ver Diseño del RFC, "Validación por bytes
- * reales"). Cualquier formato no reconocido acá (SVG, HTML, HEIC, GIF, etc.)
+ * request, ambos falsificables. Cualquier formato no reconocido acá (SVG, HTML, HEIC, GIF, etc.)
  * devuelve `null` y el llamador debe rechazar el archivo.
  */
 

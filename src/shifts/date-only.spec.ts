@@ -4,14 +4,12 @@ import { validate } from 'class-validator';
 
 import {
   assertShiftDateWithinWindow,
-  formatBusinessDate,
   formatDateOnly,
   IsDateOnly,
   isValidDateOnly,
   parseDateOnlyUtc,
   SHIFT_DATE_MAX_FUTURE_DAYS,
   SHIFT_DATE_MAX_PAST_DAYS,
-  todayInBusinessTimeZone,
 } from './date-only';
 
 const NOW = new Date('2026-09-28T12:00:00.000Z');
@@ -78,45 +76,19 @@ describe('@IsDateOnly()', () => {
   });
 });
 
-/** Fix de zona horaria: "hoy" debe ser el día de calendario en Chile,
- * no el día UTC del proceso — usa instantes fijos a ambos lados de la
- * medianoche UTC para no depender del TZ de la máquina que corre el test
- * (`Intl.DateTimeFormat` recibe `timeZone` explícito, nunca el del sistema). */
-describe('todayInBusinessTimeZone', () => {
-  it('2026-09-29T02:30:00Z sigue siendo 28 en Santiago (UTC-3 en esa fecha)', () => {
-    expect(todayInBusinessTimeZone(new Date('2026-09-29T02:30:00.000Z'))).toBe(
-      '2026-09-28',
-    );
-  });
-
-  it('2026-09-29T12:00:00Z ya es 29 en Santiago', () => {
-    expect(todayInBusinessTimeZone(new Date('2026-09-29T12:00:00.000Z'))).toBe(
-      '2026-09-29',
-    );
-  });
-});
-
-describe('formatBusinessDate', () => {
-  it('lo registrado de noche en Chile no salta al día UTC siguiente', () => {
-    expect(formatBusinessDate(new Date('2026-09-29T02:30:00.000Z'))).toBe(
-      '28-09-2026',
-    );
-  });
-});
-
 describe('assertShiftDateWithinWindow', () => {
   it('acepta la fecha de hoy', () => {
     expect(() => assertShiftDateWithinWindow('2026-09-28', NOW)).not.toThrow();
   });
 
   it(`acepta hasta ${SHIFT_DATE_MAX_PAST_DAYS} días de antigüedad`, () => {
-    expect(() => assertShiftDateWithinWindow('2026-09-20', NOW)).not.toThrow();
+    expect(() => assertShiftDateWithinWindow('2026-08-29', NOW)).not.toThrow();
   });
 
   it(`rechaza más de ${SHIFT_DATE_MAX_PAST_DAYS} días de antigüedad`, () => {
     expect.assertions(2);
     try {
-      assertShiftDateWithinWindow('2026-09-19', NOW);
+      assertShiftDateWithinWindow('2026-08-28', NOW);
     } catch (error: unknown) {
       expect(error).toBeInstanceOf(BadRequestException);
       expect((error as BadRequestException).getResponse()).toMatchObject({
@@ -163,13 +135,13 @@ describe('assertShiftDateWithinWindow', () => {
 
     it(`acepta hasta ${SHIFT_DATE_MAX_PAST_DAYS} días de antigüedad DESDE el hoy de Santiago (28/09)`, () => {
       expect(() =>
-        assertShiftDateWithinWindow('2026-09-20', NOW_ACROSS_UTC_MIDNIGHT),
+        assertShiftDateWithinWindow('2026-08-29', NOW_ACROSS_UTC_MIDNIGHT),
       ).not.toThrow();
     });
 
     it(`rechaza más de ${SHIFT_DATE_MAX_PAST_DAYS} días de antigüedad DESDE el hoy de Santiago (28/09)`, () => {
       expect(() =>
-        assertShiftDateWithinWindow('2026-09-19', NOW_ACROSS_UTC_MIDNIGHT),
+        assertShiftDateWithinWindow('2026-08-28', NOW_ACROSS_UTC_MIDNIGHT),
       ).toThrow(BadRequestException);
     });
   });

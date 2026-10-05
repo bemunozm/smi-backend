@@ -7,7 +7,7 @@ import { EquipmentController } from './equipment.controller';
 import { EquipmentService } from './equipment.service';
 
 @Module({
-  // `OperatorsModule` (el operador ya no es usuario de la plataforma):
+  // `OperatorsModule` (el operador no es usuario de la plataforma):
   // `EquipmentService.updateAssignment`
   // valida el operador con `OperatorsService.assertActive` en vez de
   // `assertUserWithRole` — no hay ciclo, `OperatorsModule` no importa Flota.

@@ -5,6 +5,11 @@ import { TrabajosExtraModule } from './trabajos-extra/trabajos-extra.module';
 import { HallazgosModule } from './hallazgos/hallazgos.module';
 
 @Module({
-  imports: [CombustibleModule, HorometroModule, TrabajosExtraModule, HallazgosModule],
+  imports: [
+    CombustibleModule,
+    HorometroModule,
+    TrabajosExtraModule,
+    HallazgosModule,
+  ],
 })
 export class TerrenoModule {}

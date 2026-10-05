@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
 import { CreateUmbralDto } from './dto/create-umbral.dto';
@@ -29,8 +30,11 @@ export class UmbralesController {
 
   @Post()
   @Roles([ROLES.ADMIN])
-  async create(@Body() dto: CreateUmbralDto): Promise<UmbralDetailResponse> {
-    const data = await this.umbralesService.create(dto);
+  async create(
+    @Body() dto: CreateUmbralDto,
+    @Session() session: UserSession,
+  ): Promise<UmbralDetailResponse> {
+    const data = await this.umbralesService.create(dto, session.user.id);
     return { data, message: 'Umbral creado' };
   }
 }

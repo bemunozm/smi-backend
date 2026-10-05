@@ -429,7 +429,7 @@ describe('OcrService', () => {
     expect(writeSpy).toHaveBeenCalledTimes(6);
 
     // El cupo volvio a 0 (contador decrementado en las 6 vias de exito):
-    // una request nueva ya NO degrada de inmediato, llega normal al worker.
+    // una request nueva no degrada de inmediato, llega normal al worker.
     const resultPromise = service.readFuelValue(Buffer.from('fake-after'));
     const { id } = await waitForWrittenRequest(writeSpy, 7);
     writeLine(child.stdout, {

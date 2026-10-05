@@ -1,5 +1,5 @@
 /**
- * Normalización de texto libre (M2(b) de la auditoría de seguridad) — se
+ * Normalización de texto libre — se
  * aplica a `CloseShiftCardDto.observaciones` vía `@Transform` ANTES de
  * `@MaxLength`, para que el límite se mida sobre el texto ya normalizado (no
  * sobre un texto con saltos de línea redundantes que un supervisor pegó

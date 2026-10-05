@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
+import { createOrReturn } from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import type { CreateIntervencionDto } from './dto/create-intervencion.dto';
 import type { IntervencionResponseDto } from './dto/intervencion-response.dto';
@@ -50,12 +51,40 @@ export class IntervencionesService {
   async create(
     ordenId: string,
     dto: CreateIntervencionDto,
+    userId: string,
+  ): Promise<IntervencionResponseDto> {
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe una intervención con ese id de otro usuario',
+      findExisting: async (id) => {
+        const existing = await this.prisma.intervencion.findUnique({
+          where: { id },
+          select: { ...INTERVENCION_SELECT, createdById: true },
+        });
+        if (!existing) return null;
+        const { createdById, ...intervencion } = existing;
+        return {
+          ownerId: createdById,
+          result: this.toResponseDto(intervencion),
+        };
+      },
+      create: () => this.createFresh(ordenId, dto, userId),
+    });
+  }
+
+  private async createFresh(
+    ordenId: string,
+    dto: CreateIntervencionDto,
+    userId: string,
   ): Promise<IntervencionResponseDto> {
     await this.assertOrdenExists(ordenId);
 
     const intervencion = await this.prisma.$transaction(async (tx) => {
       const created = await tx.intervencion.create({
         data: {
+          ...(dto.id ? { id: dto.id } : {}),
+          createdById: userId,
           ordenId,
           tipo: dto.tipo,
           detalle: dto.detalle,
@@ -73,7 +102,7 @@ export class IntervencionesService {
         select: INTERVENCION_SELECT,
       });
 
-      // TODO(cruce Inventario/Amin): la tabla `Insumo` (con su columna
+      // TODO(cruce Inventario): la tabla `Insumo` (con su columna
       // `stock`) es de otro dominio y todavía no existe en este schema, así
       // que a propósito NO se decrementa ningún stock acá. Cuando el módulo
       // de Inventario exista, reemplazar `descontarStock` por una llamada
@@ -95,7 +124,7 @@ export class IntervencionesService {
   }
 
   /**
-   * Seam intencional para el futuro cruce con el dominio Inventario/Amin.
+   * Seam intencional para el futuro cruce con el dominio Inventario.
    * Hoy es un no-op: NO descuenta `Insumo.stock` (esa tabla no existe aún en
    * este schema). Ver TODO en `create()`.
    */

@@ -1,7 +1,18 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
+import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { ActividadesService } from './actividades.service';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
 import type { ActividadResponseDto } from './dto/actividad-response.dto';
@@ -33,8 +44,9 @@ export class ActividadesController {
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
   async create(
     @Body() dto: CreateActividadDto,
+    @Session() session: UserSession,
   ): Promise<ActividadDetailResponse> {
-    const data = await this.actividadesService.create(dto);
+    const data = await this.actividadesService.create(dto, session.user.id);
     return { data, message: 'Actividad creada' };
   }
 
@@ -43,9 +55,10 @@ export class ActividadesController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateActividadDto,
+    @ExpectedFields() expected?: ExpectedValues,
   ): Promise<ActividadDetailResponse> {
     assertNonEmptyId(id);
-    const data = await this.actividadesService.update(id, dto);
+    const data = await this.actividadesService.update(id, dto, expected);
     return { data, message: 'Actividad actualizada' };
   }
 }

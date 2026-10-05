@@ -38,7 +38,7 @@ export class CloseShiftCardDto {
   @Max(10_000)
   fuelLiters!: number;
 
-  /** AdBlue cargado en el turno (Acta N.° 004, R12). Opcional: un cierre
+  /** AdBlue cargado en el turno (el cliente exige registrarlo al cerrar). Opcional: un cierre
    * encolado antes de que existiera el campo sigue siendo válido y se lee como
    * «sin AdBlue». */
   @IsOptional()
