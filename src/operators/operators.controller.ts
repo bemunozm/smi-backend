@@ -14,10 +14,8 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
-import {
-  EXPECTED_HEADER,
-  parseExpectedHeader,
-} from '../common/concurrency/expected-fields';
+import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { OperatorsService } from './operators.service';
 import { CreateOperatorDto } from './dto/create-operator.dto';
 import { QueryOperatorDto } from './dto/query-operator.dto';
@@ -30,7 +28,7 @@ function assertNonEmptyId(id: string): void {
 }
 
 /**
- * Catálogo propio de operadores (RFC Supervisión en Terreno — reemplaza el
+ * Catálogo propio de operadores (reemplaza el
  * arreglo `OPERADORES` hardcodeado del frontend). Clon de
  * `BranchController`: la LECTURA queda abierta a cualquier sesión (la usa el
  * selector del Módulo A y, a futuro, el de Flota); la ESCRITURA es
@@ -75,11 +73,11 @@ export class OperatorsController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateOperatorDto,
-    @Headers(EXPECTED_HEADER) expected?: string,
+    @ExpectedFields() expected?: ExpectedValues,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto, parseExpectedHeader(expected)),
+      data: await this.service.update(id, dto, expected),
       message: 'Operador actualizado',
     };
   }

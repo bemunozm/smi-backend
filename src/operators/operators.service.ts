@@ -11,7 +11,7 @@ import {
   assertExpectedLocked,
   definedFields,
 } from '../common/concurrency/assert-expected-locked';
-import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import {
   createOrReturn,
   isPrimaryKeyViolation,
@@ -23,12 +23,8 @@ import { CreateOperatorDto } from './dto/create-operator.dto';
 import { QueryOperatorDto } from './dto/query-operator.dto';
 import { UpdateOperatorDto } from './dto/update-operator.dto';
 
-/** `createdById` es interno: no sale en ninguna respuesta. */
-const OPERATOR_OMIT = { createdById: true } satisfies Prisma.OperatorOmit;
-const OPERATOR_OMIT_RUT = {
-  createdById: true,
-  rut: true,
-} satisfies Prisma.OperatorOmit;
+/** El RUT solo lo ven ADMIN y SUPERVISOR; para el resto se omite. */
+const OPERATOR_OMIT_RUT = { rut: true } satisfies Prisma.OperatorOmit;
 
 /** Un operador tal como sale a la API. */
 export type OperatorResponse = Omit<Operator, 'createdById'>;
@@ -73,7 +69,6 @@ export class OperatorsService {
       return this.prisma.operator.findMany({
         where,
         orderBy: { name: 'asc' },
-        omit: OPERATOR_OMIT,
       });
     }
     return this.prisma.operator.findMany({
@@ -95,11 +90,13 @@ export class OperatorsService {
     id: string,
     session: UserSession,
   ): Promise<OperatorResponse | Omit<OperatorResponse, 'rut'>>;
-  async findOne(id: string, session?: UserSession) {
+  async findOne(
+    id: string,
+    session?: UserSession,
+  ): Promise<OperatorResponse | Omit<OperatorResponse, 'rut'>> {
     const operator = this.hasRutAccess(session)
       ? await this.prisma.operator.findUnique({
           where: { id },
-          omit: OPERATOR_OMIT,
         })
       : await this.prisma.operator.findUnique({
           where: { id },
@@ -141,7 +138,7 @@ export class OperatorsService {
     };
 
     try {
-      return await this.prisma.operator.create({ data, omit: OPERATOR_OMIT });
+      return await this.prisma.operator.create({ data });
     } catch (error: unknown) {
       // Un choque con la PK es la carrera de dos reintentos con el mismo id:
       // lo resuelve `createOrReturn`, no es un RUT repetido.
@@ -150,7 +147,7 @@ export class OperatorsService {
     }
   }
 
-  async update(id: string, dto: UpdateOperatorDto, expected?: ExpectedFields) {
+  async update(id: string, dto: UpdateOperatorDto, expected?: ExpectedValues) {
     await this.assertExiste(id);
 
     const data: Prisma.OperatorUpdateInput = {
@@ -159,7 +156,7 @@ export class OperatorsService {
     };
 
     const write = (db: Prisma.TransactionClient) =>
-      db.operator.update({ where: { id }, data, omit: OPERATOR_OMIT });
+      db.operator.update({ where: { id }, data });
     try {
       if (!expected) return await write(this.prisma);
       return await this.prisma.$transaction(async (tx) => {
@@ -193,8 +190,8 @@ export class OperatorsService {
   /**
    * Baja física. Solo se permite si ningún `RegistroHorometro` NI ningún
    * `TrabajoExtraordinario` lo referencia (histórico) NI ningún `Equipment`
-   * lo tiene como operador ACTUAL (`currentOperatorId`, FK real ahora que el
-   * operador dejó de ser usuario de la plataforma): en los tres
+   * lo tiene como operador ACTUAL (`currentOperatorId`, FK real: el
+   * operador no es usuario de la plataforma): en los tres
    * casos el FK es `SetNull`, así que un borrado físico dejaría esos
    * registros/esa asignación sin operador de catálogo de forma silenciosa.
    * Con historial o asignación vigente, se sugiere desactivarlo — mismo
@@ -248,7 +245,7 @@ export class OperatorsService {
   /**
    * Valida que el operador exista y esté activo — precondición compartida
    * por los flujos que asignan un operador del catálogo
-   * (`ShiftsService.openCard`, RFC Supervisión en Terreno;
+   * (`ShiftsService.openCard`,
    * `HorometroService.create` de Flota y `TrabajosExtraService.create`): un
    * operador desactivado no debe poder quedar asignado a un registro nuevo,
    * aunque su historial pasado se conserve (`onDelete: SetNull`, ver

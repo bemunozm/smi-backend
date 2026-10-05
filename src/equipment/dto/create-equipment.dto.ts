@@ -97,7 +97,7 @@ export class CreateEquipmentDto {
 
   /**
    * Key `tmp/<userId>/<uuid>.<ext>` de una foto recién subida por
-   * `POST /api/files` (ver Diseño del RFC R2-storage, "Contrato de la API").
+   * `POST /api/files`.
    * El DTO valida solo la FORMA (regex + largo) — `EquipmentService` valida
    * en capas que el segmento userId sea `session.user.id` y que la
    * extensión sea válida para "equipment-photo" (`StorageService.claimTmp`

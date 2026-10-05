@@ -7,7 +7,7 @@ import {
   assertExpectedLocked,
   definedFields,
 } from '../common/concurrency/assert-expected-locked';
-import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { createOrReturn } from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
@@ -150,7 +150,7 @@ export class OrdenesService {
   async update(
     id: string,
     dto: UpdateOrdenDto,
-    expected?: ExpectedFields,
+    expected?: ExpectedValues,
   ): Promise<OrdenResponseDto> {
     const ordenAnterior = await this.findOrdenOrThrow(id);
 

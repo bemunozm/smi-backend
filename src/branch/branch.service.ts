@@ -9,7 +9,7 @@ import {
   assertExpectedLocked,
   definedFields,
 } from '../common/concurrency/assert-expected-locked';
-import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import {
   createOrReturn,
   isPrimaryKeyViolation,
@@ -18,9 +18,6 @@ import { PrismaService } from '../common/prisma/prisma.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { QueryBranchDto } from './dto/query-branch.dto';
 import { UpdateBranchDto } from './dto/update-branch.dto';
-
-/** `createdById` es interno: no sale en ninguna respuesta. */
-const BRANCH_OMIT = { createdById: true } satisfies Prisma.BranchOmit;
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
 const CAMPO_LABEL: Record<string, string> = {
@@ -50,14 +47,12 @@ export class BranchService {
     return this.prisma.branch.findMany({
       where,
       orderBy: { name: 'asc' },
-      omit: BRANCH_OMIT,
     });
   }
 
   async findOne(id: string) {
     const branch = await this.prisma.branch.findUnique({
       where: { id },
-      omit: BRANCH_OMIT,
     });
     if (!branch) {
       throw new NotFoundException(`Sucursal "${id}" no encontrada`);
@@ -71,7 +66,10 @@ export class BranchService {
       userId,
       conflictMessage: 'Ya existe una sucursal con ese id de otro usuario',
       findExisting: async (id) => {
-        const branch = await this.prisma.branch.findUnique({ where: { id } });
+        const branch = await this.prisma.branch.findUnique({
+          where: { id },
+          omit: { createdById: false },
+        });
         if (!branch) return null;
         const { createdById, ...result } = branch;
         return { ownerId: createdById, result };
@@ -80,7 +78,6 @@ export class BranchService {
         try {
           return await this.prisma.branch.create({
             data: { ...dto, createdById: userId },
-            omit: BRANCH_OMIT,
           });
         } catch (error: unknown) {
           // Un choque con la PK es la carrera de dos reintentos con el mismo
@@ -92,10 +89,10 @@ export class BranchService {
     });
   }
 
-  async update(id: string, dto: UpdateBranchDto, expected?: ExpectedFields) {
+  async update(id: string, dto: UpdateBranchDto, expected?: ExpectedValues) {
     await this.assertExiste(id);
     const write = (db: Prisma.TransactionClient) =>
-      db.branch.update({ where: { id }, data: dto, omit: BRANCH_OMIT });
+      db.branch.update({ where: { id }, data: dto });
     try {
       if (!expected) return await write(this.prisma);
       return await this.prisma.$transaction(async (tx) => {

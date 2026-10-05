@@ -5,7 +5,7 @@ import {
   assertExpectedLocked,
   definedFields,
 } from '../common/concurrency/assert-expected-locked';
-import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { createOrReturn } from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { resolveAsignadosMap } from './common/asignado.util';
@@ -114,7 +114,7 @@ export class ActividadesService {
   async update(
     id: string,
     dto: UpdateActividadDto,
-    expected?: ExpectedFields,
+    expected?: ExpectedValues,
   ): Promise<ActividadResponseDto> {
     await this.findActividadOrThrow(id);
 

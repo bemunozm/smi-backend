@@ -1,18 +1,17 @@
 /**
  * Reconciliación del contador de uso de la ficha del equipo
  * (`currentHourmeter`/`currentMileage`) — extraído de `HorometroService`
- * (antes privado, duplicado conceptualmente por Fase 2) para que tanto Flota
- * (`HorometroService.create`/`salida`) como Supervisión en Terreno
- * (`ShiftsService.openCard`/`closeCard`) compartan la MISMA guarda
- * monotónica (hallazgo B1: el contador de un equipo nunca retrocede) en vez
- * de reimplementarla.
+ * para que Flota (`HorometroService.create`/`salida`) y Supervisión en
+ * Terreno (`ShiftsService.openCard`/`closeCard`) compartan la MISMA guarda
+ * monotónica (el contador de un equipo nunca retrocede) en vez de
+ * reimplementarla.
  *
  * `mode` es la única diferencia de comportamiento entre los dos callers:
- *   - `'reject'` (Flota, y el cierre de tarjeta): comportamiento histórico —
+ *   - `'reject'` (Flota, y el cierre de tarjeta):
  *     una lectura menor que la vigente se RECHAZA con 400. Motivo: fuera del
  *     flujo de Supervisión en Terreno no hay "auditoría, no bloqueo" —
  *     rechazar temprano evita que un typo/OCR mal leído ensucie el contador.
- *   - `'warn'` (apertura de tarjeta, RFC Supervisión en Terreno §Diseño):
+ *   - `'warn'` (apertura de tarjeta):
  *     una lectura menor que la vigente NO se rechaza ni mueve el contador —
  *     se acepta y se marca `belowPrevious: true` para que el caller audite
  *     (`RegistroHorometro.belowPreviousReading`). El motivo del modo warn en
@@ -26,7 +25,7 @@ import { BadRequestException } from '@nestjs/common';
 import { ControlUnit, Prisma } from '@prisma/client';
 
 /** Contadores vigentes de la ficha del equipo que gobiernan la reconciliación
- * (guía §4): solo uno de los dos aplica, según `controlUnit`. */
+ * : solo uno de los dos aplica, según `controlUnit`. */
 export interface EquipoContador {
   controlUnit: ControlUnit;
   currentHourmeter: number | null;
@@ -71,7 +70,7 @@ export async function reconcileEquipmentCounter(
     );
   }
 
-  // B6 (auditoría de seguridad): `updateMany` con guarda en el `where` — no
+  // `updateMany` con la guarda en el `where` — no
   // un `update` incondicional — para que el contador NUNCA pueda retroceder
   // aunque dos reconciliaciones concurrentes lean el mismo `equipo.currentX`
   // desfasado (TOCTOU clásico: el chequeo de arriba compara contra el valor

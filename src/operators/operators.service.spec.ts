@@ -7,8 +7,7 @@ import { buildSession, prismaError } from '../common/testing/fixtures';
 import { OperatorsService } from './operators.service';
 
 const USER = 'user_1';
-const OMIT = { createdById: true };
-const OMIT_RUT = { createdById: true, rut: true };
+const OMIT_RUT = { rut: true };
 
 describe('OperatorsService', () => {
   let service: OperatorsService;
@@ -54,7 +53,6 @@ describe('OperatorsService', () => {
       expect(findMany).toHaveBeenCalledWith({
         where: { isActive: true },
         orderBy: { name: 'asc' },
-        omit: OMIT,
       });
     });
 
@@ -66,7 +64,6 @@ describe('OperatorsService', () => {
       expect(findMany).toHaveBeenCalledWith({
         where: { name: { contains: 'rojas', mode: 'insensitive' } },
         orderBy: { name: 'asc' },
-        omit: OMIT,
       });
     });
 
@@ -79,7 +76,6 @@ describe('OperatorsService', () => {
         expect(findMany).toHaveBeenCalledWith({
           where: {},
           orderBy: { name: 'asc' },
-          omit: OMIT,
         });
       });
 
@@ -91,7 +87,6 @@ describe('OperatorsService', () => {
         expect(findMany).toHaveBeenCalledWith({
           where: {},
           orderBy: { name: 'asc' },
-          omit: OMIT,
         });
       });
 
@@ -103,7 +98,6 @@ describe('OperatorsService', () => {
         expect(findMany).toHaveBeenCalledWith({
           where: {},
           orderBy: { name: 'asc' },
-          omit: OMIT,
         });
       });
 
@@ -135,7 +129,6 @@ describe('OperatorsService', () => {
 
       expect(findUnique).toHaveBeenCalledWith({
         where: { id: 'op_1' },
-        omit: OMIT,
       });
     });
 
@@ -157,7 +150,6 @@ describe('OperatorsService', () => {
 
       expect(findUnique).toHaveBeenCalledWith({
         where: { id: 'op_1' },
-        omit: OMIT,
       });
     });
 
@@ -179,7 +171,6 @@ describe('OperatorsService', () => {
 
       expect(create).toHaveBeenCalledWith({
         data: { ...dto, createdById: USER },
-        omit: OMIT,
       });
       expect(result).toEqual({ id: 'op_1', ...dto, rut: null });
     });
@@ -196,7 +187,6 @@ describe('OperatorsService', () => {
 
       expect(create).toHaveBeenCalledWith({
         data: { name: dto.name, rut: '12345678-5', createdById: USER },
-        omit: OMIT,
       });
     });
 
@@ -268,7 +258,6 @@ describe('OperatorsService', () => {
       expect(update).toHaveBeenCalledWith({
         where: { id: 'op_1' },
         data: { name: 'Cristian Araya' },
-        omit: OMIT,
       });
       expect(result).toEqual({ id: 'op_1', name: 'Cristian Araya' });
     });
@@ -282,7 +271,6 @@ describe('OperatorsService', () => {
       expect(update).toHaveBeenCalledWith({
         where: { id: 'op_1' },
         data: { rut: '40000000-K' },
-        omit: OMIT,
       });
     });
 

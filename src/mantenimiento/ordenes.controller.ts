@@ -12,10 +12,8 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
-import {
-  EXPECTED_HEADER,
-  parseExpectedHeader,
-} from '../common/concurrency/expected-fields';
+import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
 import { CreateOrdenDto } from './dto/create-orden.dto';
 import { FindOrdenesQueryDto } from './dto/find-ordenes-query.dto';
@@ -76,14 +74,10 @@ export class OrdenesController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateOrdenDto,
-    @Headers(EXPECTED_HEADER) expected?: string,
+    @ExpectedFields() expected?: ExpectedValues,
   ): Promise<OrdenDetailResponse> {
     assertNonEmptyId(id);
-    const data = await this.ordenesService.update(
-      id,
-      dto,
-      parseExpectedHeader(expected),
-    );
+    const data = await this.ordenesService.update(id, dto, expected);
     return { data, message: 'Orden de trabajo actualizada' };
   }
 

@@ -22,7 +22,7 @@ describe('reconcileEquipmentCounter', () => {
         'reject',
       );
 
-      // B6 (auditoría de seguridad): `updateMany` con guarda atómica en el
+      // `updateMany` con guarda atómica en el
       // `where`, no un `update` incondicional — así una reconciliación
       // concurrente nunca puede mover el contador hacia atrás.
       expect(tx.equipment.updateMany).toHaveBeenCalledWith({
@@ -164,8 +164,7 @@ describe('reconcileEquipmentCounter', () => {
     });
   });
 
-  // B6 de la auditoría de seguridad.
-  describe('B6 — guarda atómica contra una reconciliación concurrente', () => {
+  describe('guarda atómica contra una reconciliación concurrente', () => {
     it('si `updateMany` no matchea ninguna fila (otra tx ya adelantó el contador), no lanza y devuelve belowPrevious false', async () => {
       // Simula la carrera: el chequeo de arriba vio `vigente=100` (stale),
       // pero para cuando esta escritura corre, otra transacción concurrente

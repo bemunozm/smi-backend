@@ -14,10 +14,8 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
-import {
-  EXPECTED_HEADER,
-  parseExpectedHeader,
-} from '../common/concurrency/expected-fields';
+import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { QueryEquipmentDto } from './dto/query-equipment.dto';
 import {
@@ -34,11 +32,11 @@ function assertNonEmptyId(id: string): void {
 }
 
 /**
- * Dominio Flota (Benjamín). El `AuthGuard` global ya exige sesión, así que la
+ * Dominio Flota. El `AuthGuard` global ya exige sesión, así que la
  * LECTURA queda abierta a cualquier rol autenticado: terreno y mantenimiento
  * necesitan listar equipos para sus propios formularios. La ESCRITURA de la
  * ficha es solo ADMIN; el cambio de estado lo comparte con SUPERVISOR
- * (requerimientos §5.2, "Control de Flota").
+ * por el control de flota desde terreno.
  */
 @Controller('equipment')
 export class EquipmentController {
@@ -79,16 +77,11 @@ export class EquipmentController {
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentDto,
     @Session() session: UserSession,
-    @Headers(EXPECTED_HEADER) expected?: string,
+    @ExpectedFields() expected?: ExpectedValues,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(
-        id,
-        dto,
-        session.user.id,
-        parseExpectedHeader(expected),
-      ),
+      data: await this.service.update(id, dto, session.user.id, expected),
       message: 'Equipo actualizado',
     };
   }
@@ -98,15 +91,11 @@ export class EquipmentController {
   async updateStatus(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentStatusDto,
-    @Headers(EXPECTED_HEADER) expected?: string,
+    @ExpectedFields() expected?: ExpectedValues,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.updateStatus(
-        id,
-        dto,
-        parseExpectedHeader(expected),
-      ),
+      data: await this.service.updateStatus(id, dto, expected),
       message: 'Estado actualizado',
     };
   }
@@ -114,7 +103,7 @@ export class EquipmentController {
   /**
    * Asigna/libera la asignación de uso ACTUAL de la unidad (operador +
    * supervisor a cargo). Mismo gate que `updateStatus`: ADMIN/SUPERVISOR
-   * (requerimientos §5.2, "Control de Flota" — el supervisor coordina a su
+   * (el supervisor coordina a su
    * cuadrilla desde terreno, no solo el estado de la máquina).
    */
   @Patch(':id/assignment')
@@ -122,15 +111,11 @@ export class EquipmentController {
   async updateAssignment(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentAssignmentDto,
-    @Headers(EXPECTED_HEADER) expected?: string,
+    @ExpectedFields() expected?: ExpectedValues,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.updateAssignment(
-        id,
-        dto,
-        parseExpectedHeader(expected),
-      ),
+      data: await this.service.updateAssignment(id, dto, expected),
       message: 'Asignación actualizada',
     };
   }

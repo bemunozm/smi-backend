@@ -7,7 +7,6 @@ import { PrismaService } from '../common/prisma/prisma.service';
 import { BranchService } from './branch.service';
 
 const USER = 'user_1';
-const OMIT = { createdById: true };
 
 /** Construye un error de Prisma real (no un duck-type) para que el `instanceof`
  * que usa `BranchService` en el mapeo de errores lo reconozca. */
@@ -67,7 +66,6 @@ describe('BranchService', () => {
       expect(findMany).toHaveBeenCalledWith({
         where: { isActive: true },
         orderBy: { name: 'asc' },
-        omit: OMIT,
       });
     });
 
@@ -79,7 +77,6 @@ describe('BranchService', () => {
       expect(findMany).toHaveBeenCalledWith({
         where: { name: { contains: 'norte', mode: 'insensitive' } },
         orderBy: { name: 'asc' },
-        omit: OMIT,
       });
     });
   });
@@ -103,7 +100,6 @@ describe('BranchService', () => {
 
       expect(create).toHaveBeenCalledWith({
         data: { ...dto, createdById: USER },
-        omit: OMIT,
       });
       expect(result).toEqual({ id: 'branch_1', ...dto });
     });
@@ -197,7 +193,6 @@ describe('BranchService', () => {
       expect(update).toHaveBeenCalledWith({
         where: { id: 'branch_1' },
         data: { name: 'Sucursal Sur' },
-        omit: OMIT,
       });
       expect(result).toEqual({ id: 'branch_1', name: 'Sucursal Sur' });
     });
@@ -275,7 +270,6 @@ describe('BranchService', () => {
       expect(update).toHaveBeenCalledWith({
         where: { id: 'branch_1' },
         data: { name: 'Sucursal Norte' },
-        omit: OMIT,
       });
     });
   });

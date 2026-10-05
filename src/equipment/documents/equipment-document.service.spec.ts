@@ -194,7 +194,7 @@ describe('EquipmentDocumentService', () => {
       expect(claimTmp).not.toHaveBeenCalled();
     });
 
-    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida (hallazgo BAJO B1)', async () => {
+    it('si el shaping falla DESPUÉS de que la BD confirma el create, NO descarta la key ya persistida', async () => {
       equipmentFindUnique.mockResolvedValue({ id: 'eq_1' });
       claimTmp.mockResolvedValue('equipment-documents/final.pdf');
       documentCreate.mockResolvedValue({
@@ -387,7 +387,7 @@ describe('EquipmentDocumentService', () => {
       expect(documentUpdate).not.toHaveBeenCalled();
     });
 
-    it('si el shaping falla DESPUÉS de que la BD confirma el update, NO descarta la key nueva (hallazgo BAJO B1)', async () => {
+    it('si el shaping falla DESPUÉS de que la BD confirma el update, NO descarta la key nueva', async () => {
       documentFindUnique.mockResolvedValue(RAW_DOCUMENT);
       claimTmp.mockResolvedValue('equipment-documents/new.pdf');
       documentUpdate.mockResolvedValue({

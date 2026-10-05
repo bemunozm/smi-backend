@@ -101,7 +101,7 @@ export class UpdateEquipmentDto {
   homeBranchId?: string | null;
 
   /**
-   * Tri-state (ver Diseño del RFC R2-storage, "Contrato de la API"):
+   * Tri-state:
    * `undefined` (propiedad omitida) deja la foto intacta, `null` explícito la
    * borra, un string es la key `tmp/<userId>/<uuid>.<ext>` de una foto nueva
    * subida por `POST /api/files` — el DTO valida solo la FORMA, igual que en
@@ -117,7 +117,7 @@ export class UpdateEquipmentDto {
 /**
  * Body de `PATCH /api/equipment/:id/status`. Endpoint aparte del PATCH
  * general porque tiene otros permisos: el SUPERVISOR actualiza el estado de
- * la flota desde terreno (requerimientos §5.2, "Control de Flota") pero no
+ * la flota desde terreno pero no
  * edita la ficha técnica.
  */
 export class UpdateEquipmentStatusDto {
@@ -133,7 +133,7 @@ export class UpdateEquipmentStatusDto {
  * ensanchar el tipo que el resto del DTO — ver comentario de `licensePlate`).
  * El `EquipmentService` valida `operatorId` contra el catálogo propio
  * (`OperatorsService.assertActive` — activo, existe) y `supervisorId` contra
- * `user` (rol SUPERVISOR, no baneado) antes de guardar — el operador ya NO
+ * `user` (rol SUPERVISOR, no baneado) antes de guardar — el operador no
  * es un usuario de la plataforma.
  */
 export class UpdateEquipmentAssignmentDto {

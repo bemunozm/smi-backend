@@ -142,7 +142,6 @@ describe('EquipmentService', () => {
         where: { status: EquipmentStatus.OPERATIONAL },
         orderBy: { internalCode: 'asc' },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
     });
 
@@ -155,7 +154,6 @@ describe('EquipmentService', () => {
         where: { equipmentClass: EquipmentClass.HEAVY },
         orderBy: { internalCode: 'asc' },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
     });
 
@@ -168,7 +166,6 @@ describe('EquipmentService', () => {
         where: { homeBranchId: 'branch_1' },
         orderBy: { internalCode: 'asc' },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
     });
 
@@ -534,7 +531,6 @@ describe('EquipmentService', () => {
       expect(create).toHaveBeenCalledWith({
         data: { ...DTO_BASE, createdById: USER_ID },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
       expect(result).toMatchObject({ id: 'eq_1', ...DTO_BASE });
     });
@@ -628,7 +624,6 @@ describe('EquipmentService', () => {
       expect(create).toHaveBeenCalledWith({
         data: { ...DTO_BASE, createdById: USER_ID },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
     });
 
@@ -662,7 +657,6 @@ describe('EquipmentService', () => {
           createdById: USER_ID,
         },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
       expect(result).toMatchObject({
         photoUrl: 'https://minio.local/signed/final.jpg',
@@ -746,7 +740,6 @@ describe('EquipmentService', () => {
         where: { id: 'eq_1' },
         data: { brand: 'Komatsu' },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
       expect(result).toMatchObject({ id: 'eq_1', brand: 'Komatsu' });
     });
@@ -793,7 +786,6 @@ describe('EquipmentService', () => {
         where: { id: 'eq_1' },
         data: { licensePlate: null },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
     });
 
@@ -813,7 +805,6 @@ describe('EquipmentService', () => {
         where: { id: 'eq_1' },
         data: { year: null },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
     });
 
@@ -833,7 +824,6 @@ describe('EquipmentService', () => {
         where: { id: 'eq_1' },
         data: { homeBranchId: null },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
     });
 
@@ -932,7 +922,6 @@ describe('EquipmentService', () => {
           where: { id: 'eq_1' },
           data: { photoKey: null },
           include: EQUIPMENT_USAGE_INCLUDE,
-          omit: { createdById: true },
         });
         expect(deleteBestEffort).toHaveBeenCalledWith(
           'equipment-photos/old.jpg',
@@ -968,7 +957,6 @@ describe('EquipmentService', () => {
           where: { id: 'eq_1' },
           data: { photoKey: 'equipment-photos/new.jpg' },
           include: EQUIPMENT_USAGE_INCLUDE,
-          omit: { createdById: true },
         });
         expect(deleteBestEffort).toHaveBeenCalledWith(
           'equipment-photos/old.jpg',
@@ -1082,7 +1070,6 @@ describe('EquipmentService', () => {
         where: { id: 'eq_1' },
         data: { status: EquipmentStatus.IN_WORKSHOP },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
       expect(result).toMatchObject({
         id: 'eq_1',
@@ -1161,7 +1148,6 @@ describe('EquipmentService', () => {
         where: { id: 'eq_1' },
         data: { currentOperatorId: 'op_1', currentSupervisorId: 'user_sup' },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
       expect(result).toMatchObject({
         operator: { id: 'op_1', name: 'Patricio Rojas' },
@@ -1189,7 +1175,6 @@ describe('EquipmentService', () => {
         where: { id: 'eq_1' },
         data: { currentOperatorId: null, currentSupervisorId: null },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: { createdById: true },
       });
       expect(result).toMatchObject({
         operator: null,

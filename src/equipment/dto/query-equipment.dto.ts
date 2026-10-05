@@ -12,7 +12,7 @@ export class QueryEquipmentDto {
   @IsEnum(EquipmentStatus)
   status?: EquipmentStatus;
 
-  /** Filtro principal de Flota (RFC T01 §2, R8): liviano vs. pesado. */
+  /** Filtro principal de Flota: liviano vs. pesado. */
   @IsOptional()
   @IsEnum(EquipmentClass)
   equipmentClass?: EquipmentClass;

@@ -9,7 +9,7 @@ import {
   assertExpectedLocked,
   definedFields,
 } from '../../common/concurrency/assert-expected-locked';
-import type { ExpectedFields } from '../../common/concurrency/expected-fields';
+import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StorageService } from '../../storage/storage.service';
@@ -19,8 +19,7 @@ import { UpdateEquipmentDocumentDto } from './dto/update-equipment-document.dto'
 
 /** Forma de un documento en la API — el registro crudo de Prisma más su
  * vigencia derivada on-read (`status`/`daysToExpiry`, via `buildDocumentExpiryInfo`).
- * NUNCA expone `fileKey` — solo `fileUrl` firmada on-read (ver Diseño del
- * RFC R2-storage, "Contrato de la API"). */
+ * NUNCA expone `fileKey` — solo `fileUrl` firmada on-read. */
 export interface EquipmentDocumentResponse {
   id: string;
   equipmentId: string;
@@ -96,6 +95,7 @@ export class EquipmentDocumentService {
       findExisting: async (id) => {
         const document = await this.prisma.equipmentDocument.findUnique({
           where: { id },
+          omit: { createdById: false },
         });
         if (!document) return null;
         return {
@@ -119,12 +119,9 @@ export class EquipmentDocumentService {
       ? await this.storage.claimTmp(fileKey, userId, 'equipment-document')
       : undefined;
 
-    // El `try/catch` cubre SOLO la escritura en Prisma (hallazgo BAJO B1 de
-    // la revisión de seguridad, mismo patrón que `EquipmentService.create`):
-    // antes acá `return this.shape(document)` SIN `await` dentro del try
-    // hacía que el rollback nunca se disparara igual por accidente (la
-    // promesa rechazada del `shape` escapaba el try antes de asentarse) —
-    // se deja explícito para no depender de ese detalle.
+    // El `try/catch` cubre SOLO la escritura en Prisma (mismo patrón que
+    // `EquipmentService.create`): el borrado del archivo viejo y el shaping
+    // van después, fuera del try.
     let document: EquipmentDocument;
     try {
       document = await this.prisma.equipmentDocument.create({
@@ -161,8 +158,7 @@ export class EquipmentDocumentService {
   }
 
   /**
-   * `fileKey` es tri-state (chequeado con `=== undefined`, ver Diseño del
-   * RFC R2-storage): omitido deja el archivo intacto, `null` lo borra, un
+   * `fileKey` es tri-state (chequeado con `=== undefined`, omitido deja el archivo intacto, `null` lo borra, un
    * string reclama una key `tmp/` nueva. El objeto viejo se borra
    * best-effort DESPUÉS de que la escritura en la BD ya se confirmó.
    */
@@ -170,7 +166,7 @@ export class EquipmentDocumentService {
     id: string,
     dto: UpdateEquipmentDocumentDto,
     userId: string,
-    expected?: ExpectedFields,
+    expected?: ExpectedValues,
   ): Promise<EquipmentDocumentResponse> {
     const existente = await this.findOrThrow(id);
     const { fileKey, ...rest } = dto;
@@ -188,7 +184,7 @@ export class EquipmentDocumentService {
       );
     }
 
-    // Mismo criterio que `create` (hallazgo BAJO B1): el `try/catch` cubre
+    // Mismo criterio que `create`: el `try/catch` cubre
     // SOLO la escritura en Prisma. El borrado del archivo viejo y el shaping
     // van DESPUÉS, fuera del try.
     const write = (db: Prisma.TransactionClient) =>

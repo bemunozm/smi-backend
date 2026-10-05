@@ -102,7 +102,7 @@ export class IntervencionesService {
         select: INTERVENCION_SELECT,
       });
 
-      // TODO(cruce Inventario/Amin): la tabla `Insumo` (con su columna
+      // TODO(cruce Inventario): la tabla `Insumo` (con su columna
       // `stock`) es de otro dominio y todavía no existe en este schema, así
       // que a propósito NO se decrementa ningún stock acá. Cuando el módulo
       // de Inventario exista, reemplazar `descontarStock` por una llamada
@@ -124,7 +124,7 @@ export class IntervencionesService {
   }
 
   /**
-   * Seam intencional para el futuro cruce con el dominio Inventario/Amin.
+   * Seam intencional para el futuro cruce con el dominio Inventario.
    * Hoy es un no-op: NO descuenta `Insumo.stock` (esa tabla no existe aún en
    * este schema). Ver TODO en `create()`.
    */

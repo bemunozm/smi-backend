@@ -11,7 +11,7 @@ import {
   assertExpectedLocked,
   definedFields,
 } from '../common/concurrency/assert-expected-locked';
-import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import {
   createOrReturn,
   isPrimaryKeyViolation,
@@ -28,7 +28,7 @@ import {
   UpdateEquipmentStatusDto,
 } from './dto/update-equipment.dto';
 
-/** Forma de `GET /api/equipment/resumen`, consumido por el dashboard (Benjamín). */
+/** Forma de `GET /api/equipment/resumen`, consumido por el dashboard. */
 export interface ResumenFlota {
   total: number;
   disponibles: number;
@@ -46,7 +46,7 @@ const ESTADOS: readonly EquipmentStatus[] = Object.values(EquipmentStatus);
  * cargado, no queremos perder el último nivel real conocido.
  *
  * `currentOperator` SÍ es una relación Prisma real (`Operator`, catálogo
- * propio — el operador ya no es usuario de la plataforma) y se trae acá con
+ * propio — el operador no es usuario de la plataforma) y se trae acá con
  * `include`, `{id,name}` nomás.
  * `currentSupervisorId` sigue siendo un soft ref a `user.id` (sin FK, ver
  * `schema.prisma`) — se resuelve aparte con `resolveAssignedUsers` porque NO
@@ -64,19 +64,11 @@ export const EQUIPMENT_USAGE_INCLUDE = {
   },
 } satisfies Prisma.EquipmentInclude;
 
-/**
- * `createdById` es interno (solo sirve para decidir si un reintento con el
- * mismo id es del mismo usuario): se omite en toda query cuyo resultado sale
- * a la API.
- */
-export const EQUIPMENT_OMIT = {
-  createdById: true,
-} satisfies Prisma.EquipmentOmit;
-
-export type EquipmentWithUsageRelations = Prisma.EquipmentGetPayload<{
-  include: typeof EQUIPMENT_USAGE_INCLUDE;
-  omit: typeof EQUIPMENT_OMIT;
-}>;
+/** Sin `createdById`: el cliente de Prisma lo omite en toda lectura. */
+export type EquipmentWithUsageRelations = Omit<
+  Prisma.EquipmentGetPayload<{ include: typeof EQUIPMENT_USAGE_INCLUDE }>,
+  'createdById'
+>;
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
 const CAMPO_LABEL: Record<string, string> = {
@@ -136,7 +128,7 @@ export interface OpenShiftSummary {
   fecha: Date;
   /** Nombre del supervisor que abrió la tarjeta (`RegistroHorometro.supervisorId`),
    * o `null` si el registro no tiene supervisor asociado (dato legacy) o el
-   * usuario ya no existe (soft ref, ver comentario de cabecera del schema). */
+   * usuario no existe (soft ref, ver comentario de cabecera del schema). */
   supervisorName: string | null;
   /** `RegistroHorometro.shiftId` — no-null cuando la tarjeta abierta viene del
    * Registro de turno de Supervisión en Terreno (no de la entrada legacy de
@@ -160,8 +152,8 @@ export interface EquipmentUsageFields {
   currentFuelLevel: number | null;
   /** Turno de horómetro abierto del equipo, o `null` si no tiene uno en curso. */
   openShift: OpenShiftSummary | null;
-  /** URL firmada de `photoKey`, resuelta on-read — nunca se persiste (ver
-   * Diseño del RFC R2-storage, "Contrato de la API"). `null` si el equipo no
+  /** URL firmada de `photoKey`, resuelta on-read — nunca se persiste.
+   * `null` si el equipo no
    * tiene foto. */
   photoUrl: string | null;
   /**
@@ -219,7 +211,6 @@ export class EquipmentService {
       where,
       orderBy: { internalCode: 'asc' },
       include: EQUIPMENT_USAGE_INCLUDE,
-      omit: EQUIPMENT_OMIT,
     });
 
     return this.withUsageFields(equipos);
@@ -257,7 +248,7 @@ export class EquipmentService {
    * Ficha del equipo. Incluye el conteo de registros asociados de los otros
    * dominios (solo lectura) para que la ficha muestre actividad real sin tener
    * que pedirle un endpoint a cada dueño. La línea de tiempo consolidada
-   * (requerimientos §5.5) es de Benjamín — esto no la reemplaza.
+   * es de otro dominio — esto no la reemplaza.
    */
   async findOne(id: string) {
     const equipment = await this.prisma.equipment.findUnique({
@@ -282,7 +273,6 @@ export class EquipmentService {
         },
         ...EQUIPMENT_USAGE_INCLUDE,
       },
-      omit: EQUIPMENT_OMIT,
     });
 
     if (!equipment) {
@@ -313,18 +303,37 @@ export class EquipmentService {
           select: { createdById: true },
         });
         if (!owner) return null;
-        return { ownerId: owner.createdById, result: () => this.findOne(id) };
+        return {
+          ownerId: owner.createdById,
+          result: () => this.findCreatedShape(id),
+        };
       },
       create: () => this.createFresh(dto, userId),
     });
+  }
+
+  /**
+   * El equipo con la misma forma que devuelve el `create` (relaciones de uso,
+   * sin sucursal ni historial de la ficha): el reintento de un create no puede
+   * responder otra cosa que el create original.
+   */
+  private async findCreatedShape(id: string) {
+    const equipment = await this.prisma.equipment.findUnique({
+      where: { id },
+      include: EQUIPMENT_USAGE_INCLUDE,
+    });
+    if (!equipment) {
+      throw new NotFoundException(`Equipo "${id}" no encontrado`);
+    }
+    const [shaped] = await this.withUsageFields([equipment]);
+    return shaped;
   }
 
   private async createFresh(dto: CreateEquipmentDto, userId: string) {
     const { id, photoKey, ...rest } = dto;
     // Reclama ANTES del `create` (fuera del try): si el claim falla (key
     // ajena, expirada o de extensión inválida), no hay nada que revertir en
-    // la BD ni en storage — ver Diseño del RFC R2-storage, "Claim en los
-    // servicios de dominio".
+    // la BD ni en storage.
     const finalKey = photoKey
       ? await this.storage.claimTmp(photoKey, userId, 'equipment-photo')
       : undefined;
@@ -346,7 +355,6 @@ export class EquipmentService {
           createdById: userId,
         },
         include: EQUIPMENT_USAGE_INCLUDE,
-        omit: EQUIPMENT_OMIT,
       });
     } catch (error: unknown) {
       // La copia final ya existe en el bucket pero la fila nunca se creó —
@@ -367,8 +375,7 @@ export class EquipmentService {
   /**
    * Mismo shaping que `create` — ver docstring de arriba. `photoKey` es
    * tri-state (chequeado con `=== undefined`, NUNCA `in`/hasOwnProperty por
-   * `useDefineForClassFields` — ver Diseño del RFC R2-storage, "Contrato de
-   * la API"): omitido deja la foto intacta, `null` la borra, un string
+   * `useDefineForClassFields`): omitido deja la foto intacta, `null` la borra, un string
    * reclama una key `tmp/` nueva. El objeto viejo (reemplazado o borrado) se
    * elimina best-effort DESPUÉS de que la escritura en la BD ya se confirmó
    * — nunca antes, para no perder el archivo si el `update` falla.
@@ -377,7 +384,7 @@ export class EquipmentService {
     id: string,
     dto: UpdateEquipmentDto,
     userId: string,
-    expected?: ExpectedFields,
+    expected?: ExpectedValues,
   ) {
     const { photoKey, ...rest } = dto;
     const existente = await this.assertExisteConPhotoKey(id);
@@ -412,7 +419,6 @@ export class EquipmentService {
             data:
               finalKey !== undefined ? { ...rest, photoKey: finalKey } : rest,
             include: EQUIPMENT_USAGE_INCLUDE,
-            omit: EQUIPMENT_OMIT,
           }),
       );
     } catch (error: unknown) {
@@ -434,7 +440,7 @@ export class EquipmentService {
   async updateStatus(
     id: string,
     dto: UpdateEquipmentStatusDto,
-    expected?: ExpectedFields,
+    expected?: ExpectedValues,
   ) {
     await this.assertExiste(id);
     const equipment = await this.writeGuarded(
@@ -447,7 +453,6 @@ export class EquipmentService {
           where: { id },
           data: { status: dto.status },
           include: EQUIPMENT_USAGE_INCLUDE,
-          omit: EQUIPMENT_OMIT,
         }),
     );
     const [shaped] = await this.withUsageFields([equipment]);
@@ -470,15 +475,15 @@ export class EquipmentService {
   async updateAssignment(
     id: string,
     dto: UpdateEquipmentAssignmentDto,
-    expected?: ExpectedFields,
+    expected?: ExpectedValues,
   ) {
     await this.assertExiste(id);
 
-    // `Unchecked`, no `EquipmentUpdateInput`: desde que `currentOperatorId`
+    // `Unchecked`, no `EquipmentUpdateInput`: como `currentOperatorId`
     // tiene una relación Prisma real (`currentOperator`), el input
-    // "checked" ya no expone el escalar FK directo (solo `connect`/
+    // "checked" no expone el escalar FK directo (solo `connect`/
     // `disconnect` vía `currentOperator`) — `currentSupervisorId` (soft ref
-    // sin relación) sí seguía admitiéndolo. `Unchecked` mantiene ambos como
+    // sin relación) sí lo admite. `Unchecked` mantiene ambos como
     // escalares planos, igual que el resto de este service.
     const data: Prisma.EquipmentUncheckedUpdateInput = {};
     // Lo que el body deja, con los nombres de la API (operatorId/supervisorId).
@@ -514,7 +519,6 @@ export class EquipmentService {
           where: { id },
           data,
           include: EQUIPMENT_USAGE_INCLUDE,
-          omit: EQUIPMENT_OMIT,
         }),
       (row) => ({
         operatorId: row.currentOperatorId,
@@ -584,7 +588,7 @@ export class EquipmentService {
    */
   private async writeGuarded(
     id: string,
-    expected: ExpectedFields | undefined,
+    expected: ExpectedValues | undefined,
     desired: Record<string, unknown>,
     select: Prisma.EquipmentSelect,
     write: (
@@ -624,7 +628,7 @@ export class EquipmentService {
 
   /** Mismo chequeo que `assertExiste`, pero además devuelve el `photoKey`
    * ACTUAL — lo necesita `update` para poder borrar la foto vieja después de
-   * un reemplazo/borrado exitoso (ver Diseño del RFC R2-storage). */
+   * un reemplazo/borrado exitoso. */
   private async assertExisteConPhotoKey(
     id: string,
   ): Promise<{ photoKey: string | null }> {
@@ -755,9 +759,9 @@ export class EquipmentService {
    * uso" en la página). Usado para `currentSupervisorId` (`shapeUsage`) y
    * para el `supervisorId` de la tarjeta abierta (`resolveOpenShifts`) — NO
    * para `currentOperatorId`, que se resuelve vía la relación Prisma
-   * `currentOperator` (`EQUIPMENT_USAGE_INCLUDE`), no acá (el operador ya no
-   * es usuario de la plataforma). `user.id` sigue
-   * siendo soft ref sin FK (ver `schema.prisma`) — un id sin fila en `user`
+   * `currentOperator` (`EQUIPMENT_USAGE_INCLUDE`), no acá (el operador no
+   * es usuario de la plataforma). `user.id` es
+   * soft ref sin FK (ver `schema.prisma`) — un id sin fila en `user`
    * (dato huérfano) simplemente no aparece en el mapa y el caller lo trata
    * como `null`, en vez de reventar la respuesta completa.
    */
@@ -878,9 +882,9 @@ export class EquipmentService {
    * cuadrilla. Tampoco admite un usuario BANEADO (mismo criterio `banned: {
    * not: true }` que `UsersService.findByRole`, que alimenta el picker): sin
    * este chequeo, un `PATCH :id/assignment` que mande el id directo (sin
-   * pasar por el picker) podía asignar a alguien baneado igual. El operador
-   * ya NO pasa por acá — `updateAssignment` valida `operatorId` contra el
-   * catálogo con `OperatorsService.assertActive` (el operador ya no es
+   * pasar por el picker) podría asignar a alguien baneado. El operador
+   * no pasa por acá — `updateAssignment` valida `operatorId` contra el
+   * catálogo con `OperatorsService.assertActive` (el operador no es
    * usuario de la plataforma), sin `role` param: solo hay un rol posible
    * para este chequeo.
    */

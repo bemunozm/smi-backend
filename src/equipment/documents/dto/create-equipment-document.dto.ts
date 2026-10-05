@@ -33,7 +33,7 @@ export class CreateEquipmentDocumentDto {
 
   /**
    * Key `tmp/<userId>/<uuid>.<ext>` de un archivo recién subido por
-   * `POST /api/files` (ver Diseño del RFC R2-storage, "Contrato de la API").
+   * `POST /api/files`.
    * El DTO valida solo la FORMA (regex + largo) — `EquipmentDocumentService`
    * valida en capas que el segmento userId sea `session.user.id` y que la
    * extensión sea válida para "equipment-document" (imagen o PDF) vía
