@@ -7,12 +7,38 @@ import { Operator, Prisma } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../auth/roles';
+import {
+  assertExpectedLocked,
+  definedFields,
+} from '../common/concurrency/assert-expected-locked';
+import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import {
+  createOrReturn,
+  isPrimaryKeyViolation,
+} from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ERROR_CODES } from '../common/errors/error-codes';
 import { normalizeRut } from './rut';
 import { CreateOperatorDto } from './dto/create-operator.dto';
 import { QueryOperatorDto } from './dto/query-operator.dto';
 import { UpdateOperatorDto } from './dto/update-operator.dto';
+
+/** `createdById` es interno: no sale en ninguna respuesta. */
+const OPERATOR_OMIT = { createdById: true } satisfies Prisma.OperatorOmit;
+const OPERATOR_OMIT_RUT = {
+  createdById: true,
+  rut: true,
+} satisfies Prisma.OperatorOmit;
+
+/** Un operador tal como sale a la API. */
+export type OperatorResponse = Omit<Operator, 'createdById'>;
+
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
+const CAMPO_LABEL: Record<string, string> = {
+  name: 'Nombre',
+  rut: 'RUT',
+  isActive: 'Activo',
+};
 
 @Injectable()
 export class OperatorsService {
@@ -44,12 +70,16 @@ export class OperatorsService {
     }
 
     if (this.hasRutAccess(session)) {
-      return this.prisma.operator.findMany({ where, orderBy: { name: 'asc' } });
+      return this.prisma.operator.findMany({
+        where,
+        orderBy: { name: 'asc' },
+        omit: OPERATOR_OMIT,
+      });
     }
     return this.prisma.operator.findMany({
       where,
       orderBy: { name: 'asc' },
-      omit: { rut: true },
+      omit: OPERATOR_OMIT_RUT,
     });
   }
 
@@ -60,17 +90,20 @@ export class OperatorsService {
    * TypeScript sepa, en tiempo de compilación, que ESE call-site específico
    * nunca puede volver `Omit<Operator, 'rut'>`.
    */
-  async findOne(id: string): Promise<Operator>;
+  async findOne(id: string): Promise<OperatorResponse>;
   async findOne(
     id: string,
     session: UserSession,
-  ): Promise<Operator | Omit<Operator, 'rut'>>;
+  ): Promise<OperatorResponse | Omit<OperatorResponse, 'rut'>>;
   async findOne(id: string, session?: UserSession) {
     const operator = this.hasRutAccess(session)
-      ? await this.prisma.operator.findUnique({ where: { id } })
+      ? await this.prisma.operator.findUnique({
+          where: { id },
+          omit: OPERATOR_OMIT,
+        })
       : await this.prisma.operator.findUnique({
           where: { id },
-          omit: { rut: true },
+          omit: OPERATOR_OMIT_RUT,
         });
     if (!operator) {
       throw new NotFoundException(`Operador "${id}" no encontrado`);
@@ -78,7 +111,24 @@ export class OperatorsService {
     return operator;
   }
 
-  async create(dto: CreateOperatorDto) {
+  async create(dto: CreateOperatorDto, userId: string) {
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe un operador con ese id de otro usuario',
+      findExisting: async (id) => {
+        const owner = await this.prisma.operator.findUnique({
+          where: { id },
+          select: { createdById: true },
+        });
+        if (!owner) return null;
+        return { ownerId: owner.createdById, result: () => this.findOne(id) };
+      },
+      create: () => this.createFresh(dto, userId),
+    });
+  }
+
+  private async createFresh(dto: CreateOperatorDto, userId: string) {
     // `rut` ya pasó `IsChileanRut` en el DTO (dígito verificador correcto) —
     // acá se normaliza SIEMPRE al formato canónico `12345678-K` antes de
     // persistir, para que dos entradas del mismo RUT con puntuación distinta
@@ -87,16 +137,20 @@ export class OperatorsService {
     const data: Prisma.OperatorCreateInput = {
       ...dto,
       ...(dto.rut !== undefined ? { rut: normalizeRut(dto.rut) } : {}),
+      createdById: userId,
     };
 
     try {
-      return await this.prisma.operator.create({ data });
+      return await this.prisma.operator.create({ data, omit: OPERATOR_OMIT });
     } catch (error: unknown) {
+      // Un choque con la PK es la carrera de dos reintentos con el mismo id:
+      // lo resuelve `createOrReturn`, no es un RUT repetido.
+      if (isPrimaryKeyViolation(error)) throw error;
       throw this.mapUniqueConstraintError(error, data.rut ?? undefined);
     }
   }
 
-  async update(id: string, dto: UpdateOperatorDto) {
+  async update(id: string, dto: UpdateOperatorDto, expected?: ExpectedFields) {
     await this.assertExiste(id);
 
     const data: Prisma.OperatorUpdateInput = {
@@ -104,8 +158,30 @@ export class OperatorsService {
       ...(dto.rut !== undefined ? { rut: normalizeRut(dto.rut) } : {}),
     };
 
+    const write = (db: Prisma.TransactionClient) =>
+      db.operator.update({ where: { id }, data, omit: OPERATOR_OMIT });
     try {
-      return await this.prisma.operator.update({ where: { id }, data });
+      if (!expected) return await write(this.prisma);
+      return await this.prisma.$transaction(async (tx) => {
+        await assertExpectedLocked({
+          tx,
+          table: 'operator',
+          id,
+          expected,
+          read: (db) =>
+            db.operator.findUnique({
+              where: { id },
+              select: { name: true, rut: true, isActive: true },
+            }),
+          desired: definedFields({
+            ...dto,
+            ...(dto.rut !== undefined ? { rut: normalizeRut(dto.rut) } : {}),
+          }),
+          labels: CAMPO_LABEL,
+          notFoundMessage: `Operador "${id}" no encontrado`,
+        });
+        return write(tx);
+      });
     } catch (error: unknown) {
       throw this.mapUniqueConstraintError(
         error,
@@ -180,7 +256,7 @@ export class OperatorsService {
    * (typo); 409 `OPERATOR_INACTIVE` si existe pero está dado de baja — el
    * `code` es el passthrough del filtro global.
    */
-  async assertActive(id: string): Promise<Operator> {
+  async assertActive(id: string): Promise<OperatorResponse> {
     const operator = await this.findOne(id);
     if (!operator.isActive) {
       throw new ConflictException({

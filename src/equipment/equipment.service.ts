@@ -7,6 +7,15 @@ import {
 import { EquipmentStatus, Prisma } from '@prisma/client';
 
 import { ROLES } from '../auth/roles';
+import {
+  assertExpectedLocked,
+  definedFields,
+} from '../common/concurrency/assert-expected-locked';
+import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import {
+  createOrReturn,
+  isPrimaryKeyViolation,
+} from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
@@ -55,9 +64,52 @@ export const EQUIPMENT_USAGE_INCLUDE = {
   },
 } satisfies Prisma.EquipmentInclude;
 
+/**
+ * `createdById` es interno (solo sirve para decidir si un reintento con el
+ * mismo id es del mismo usuario): se omite en toda query cuyo resultado sale
+ * a la API.
+ */
+export const EQUIPMENT_OMIT = {
+  createdById: true,
+} satisfies Prisma.EquipmentOmit;
+
 export type EquipmentWithUsageRelations = Prisma.EquipmentGetPayload<{
   include: typeof EQUIPMENT_USAGE_INCLUDE;
+  omit: typeof EQUIPMENT_OMIT;
 }>;
+
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
+const CAMPO_LABEL: Record<string, string> = {
+  licensePlate: 'Patente',
+  equipmentClass: 'Clase',
+  type: 'Tipo',
+  brand: 'Marca',
+  model: 'Modelo',
+  year: 'Año',
+  controlUnit: 'Unidad de control',
+  status: 'Estado',
+  currentHourmeter: 'Horómetro',
+  currentMileage: 'Kilometraje',
+  homeBranchId: 'Sucursal base',
+  operatorId: 'Operador',
+  supervisorId: 'Supervisor',
+};
+
+/** Datos de la ficha que admiten precondición (la foto no: reemplazarla es
+ * última-escritura-gana). */
+const UPDATE_FIELDS = {
+  licensePlate: true,
+  equipmentClass: true,
+  type: true,
+  brand: true,
+  model: true,
+  year: true,
+  controlUnit: true,
+  status: true,
+  currentHourmeter: true,
+  currentMileage: true,
+  homeBranchId: true,
+} satisfies Prisma.EquipmentSelect;
 
 /** Forma pública de un operador/supervisor asignado en la respuesta de Flota. */
 export interface AssignedUserSummary {
@@ -167,6 +219,7 @@ export class EquipmentService {
       where,
       orderBy: { internalCode: 'asc' },
       include: EQUIPMENT_USAGE_INCLUDE,
+      omit: EQUIPMENT_OMIT,
     });
 
     return this.withUsageFields(equipos);
@@ -229,6 +282,7 @@ export class EquipmentService {
         },
         ...EQUIPMENT_USAGE_INCLUDE,
       },
+      omit: EQUIPMENT_OMIT,
     });
 
     if (!equipment) {
@@ -247,7 +301,26 @@ export class EquipmentService {
    * bien en la BD.
    */
   async create(dto: CreateEquipmentDto, userId: string) {
-    const { photoKey, ...rest } = dto;
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe un equipo con ese id de otro usuario',
+      // El reintento propio devuelve la ficha tal como está hoy, con la foto
+      // firmada de nuevo; no reclama la key tmp ni toca nada.
+      findExisting: async (id) => {
+        const owner = await this.prisma.equipment.findUnique({
+          where: { id },
+          select: { createdById: true },
+        });
+        if (!owner) return null;
+        return { ownerId: owner.createdById, result: () => this.findOne(id) };
+      },
+      create: () => this.createFresh(dto, userId),
+    });
+  }
+
+  private async createFresh(dto: CreateEquipmentDto, userId: string) {
+    const { id, photoKey, ...rest } = dto;
     // Reclama ANTES del `create` (fuera del try): si el claim falla (key
     // ajena, expirada o de extensión inválida), no hay nada que revertir en
     // la BD ni en storage — ver Diseño del RFC R2-storage, "Claim en los
@@ -266,8 +339,14 @@ export class EquipmentService {
     let equipment: EquipmentWithUsageRelations;
     try {
       equipment = await this.prisma.equipment.create({
-        data: { ...rest, photoKey: finalKey },
+        data: {
+          ...(id ? { id } : {}),
+          ...rest,
+          photoKey: finalKey,
+          createdById: userId,
+        },
         include: EQUIPMENT_USAGE_INCLUDE,
+        omit: EQUIPMENT_OMIT,
       });
     } catch (error: unknown) {
       // La copia final ya existe en el bucket pero la fila nunca se creó —
@@ -275,6 +354,9 @@ export class EquipmentService {
       if (finalKey) {
         await this.storage.discard(finalKey);
       }
+      // Un choque con la PK es la carrera de dos reintentos con el mismo id:
+      // lo resuelve `createOrReturn`, no es un código o patente duplicados.
+      if (isPrimaryKeyViolation(error)) throw error;
       throw this.mapPrismaError(error, dto);
     }
 
@@ -291,7 +373,12 @@ export class EquipmentService {
    * elimina best-effort DESPUÉS de que la escritura en la BD ya se confirmó
    * — nunca antes, para no perder el archivo si el `update` falla.
    */
-  async update(id: string, dto: UpdateEquipmentDto, userId: string) {
+  async update(
+    id: string,
+    dto: UpdateEquipmentDto,
+    userId: string,
+    expected?: ExpectedFields,
+  ) {
     const { photoKey, ...rest } = dto;
     const existente = await this.assertExisteConPhotoKey(id);
 
@@ -314,11 +401,20 @@ export class EquipmentService {
     // confirmada y no hay nada que descartar de `finalKey`.
     let equipment: EquipmentWithUsageRelations;
     try {
-      equipment = await this.prisma.equipment.update({
-        where: { id },
-        data: finalKey !== undefined ? { ...rest, photoKey: finalKey } : rest,
-        include: EQUIPMENT_USAGE_INCLUDE,
-      });
+      equipment = await this.writeGuarded(
+        id,
+        expected,
+        definedFields(rest),
+        UPDATE_FIELDS,
+        (db) =>
+          db.equipment.update({
+            where: { id },
+            data:
+              finalKey !== undefined ? { ...rest, photoKey: finalKey } : rest,
+            include: EQUIPMENT_USAGE_INCLUDE,
+            omit: EQUIPMENT_OMIT,
+          }),
+      );
     } catch (error: unknown) {
       if (typeof finalKey === 'string') {
         await this.storage.discard(finalKey);
@@ -335,13 +431,25 @@ export class EquipmentService {
   }
 
   /** Mismo shaping que `create` — ver docstring de arriba. */
-  async updateStatus(id: string, dto: UpdateEquipmentStatusDto) {
+  async updateStatus(
+    id: string,
+    dto: UpdateEquipmentStatusDto,
+    expected?: ExpectedFields,
+  ) {
     await this.assertExiste(id);
-    const equipment = await this.prisma.equipment.update({
-      where: { id },
-      data: { status: dto.status },
-      include: EQUIPMENT_USAGE_INCLUDE,
-    });
+    const equipment = await this.writeGuarded(
+      id,
+      expected,
+      { status: dto.status },
+      { status: true },
+      (db) =>
+        db.equipment.update({
+          where: { id },
+          data: { status: dto.status },
+          include: EQUIPMENT_USAGE_INCLUDE,
+          omit: EQUIPMENT_OMIT,
+        }),
+    );
     const [shaped] = await this.withUsageFields([equipment]);
     return shaped;
   }
@@ -359,7 +467,11 @@ export class EquipmentService {
    * `user` con `assertSupervisor` (rol SUPERVISOR, no baneado) — el
    * supervisor SÍ es un usuario de la plataforma, a diferencia del operador.
    */
-  async updateAssignment(id: string, dto: UpdateEquipmentAssignmentDto) {
+  async updateAssignment(
+    id: string,
+    dto: UpdateEquipmentAssignmentDto,
+    expected?: ExpectedFields,
+  ) {
     await this.assertExiste(id);
 
     // `Unchecked`, no `EquipmentUpdateInput`: desde que `currentOperatorId`
@@ -369,6 +481,8 @@ export class EquipmentService {
     // sin relación) sí seguía admitiéndolo. `Unchecked` mantiene ambos como
     // escalares planos, igual que el resto de este service.
     const data: Prisma.EquipmentUncheckedUpdateInput = {};
+    // Lo que el body deja, con los nombres de la API (operatorId/supervisorId).
+    const desired: Record<string, unknown> = {};
 
     if (dto.operatorId !== undefined) {
       if (dto.operatorId === null) {
@@ -377,6 +491,7 @@ export class EquipmentService {
         await this.operators.assertActive(dto.operatorId);
         data.currentOperatorId = dto.operatorId;
       }
+      desired.operatorId = dto.operatorId;
     }
 
     if (dto.supervisorId !== undefined) {
@@ -386,13 +501,26 @@ export class EquipmentService {
         await this.assertSupervisor(dto.supervisorId);
         data.currentSupervisorId = dto.supervisorId;
       }
+      desired.supervisorId = dto.supervisorId;
     }
 
-    const equipment = await this.prisma.equipment.update({
-      where: { id },
-      data,
-      include: EQUIPMENT_USAGE_INCLUDE,
-    });
+    const equipment = await this.writeGuarded(
+      id,
+      expected,
+      desired,
+      { currentOperatorId: true, currentSupervisorId: true },
+      (db) =>
+        db.equipment.update({
+          where: { id },
+          data,
+          include: EQUIPMENT_USAGE_INCLUDE,
+          omit: EQUIPMENT_OMIT,
+        }),
+      (row) => ({
+        operatorId: row.currentOperatorId,
+        supervisorId: row.currentSupervisorId,
+      }),
+    );
 
     const [shaped] = await this.withUsageFields([equipment]);
     return shaped;
@@ -446,6 +574,44 @@ export class EquipmentService {
     if (equipment.photoKey) {
       await this.storage.deleteBestEffort(equipment.photoKey);
     }
+  }
+
+  /**
+   * Escribe la ficha. Con `X-Expected` la escritura va en una transacción que
+   * bloquea la fila, la relee y valida la precondición antes de pisarla; sin
+   * él, última escritura gana, como siempre. `toComparable` renombra las
+   * columnas a los nombres que usa la API cuando difieren.
+   */
+  private async writeGuarded(
+    id: string,
+    expected: ExpectedFields | undefined,
+    desired: Record<string, unknown>,
+    select: Prisma.EquipmentSelect,
+    write: (
+      db: Prisma.TransactionClient,
+    ) => Promise<EquipmentWithUsageRelations>,
+    toComparable: (row: Record<string, unknown>) => Record<string, unknown> = (
+      row,
+    ) => row,
+  ): Promise<EquipmentWithUsageRelations> {
+    if (!expected) return write(this.prisma);
+
+    return this.prisma.$transaction(async (tx) => {
+      await assertExpectedLocked({
+        tx,
+        table: 'equipment',
+        id,
+        expected,
+        read: async (db) => {
+          const row = await db.equipment.findUnique({ where: { id }, select });
+          return row ? toComparable(row) : null;
+        },
+        desired,
+        labels: CAMPO_LABEL,
+        notFoundMessage: `Equipo "${id}" no encontrado`,
+      });
+      return write(tx);
+    });
   }
 
   private async assertExiste(id: string): Promise<void> {

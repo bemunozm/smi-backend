@@ -4,14 +4,20 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
+import {
+  EXPECTED_HEADER,
+  parseExpectedHeader,
+} from '../common/concurrency/expected-fields';
 import { BranchService } from './branch.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { QueryBranchDto } from './dto/query-branch.dto';
@@ -46,19 +52,23 @@ export class BranchController {
 
   @Post()
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
-  async create(@Body() dto: CreateBranchDto) {
+  async create(@Body() dto: CreateBranchDto, @Session() session: UserSession) {
     return {
-      data: await this.service.create(dto),
+      data: await this.service.create(dto, session.user.id),
       message: 'Sucursal creada',
     };
   }
 
   @Patch(':id')
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
-  async update(@Param('id') id: string, @Body() dto: UpdateBranchDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateBranchDto,
+    @Headers(EXPECTED_HEADER) expected?: string,
+  ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto),
+      data: await this.service.update(id, dto, parseExpectedHeader(expected)),
       message: 'Sucursal actualizada',
     };
   }

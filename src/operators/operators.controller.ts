@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -13,6 +14,10 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
+import {
+  EXPECTED_HEADER,
+  parseExpectedHeader,
+} from '../common/concurrency/expected-fields';
 import { OperatorsService } from './operators.service';
 import { CreateOperatorDto } from './dto/create-operator.dto';
 import { QueryOperatorDto } from './dto/query-operator.dto';
@@ -55,19 +60,26 @@ export class OperatorsController {
 
   @Post()
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
-  async create(@Body() dto: CreateOperatorDto) {
+  async create(
+    @Body() dto: CreateOperatorDto,
+    @Session() session: UserSession,
+  ) {
     return {
-      data: await this.service.create(dto),
+      data: await this.service.create(dto, session.user.id),
       message: 'Operador creado',
     };
   }
 
   @Patch(':id')
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
-  async update(@Param('id') id: string, @Body() dto: UpdateOperatorDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateOperatorDto,
+    @Headers(EXPECTED_HEADER) expected?: string,
+  ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto),
+      data: await this.service.update(id, dto, parseExpectedHeader(expected)),
       message: 'Operador actualizado',
     };
   }

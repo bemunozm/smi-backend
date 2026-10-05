@@ -1,6 +1,16 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import type { EquipmentDocument, EquipmentDocumentType } from '@prisma/client';
+import type {
+  EquipmentDocument,
+  EquipmentDocumentType,
+  Prisma,
+} from '@prisma/client';
 
+import {
+  assertExpectedLocked,
+  definedFields,
+} from '../../common/concurrency/assert-expected-locked';
+import type { ExpectedFields } from '../../common/concurrency/expected-fields';
+import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StorageService } from '../../storage/storage.service';
 import { buildDocumentExpiryInfo, DocumentStatus } from '../document-expiry';
@@ -28,6 +38,35 @@ export interface EquipmentDocumentResponse {
   daysToExpiry: number | null;
 }
 
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`).
+ * `fileKey` no entra: reemplazar el archivo es última-escritura-gana. */
+const CAMPO_LABEL: Record<string, string> = {
+  type: 'Tipo',
+  title: 'Título',
+  expiryDate: 'Vencimiento',
+  fileName: 'Nombre del archivo',
+  notes: 'Notas',
+};
+
+const UPDATE_FIELDS = {
+  type: true,
+  title: true,
+  expiryDate: true,
+  fileName: true,
+  notes: true,
+} as const;
+
+/** El vencimiento viaja como texto ISO (o fecha sola): se compara como
+ * instante, igual que lo deja Postgres. */
+function withExpiryAsInstant(
+  values: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!values || typeof values.expiryDate !== 'string') return values;
+  const parsed = new Date(values.expiryDate);
+  if (Number.isNaN(parsed.getTime())) return values;
+  return { ...values, expiryDate: parsed };
+}
+
 @Injectable()
 export class EquipmentDocumentService {
   constructor(
@@ -48,9 +87,34 @@ export class EquipmentDocumentService {
     dto: CreateEquipmentDocumentDto,
     userId: string,
   ): Promise<EquipmentDocumentResponse> {
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe un documento con ese id de otro usuario',
+      // El reintento propio devuelve el documento con su archivo firmado de
+      // nuevo; no reclama la key tmp ni toca nada.
+      findExisting: async (id) => {
+        const document = await this.prisma.equipmentDocument.findUnique({
+          where: { id },
+        });
+        if (!document) return null;
+        return {
+          ownerId: document.createdById,
+          result: () => this.shape(document),
+        };
+      },
+      create: () => this.createFresh(equipmentId, dto, userId),
+    });
+  }
+
+  private async createFresh(
+    equipmentId: string,
+    dto: CreateEquipmentDocumentDto,
+    userId: string,
+  ): Promise<EquipmentDocumentResponse> {
     await this.assertEquipmentExists(equipmentId);
 
-    const { fileKey, ...rest } = dto;
+    const { id, fileKey, ...rest } = dto;
     const finalKey = fileKey
       ? await this.storage.claimTmp(fileKey, userId, 'equipment-document')
       : undefined;
@@ -64,7 +128,13 @@ export class EquipmentDocumentService {
     let document: EquipmentDocument;
     try {
       document = await this.prisma.equipmentDocument.create({
-        data: { equipmentId, ...rest, fileKey: finalKey },
+        data: {
+          ...(id ? { id } : {}),
+          equipmentId,
+          ...rest,
+          fileKey: finalKey,
+          createdById: userId,
+        },
       });
     } catch (error: unknown) {
       if (finalKey) {
@@ -100,6 +170,7 @@ export class EquipmentDocumentService {
     id: string,
     dto: UpdateEquipmentDocumentDto,
     userId: string,
+    expected?: ExpectedFields,
   ): Promise<EquipmentDocumentResponse> {
     const existente = await this.findOrThrow(id);
     const { fileKey, ...rest } = dto;
@@ -120,12 +191,33 @@ export class EquipmentDocumentService {
     // Mismo criterio que `create` (hallazgo BAJO B1): el `try/catch` cubre
     // SOLO la escritura en Prisma. El borrado del archivo viejo y el shaping
     // van DESPUÉS, fuera del try.
-    let document: EquipmentDocument;
-    try {
-      document = await this.prisma.equipmentDocument.update({
+    const write = (db: Prisma.TransactionClient) =>
+      db.equipmentDocument.update({
         where: { id },
         data: finalKey !== undefined ? { ...rest, fileKey: finalKey } : rest,
       });
+
+    let document: EquipmentDocument;
+    try {
+      document = expected
+        ? await this.prisma.$transaction(async (tx) => {
+            await assertExpectedLocked({
+              tx,
+              table: 'equipmentDocument',
+              id,
+              expected: withExpiryAsInstant(expected),
+              read: (db) =>
+                db.equipmentDocument.findUnique({
+                  where: { id },
+                  select: UPDATE_FIELDS,
+                }),
+              desired: withExpiryAsInstant(definedFields(rest)) ?? {},
+              labels: CAMPO_LABEL,
+              notFoundMessage: `Documento "${id}" no encontrado`,
+            });
+            return write(tx);
+          })
+        : await write(this.prisma);
     } catch (error: unknown) {
       if (typeof finalKey === 'string') {
         await this.storage.discard(finalKey);

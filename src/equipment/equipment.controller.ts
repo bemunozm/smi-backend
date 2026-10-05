@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -13,6 +14,10 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
+import {
+  EXPECTED_HEADER,
+  parseExpectedHeader,
+} from '../common/concurrency/expected-fields';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { QueryEquipmentDto } from './dto/query-equipment.dto';
 import {
@@ -74,10 +79,16 @@ export class EquipmentController {
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentDto,
     @Session() session: UserSession,
+    @Headers(EXPECTED_HEADER) expected?: string,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto, session.user.id),
+      data: await this.service.update(
+        id,
+        dto,
+        session.user.id,
+        parseExpectedHeader(expected),
+      ),
       message: 'Equipo actualizado',
     };
   }
@@ -87,10 +98,15 @@ export class EquipmentController {
   async updateStatus(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentStatusDto,
+    @Headers(EXPECTED_HEADER) expected?: string,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.updateStatus(id, dto),
+      data: await this.service.updateStatus(
+        id,
+        dto,
+        parseExpectedHeader(expected),
+      ),
       message: 'Estado actualizado',
     };
   }
@@ -106,10 +122,15 @@ export class EquipmentController {
   async updateAssignment(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentAssignmentDto,
+    @Headers(EXPECTED_HEADER) expected?: string,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.updateAssignment(id, dto),
+      data: await this.service.updateAssignment(
+        id,
+        dto,
+        parseExpectedHeader(expected),
+      ),
       message: 'Asignación actualizada',
     };
   }

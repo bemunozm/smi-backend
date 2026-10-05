@@ -2,7 +2,9 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { EquipmentDocumentType } from '@prisma/client';
 
+import { ERROR_CODES } from '../../common/errors/error-codes';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { prismaError } from '../../common/testing/fixtures';
 import { StorageService } from '../../storage/storage.service';
 import { EquipmentDocumentService } from './equipment-document.service';
 
@@ -34,6 +36,7 @@ describe('EquipmentDocumentService', () => {
   const discard = jest.fn();
   const deleteBestEffort = jest.fn();
   const sign = jest.fn();
+  const queryRaw = jest.fn();
 
   beforeEach(async () => {
     [
@@ -47,6 +50,7 @@ describe('EquipmentDocumentService', () => {
       discard,
       deleteBestEffort,
       sign,
+      queryRaw,
     ].forEach((m) => m.mockReset());
     sign.mockResolvedValue('https://minio.local/signed/x');
 
@@ -64,6 +68,17 @@ describe('EquipmentDocumentService', () => {
               update: documentUpdate,
               delete: documentDelete,
             },
+            // Con `X-Expected` la escritura va en una transacción que bloquea
+            // la fila: el mock ejecuta el callback con el mismo cliente.
+            $queryRaw: queryRaw,
+            $transaction: (fn: (tx: unknown) => unknown) =>
+              fn({
+                equipmentDocument: {
+                  findUnique: documentFindUnique,
+                  update: documentUpdate,
+                },
+                $queryRaw: queryRaw,
+              }),
           },
         },
         {
@@ -93,7 +108,7 @@ describe('EquipmentDocumentService', () => {
       });
       expect(claimTmp).not.toHaveBeenCalled();
       expect(documentCreate).toHaveBeenCalledWith({
-        data: { equipmentId: 'eq_1', ...dto },
+        data: { equipmentId: 'eq_1', ...dto, createdById: USER_ID },
       });
       expect(result).toMatchObject({
         id: 'doc_1',
@@ -136,6 +151,7 @@ describe('EquipmentDocumentService', () => {
           type: EquipmentDocumentType.INSURANCE,
           fileName: 'Póliza Seguro.pdf',
           fileKey: 'equipment-documents/final.pdf',
+          createdById: USER_ID,
         },
       });
       expect(result).toMatchObject({
@@ -511,6 +527,128 @@ describe('EquipmentDocumentService', () => {
       const [doc] = await service.findByEquipment('eq_1');
 
       expect(doc.status).toBe('VIGENTE');
+    });
+  });
+
+  describe('id del cliente (reintento offline)', () => {
+    const ID = '11111111-1111-4111-8111-111111111111';
+    const dto = {
+      id: ID,
+      type: EquipmentDocumentType.INSURANCE,
+      fileKey: 'tmp/user1234567890123456/raw.pdf',
+    };
+
+    it('replay del mismo usuario: devuelve el documento sin reclamar el archivo ni crear', async () => {
+      documentFindUnique.mockResolvedValue({
+        ...RAW_DOCUMENT,
+        id: ID,
+        createdById: USER_ID,
+      });
+
+      const result = await service.create('eq_1', dto, USER_ID);
+
+      expect(result).toMatchObject({ id: ID });
+      expect(result).not.toHaveProperty('createdById');
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(documentCreate).not.toHaveBeenCalled();
+      expect(equipmentFindUnique).not.toHaveBeenCalled();
+    });
+
+    it('id ocupado por otro usuario: 409 ID_CONFLICT', async () => {
+      documentFindUnique.mockResolvedValue({
+        ...RAW_DOCUMENT,
+        id: ID,
+        createdById: 'otro',
+      });
+
+      await expect(service.create('eq_1', dto, USER_ID)).rejects.toMatchObject({
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+      expect(claimTmp).not.toHaveBeenCalled();
+    });
+
+    it('carrera sobre la PK: descarta su copia del archivo y devuelve el documento ganador', async () => {
+      equipmentFindUnique.mockResolvedValue({ id: 'eq_1' });
+      claimTmp.mockResolvedValue('equipment-documents/perdedora.pdf');
+      documentFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        ...RAW_DOCUMENT,
+        id: ID,
+        createdById: USER_ID,
+      });
+      documentCreate.mockRejectedValue(
+        prismaError('P2002', { target: ['id'] }),
+      );
+
+      const result = await service.create('eq_1', dto, USER_ID);
+
+      expect(discard).toHaveBeenCalledWith('equipment-documents/perdedora.pdf');
+      expect(result).toMatchObject({ id: ID });
+    });
+
+    it('crea con el id del cliente', async () => {
+      documentFindUnique.mockResolvedValue(null);
+      equipmentFindUnique.mockResolvedValue({ id: 'eq_1' });
+      claimTmp.mockResolvedValue('equipment-documents/final.pdf');
+      documentCreate.mockResolvedValue({ ...RAW_DOCUMENT, id: ID });
+
+      await service.create('eq_1', dto, USER_ID);
+
+      const [{ data }] = documentCreate.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({ id: ID, createdById: USER_ID });
+    });
+  });
+
+  describe('update con X-Expected', () => {
+    beforeEach(() => {
+      queryRaw.mockResolvedValue([{ id: 'doc_1' }]);
+    });
+
+    it('si otro cambió el título: 409 STALE_UPDATE y no escribe', async () => {
+      documentFindUnique
+        .mockResolvedValueOnce(RAW_DOCUMENT)
+        .mockResolvedValueOnce({ title: 'Otro título', expiryDate: null });
+
+      await expect(
+        service.update('doc_1', { title: 'Nuevo' }, USER_ID, {
+          title: 'Revisión técnica 2026',
+        }),
+      ).rejects.toMatchObject({
+        response: { code: ERROR_CODES.STALE_UPDATE },
+      });
+      expect(documentUpdate).not.toHaveBeenCalled();
+    });
+
+    it('el vencimiento se compara como instante: una fecha sola equivale a su ISO', async () => {
+      documentFindUnique
+        .mockResolvedValueOnce(RAW_DOCUMENT)
+        .mockResolvedValueOnce({
+          expiryDate: new Date('2026-12-31T00:00:00.000Z'),
+        });
+      documentUpdate.mockResolvedValue(RAW_DOCUMENT);
+
+      await expect(
+        service.update(
+          'doc_1',
+          { expiryDate: '2027-06-30T00:00:00.000Z' },
+          USER_ID,
+          { expiryDate: '2026-12-31' },
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('el archivo no entra a la precondición', async () => {
+      documentFindUnique
+        .mockResolvedValueOnce(RAW_DOCUMENT)
+        .mockResolvedValueOnce({ title: 'Revisión técnica 2026' });
+      documentUpdate.mockResolvedValue(RAW_DOCUMENT);
+
+      await expect(
+        service.update('doc_1', { title: 'Revisión técnica 2026' }, USER_ID, {
+          fileKey: 'otra',
+        }),
+      ).resolves.toBeDefined();
     });
   });
 });

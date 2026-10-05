@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   HttpStatus,
   NotFoundException,
   Param,
@@ -15,6 +16,10 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import {
+  EXPECTED_HEADER,
+  parseExpectedHeader,
+} from '../../common/concurrency/expected-fields';
 import { CreateEquipmentDocumentDto } from './dto/create-equipment-document.dto';
 import { UpdateEquipmentDocumentDto } from './dto/update-equipment-document.dto';
 import { EquipmentDocumentService } from './equipment-document.service';
@@ -72,10 +77,16 @@ export class EquipmentDocumentController {
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentDocumentDto,
     @Session() session: UserSession,
+    @Headers(EXPECTED_HEADER) expected?: string,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto, session.user.id),
+      data: await this.service.update(
+        id,
+        dto,
+        session.user.id,
+        parseExpectedHeader(expected),
+      ),
       message: 'Documento actualizado',
     };
   }
