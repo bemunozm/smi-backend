@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -21,6 +21,8 @@ describe('HallazgosService', () => {
     },
     // La corrección y su registro de cambios van en una sola transacción.
     $transaction: jest.fn(),
+    // Bloqueo de la fila (`FOR UPDATE`) cuando la edición trae `X-Expected`.
+    $queryRaw: jest.fn(),
   };
   const eventEmitter = { emit: jest.fn() };
   // La foto ahora va al storage privado: `claimTmp` mueve la key temporal a su
@@ -482,6 +484,74 @@ describe('HallazgosService', () => {
 
       expect(prisma.$transaction).not.toHaveBeenCalled();
       expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    describe('X-Expected', () => {
+      it('sin precondición no bloquea la fila: el comportamiento de siempre', async () => {
+        await service.update('h1', { prioridad: 'CRITICA' }, editor);
+
+        expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      });
+
+      it('con la base vigente aplica el cambio bajo bloqueo', async () => {
+        const res = await service.update(
+          'h1',
+          { prioridad: 'CRITICA' },
+          editor,
+          { prioridad: 'ALTA' },
+        );
+
+        expect(res.prioridad).toBe('CRITICA');
+        expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+        expect(changeLog.record).toHaveBeenCalledTimes(1);
+      });
+
+      it('si el dato ya vale lo deseado el reintento pasa sin escribir ni avisar', async () => {
+        prisma.hallazgo.findUnique.mockResolvedValue({
+          ...guardado,
+          prioridad: 'CRITICA',
+        });
+
+        const res = await service.update(
+          'h1',
+          { prioridad: 'CRITICA' },
+          editor,
+          { prioridad: 'ALTA' },
+        );
+
+        expect(res.prioridad).toBe('CRITICA');
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(eventEmitter.emit).not.toHaveBeenCalled();
+      });
+
+      it('si alguien más lo cambió responde 409 STALE_UPDATE sin escribir', async () => {
+        const result = service.update('h1', { prioridad: 'CRITICA' }, editor, {
+          prioridad: 'BAJA',
+        });
+
+        await expect(result).rejects.toBeInstanceOf(ConflictException);
+        await expect(result).rejects.toMatchObject({
+          response: {
+            code: 'STALE_UPDATE',
+            message: expect.stringContaining('Prioridad') as string,
+          },
+        });
+        expect(prisma.hallazgo.update).not.toHaveBeenCalled();
+      });
+
+      it('un cambio ajeno entre la lectura y el bloqueo también da 409', async () => {
+        prisma.hallazgo.findUnique
+          .mockResolvedValueOnce(guardado)
+          .mockResolvedValueOnce({ ...guardado, prioridad: 'MEDIA' });
+
+        await expect(
+          service.update('h1', { prioridad: 'CRITICA' }, editor, {
+            prioridad: 'ALTA',
+          }),
+        ).rejects.toMatchObject({ response: { code: 'STALE_UPDATE' } });
+        expect(prisma.hallazgo.update).not.toHaveBeenCalled();
+        expect(changeLog.record).not.toHaveBeenCalled();
+      });
     });
   });
 });

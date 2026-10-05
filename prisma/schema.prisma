@@ -659,6 +659,11 @@ model RegistroHorometro {
   /// Observaciones libres del supervisor al cierre.
   observaciones String?
 
+  /// AdBlue cargado al cierre de turno (Acta N.° 004, R12). `adBlueLiters`
+  /// solo tiene valor cuando `adBlue` es `true`.
+  adBlue       Boolean @default(false) @map("ad_blue")
+  adBlueLiters Float?  @map("ad_blue_liters")
+
   /// UUID generado por el cliente al cerrar la tarjeta (Fase 2): permite que
   /// un reintento de "cerrar" (por red offline) sea idempotente — releer por
   /// este id en vez de volver a aplicar el cierre. `@unique` es la garantía

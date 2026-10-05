@@ -7,9 +7,14 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import type { Hallazgo } from '@prisma/client';
 
+import {
+  assertExpected,
+  type ExpectedFields,
+} from '../../common/concurrency/expected-fields';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { assertReasonableCapturedAt } from '../../shifts/capture-time';
+import { formatBusinessDate } from '../../shifts/date-only';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type {
   HallazgoCreatedEvent,
@@ -29,6 +34,14 @@ type DatosHallazgo = Pick<
   Hallazgo,
   'equipoId' | 'descripcion' | 'prioridad' | 'estado'
 >;
+
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
+const CAMPO_LABEL: Record<keyof DatosHallazgo, string> = {
+  equipoId: 'Equipo',
+  descripcion: 'Descripción',
+  prioridad: 'Prioridad',
+  estado: 'Estado',
+};
 
 /** Cómo se leen en el registro de cambios y en el aviso al administrador. */
 const PRIORIDAD_LABEL: Record<string, string> = {
@@ -182,7 +195,12 @@ export class HallazgosService {
    * aviso con cada dato y su antes y después. Si nada cambió de verdad, no se
    * escribe ni se avisa.
    */
-  async update(id: string, dto: UpdateHallazgoDto, editor: Editor) {
+  async update(
+    id: string,
+    dto: UpdateHallazgoDto,
+    editor: Editor,
+    expected?: ExpectedFields,
+  ) {
     const actual = await this.prisma.hallazgo.findUnique({
       where: { id },
       include: HALLAZGO_INCLUDE,
@@ -206,6 +224,14 @@ export class HallazgosService {
       estado: dto.estado ?? actual.estado,
     };
 
+    // Falla rápido, sin tocar la base; se repite bajo bloqueo en la transacción.
+    assertExpected(
+      { ...this.datosDe(actual) },
+      expected,
+      { ...nuevo },
+      CAMPO_LABEL,
+    );
+
     const codigos: Record<string, string> = {
       [actual.equipoId]: actual.equipo.internalCode,
       [nuevo.equipoId]: codigoNuevo,
@@ -227,6 +253,19 @@ export class HallazgosService {
     if (cambios.length === 0) return this.shape(actual);
 
     const editado = await this.prisma.$transaction(async (tx) => {
+      if (expected) {
+        // Entre la lectura de arriba y esta transacción otra edición pudo
+        // aplicarse: se relee con la fila bloqueada antes de pisarla.
+        await tx.$queryRaw`SELECT id FROM "Hallazgo" WHERE id = ${id} FOR UPDATE`;
+        const vigente = await tx.hallazgo.findUnique({ where: { id } });
+        if (!vigente) throw new NotFoundException('Hallazgo no encontrado');
+        assertExpected(
+          { ...this.datosDe(vigente) },
+          expected,
+          { ...nuevo },
+          CAMPO_LABEL,
+        );
+      }
       const reg = await tx.hallazgo.update({
         where: { id },
         data: nuevo,
@@ -240,7 +279,7 @@ export class HallazgosService {
     this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, {
       entity: 'hallazgo',
       entityId: id,
-      entityLabel: `hallazgo de ${codigoNuevo} del ${actual.fecha.toLocaleDateString('es-CL')}`,
+      entityLabel: `hallazgo de ${codigoNuevo} del ${formatBusinessDate(actual.fecha)}`,
       editedBy: editor.name,
       changes: cambios.map(({ label, before, after }) => ({
         label,
@@ -250,6 +289,15 @@ export class HallazgosService {
     } satisfies RecordEditedEvent);
 
     return this.shape(editado);
+  }
+
+  private datosDe(h: DatosHallazgo): DatosHallazgo {
+    return {
+      equipoId: h.equipoId,
+      descripcion: h.descripcion,
+      prioridad: h.prioridad,
+      estado: h.estado,
+    };
   }
 
   /** Los cambios de un hallazgo, del más reciente al más viejo. */

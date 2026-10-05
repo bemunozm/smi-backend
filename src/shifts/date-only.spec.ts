@@ -4,6 +4,7 @@ import { validate } from 'class-validator';
 
 import {
   assertShiftDateWithinWindow,
+  formatBusinessDate,
   formatDateOnly,
   IsDateOnly,
   isValidDateOnly,
@@ -91,6 +92,14 @@ describe('todayInBusinessTimeZone', () => {
   it('2026-09-29T12:00:00Z ya es 29 en Santiago', () => {
     expect(todayInBusinessTimeZone(new Date('2026-09-29T12:00:00.000Z'))).toBe(
       '2026-09-29',
+    );
+  });
+});
+
+describe('formatBusinessDate', () => {
+  it('lo registrado de noche en Chile no salta al día UTC siguiente', () => {
+    expect(formatBusinessDate(new Date('2026-09-29T02:30:00.000Z'))).toBe(
+      '28-09-2026',
     );
   });
 });

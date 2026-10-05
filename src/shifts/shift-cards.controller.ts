@@ -6,14 +6,20 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
 } from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
+import {
+  EXPECTED_HEADER,
+  parseExpectedHeader,
+} from '../common/concurrency/expected-fields';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
+import { UpdateShiftCardDto } from './dto/update-shift-card.dto';
 import { ShiftsService } from './shifts.service';
 
 /**
@@ -55,6 +61,38 @@ export class ShiftCardsController {
     return {
       data: await this.service.closeCard(id, dto, session),
       message: 'Tarjeta cerrada',
+    };
+  }
+
+  /**
+   * Corrección de una tarjeta ya enviada (Acta N.° 004, R13). `X-Expected`
+   * (opcional) lleva los valores que el cliente vio al editar; ver
+   * `assertExpected`.
+   */
+  @Patch(':id')
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateShiftCardDto,
+    @Session() session: UserSession,
+    @Headers(EXPECTED_HEADER) expectedHeader?: string,
+  ) {
+    return {
+      data: await this.service.update(
+        id,
+        dto,
+        session,
+        parseExpectedHeader(expectedHeader),
+      ),
+      message: 'Tarjeta actualizada. Se avisó al administrador.',
+    };
+  }
+
+  /** Quién cambió qué y cuándo, del cambio más reciente al más viejo. */
+  @Get(':id/changes')
+  async findChanges(@Param('id') id: string, @Session() session: UserSession) {
+    return {
+      data: await this.service.findChanges(id, session),
+      message: 'ok',
     };
   }
 

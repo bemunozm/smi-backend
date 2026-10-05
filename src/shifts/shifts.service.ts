@@ -24,12 +24,24 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ControlUnit, EquipmentStatus, Prisma } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ERROR_CODES } from '../common/errors/error-codes';
+import {
+  assertExpected,
+  type ExpectedFields,
+} from '../common/concurrency/expected-fields';
+import { DOMAIN_EVENTS } from '../common/events/domain-events';
+import type { RecordEditedEvent } from '../common/events/domain-events';
+import {
+  ChangeLogService,
+  diffFields,
+  type Editor,
+} from '../change-log/change-log.service';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
@@ -40,10 +52,13 @@ import {
 } from './capture-time';
 import {
   assertShiftDateWithinWindow,
+  formatBusinessDate,
   formatDateOnly,
   parseDateOnlyUtc,
 } from './date-only';
+import { adBlueError } from './adblue';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
+import { UpdateShiftCardDto } from './dto/update-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { QueryShiftDto } from './dto/query-shift.dto';
 import type { ShiftExitReportEmailStatus } from './shift-exit-report-email-status';
@@ -126,6 +141,8 @@ export interface ShiftCardResponse {
    * foto es obligatoria igual, pero el campo puede faltar en datos legacy). */
   pumpPhotoUrl: string | null;
   observaciones: string | null;
+  adBlue: boolean;
+  adBlueLiters: number | null;
   belowPreviousReading: boolean;
   fecha: Date;
   fechaSalida: Date | null;
@@ -158,12 +175,51 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/** Los datos de una tarjeta que se pueden corregir (Acta N.° 004, R13). */
+interface DatosTarjeta {
+  operatorId: string | null;
+  valorInicial: number;
+  valorFinal: number | null;
+  fuelLiters: number | null;
+  adBlue: boolean;
+  adBlueLiters: number | null;
+  observaciones: string | null;
+}
+
+/** Cómo se llama cada dato en el aviso, el historial y el mensaje de conflicto. */
+const CAMPO_LABEL: Record<keyof DatosTarjeta, string> = {
+  operatorId: 'Operador',
+  valorInicial: 'Lectura inicial',
+  valorFinal: 'Lectura final',
+  fuelLiters: 'Litros de combustible',
+  adBlue: 'AdBlue',
+  adBlueLiters: 'Litros de AdBlue',
+  observaciones: 'Observaciones',
+};
+
+/** Campos que solo existen una vez cerrada la tarjeta. */
+const CAMPOS_DE_CIERRE = [
+  'valorFinal',
+  'fuelLiters',
+  'adBlue',
+  'adBlueLiters',
+] as const satisfies readonly (keyof UpdateShiftCardDto)[];
+
+/** Resultado de una edición dentro de la transacción. */
+interface ShiftCardEdit {
+  card: ShiftCardRecord;
+  /** `null` si no cambió nada: no hubo escritura ni corresponde avisar. */
+  event: RecordEditedEvent | null;
+}
+
 @Injectable()
 export class ShiftsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly operators: OperatorsService,
+    private readonly changeLog: ChangeLogService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -431,6 +487,8 @@ export class ShiftsService {
             fuelLiters: dto.fuelLiters,
             pumpPhotoKey,
             observaciones: dto.observaciones ?? null,
+            adBlue: dto.adBlue ?? false,
+            adBlueLiters: dto.adBlue ? (dto.adBlueLiters ?? null) : null,
           },
         });
 
@@ -522,6 +580,297 @@ export class ShiftsService {
     }
 
     return this.shapeCard(closed!);
+  }
+
+  /**
+   * `PATCH /api/shift-cards/:id` — corrige una tarjeta ya enviada (Acta N.° 004,
+   * R13). Solo el supervisor dueño o un ADMIN.
+   *
+   * Es seguro de reintentar desde la cola offline: la fila se bloquea
+   * (`FOR UPDATE`) y se relee dentro de la transacción, y `X-Expected` deja
+   * pasar el reintento de una edición ya aplicada (el dato ya vale lo que se
+   * quiere) pero rechaza una pisada sobre un cambio ajeno (409
+   * `STALE_UPDATE`). Lo que cambió queda en `ChangeLog` en la misma
+   * transacción; si no cambió nada, no se escribe ni se avisa.
+   */
+  async update(
+    id: string,
+    dto: UpdateShiftCardDto,
+    session: UserSession,
+    expected?: ExpectedFields,
+  ): Promise<ShiftCardResponse> {
+    const camposRecibidos = Object.values(dto).some((v) => v !== undefined);
+    if (!camposRecibidos) {
+      throw new BadRequestException(
+        'Indica al menos un dato a corregir de la tarjeta',
+      );
+    }
+
+    const previa = await this.findOwnedCard(id, session);
+    this.assertClosedFieldsAllowed(dto, previa.valorFinal);
+
+    // Si el operador no cambia no se exige que siga activo: se conserva lo
+    // guardado, igual que en trabajos extra.
+    const operator =
+      dto.operatorId !== undefined && dto.operatorId !== previa.operatorId
+        ? await this.operators.assertActive(dto.operatorId)
+        : null;
+    const editor: Editor = {
+      id: session.user.id,
+      name: session.user.name?.trim() || session.user.email,
+    };
+
+    const { card, event } = await this.prisma.$transaction(
+      (tx): Promise<ShiftCardEdit> =>
+        this.applyEdit(tx, id, dto, operator, editor, expected),
+    );
+
+    if (event) this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, event);
+    return this.shapeCard(card);
+  }
+
+  /** `GET /api/shift-cards/:id/changes` — dueño o ADMIN. */
+  async findChanges(id: string, session: UserSession) {
+    await this.findOwnedCard(id, session);
+    return this.changeLog.findFor('shift_card', id);
+  }
+
+  private async applyEdit(
+    tx: Prisma.TransactionClient,
+    id: string,
+    dto: UpdateShiftCardDto,
+    operator: { id: string; name: string } | null,
+    editor: Editor,
+    expected: ExpectedFields | undefined,
+  ): Promise<ShiftCardEdit> {
+    // Serializa ediciones y cierres concurrentes sobre la misma tarjeta: lo
+    // que se lee a continuación es lo que se va a pisar.
+    await tx.$queryRaw`SELECT id FROM "RegistroHorometro" WHERE id = ${id} FOR UPDATE`;
+    const actual = await tx.registroHorometro.findUnique({
+      where: { id },
+      include: SHIFT_CARD_INCLUDE,
+    });
+    if (!actual) throw this.cardNotFound();
+    this.assertClosedFieldsAllowed(dto, actual.valorFinal);
+
+    const antes: DatosTarjeta = {
+      operatorId: actual.operatorId,
+      valorInicial: actual.valorInicial,
+      valorFinal: actual.valorFinal,
+      fuelLiters: actual.fuelLiters,
+      adBlue: actual.adBlue,
+      adBlueLiters: actual.adBlueLiters,
+      observaciones: actual.observaciones,
+    };
+
+    // Un operador que cambió entre la validación y el bloqueo (carrera
+    // improbable) se valida de nuevo en vez de guardarse sin chequear.
+    let operadorNuevo: { id: string; name: string } | null = null;
+    if (dto.operatorId !== undefined && dto.operatorId !== actual.operatorId) {
+      operadorNuevo =
+        operator?.id === dto.operatorId
+          ? operator
+          : await this.operators.assertActive(dto.operatorId);
+    }
+
+    const adBlue = dto.adBlue ?? actual.adBlue;
+    const despues: DatosTarjeta = {
+      operatorId: operadorNuevo?.id ?? actual.operatorId,
+      valorInicial: dto.valorInicial ?? actual.valorInicial,
+      valorFinal: dto.valorFinal ?? actual.valorFinal,
+      fuelLiters: dto.fuelLiters ?? actual.fuelLiters,
+      adBlue,
+      // Quitar el AdBlue sin decir los litros los limpia; con AdBlue se
+      // conservan salvo que el body los cambie.
+      adBlueLiters:
+        dto.adBlueLiters !== undefined
+          ? dto.adBlueLiters
+          : adBlue
+            ? actual.adBlueLiters
+            : null,
+      observaciones:
+        dto.observaciones !== undefined
+          ? dto.observaciones?.trim() || null
+          : actual.observaciones,
+    };
+
+    assertExpected({ ...antes }, expected, { ...despues }, CAMPO_LABEL);
+
+    if (
+      despues.valorFinal != null &&
+      despues.valorFinal < despues.valorInicial
+    ) {
+      throw new BadRequestException({
+        message: `La lectura final (${despues.valorFinal}) no puede ser menor que la inicial (${despues.valorInicial})`,
+        code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
+      });
+    }
+    const adBlueProblema = adBlueError(despues.adBlue, despues.adBlueLiters);
+    if (adBlueProblema) throw new BadRequestException(adBlueProblema);
+
+    const nombreOperador = operadorNuevo?.name ?? actual.operador;
+    const nombres = new Map<string | null, string>([
+      [actual.operatorId, actual.operador],
+      [despues.operatorId, nombreOperador],
+    ]);
+    const cambios = diffFields<DatosTarjeta>(antes, despues, [
+      {
+        field: 'operatorId',
+        label: CAMPO_LABEL.operatorId,
+        format: (v) => nombres.get(v as string | null) ?? '—',
+      },
+      { field: 'valorInicial', label: CAMPO_LABEL.valorInicial },
+      { field: 'valorFinal', label: CAMPO_LABEL.valorFinal },
+      { field: 'fuelLiters', label: CAMPO_LABEL.fuelLiters },
+      {
+        field: 'adBlue',
+        label: CAMPO_LABEL.adBlue,
+        format: (v) => (v ? 'Sí' : 'No'),
+      },
+      { field: 'adBlueLiters', label: CAMPO_LABEL.adBlueLiters },
+      { field: 'observaciones', label: CAMPO_LABEL.observaciones },
+    ]);
+    if (cambios.length === 0) return { card: actual, event: null };
+
+    const datos: Prisma.RegistroHorometroUncheckedUpdateInput = {
+      operatorId: despues.operatorId,
+      operador: nombreOperador,
+      valorInicial: despues.valorInicial,
+      valorFinal: despues.valorFinal,
+      fuelLiters: despues.fuelLiters,
+      adBlue: despues.adBlue,
+      adBlueLiters: despues.adBlueLiters,
+      observaciones: despues.observaciones,
+    };
+    if (despues.valorFinal != null && despues.valorFinal !== antes.valorFinal) {
+      // Modo `'warn'`, igual que el cierre: la edición solo sube el contador
+      // del equipo, nunca lo baja ni falla.
+      const equipo = await tx.equipment.findUnique({
+        where: { id: actual.equipoId },
+        select: {
+          controlUnit: true,
+          currentHourmeter: true,
+          currentMileage: true,
+        },
+      });
+      if (equipo) {
+        const { belowPrevious } = await reconcileEquipmentCounter(
+          tx,
+          actual.equipoId,
+          equipo,
+          despues.valorFinal,
+          'warn',
+        );
+        if (belowPrevious && !actual.belowPreviousReading) {
+          datos.belowPreviousReading = true;
+        }
+      }
+    }
+
+    await tx.registroHorometro.update({ where: { id }, data: datos });
+    if ((despues.fuelLiters ?? 0) !== (antes.fuelLiters ?? 0)) {
+      await this.syncFuelRecord(tx, actual, despues.fuelLiters ?? 0);
+    }
+    await this.changeLog.record(tx, 'shift_card', id, editor, cambios);
+
+    const card = await tx.registroHorometro.findUnique({
+      where: { id },
+      include: SHIFT_CARD_INCLUDE,
+    });
+    if (!card) throw this.cardNotFound();
+
+    return {
+      card,
+      event: {
+        entity: 'shift_card',
+        entityId: id,
+        entityLabel: `tarjeta de turno de ${actual.equipo.internalCode} del ${formatBusinessDate(actual.fecha)}`,
+        editedBy: editor.name,
+        changes: cambios.map(({ label, before, after }) => ({
+          label,
+          before,
+          after,
+        })),
+      },
+    };
+  }
+
+  /**
+   * Mantiene la carga de combustible vinculada (1:1 por `registroHorometroId`)
+   * coherente con los litros de la tarjeta: existe si y solo si hay litros.
+   * Comparte la foto de la tarjeta, así que borrar la fila nunca borra el
+   * objeto del bucket.
+   */
+  private async syncFuelRecord(
+    tx: Prisma.TransactionClient,
+    card: ShiftCardRecord,
+    liters: number,
+  ): Promise<void> {
+    const vinculada = await tx.registroCombustible.findUnique({
+      where: { registroHorometroId: card.id },
+      select: { id: true },
+    });
+
+    if (liters > 0 && vinculada) {
+      await tx.registroCombustible.update({
+        where: { id: vinculada.id },
+        data: { litros: liters },
+      });
+    } else if (liters > 0) {
+      await tx.registroCombustible.create({
+        data: {
+          equipoId: card.equipoId,
+          litros: liters,
+          tipo: DEFAULT_SHIFT_CLOSE_FUEL_TYPE,
+          fotoKey: card.pumpPhotoKey,
+          fecha: card.fechaSalida ?? card.closedAt ?? new Date(),
+          registroHorometroId: card.id,
+        },
+      });
+    } else if (vinculada) {
+      await tx.registroCombustible.delete({ where: { id: vinculada.id } });
+    }
+  }
+
+  /** La tarjeta si existe y la sesión es su dueña o ADMIN; si no, 404 / 403. */
+  private async findOwnedCard(id: string, session: UserSession) {
+    const card = await this.prisma.registroHorometro.findUnique({
+      where: { id },
+      select: { supervisorId: true, operatorId: true, valorFinal: true },
+    });
+    if (!card) throw this.cardNotFound();
+
+    const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
+    if (card.supervisorId !== session.user.id && !isAdmin) {
+      throw new ForbiddenException({
+        message: 'No puedes modificar la tarjeta de otro supervisor',
+        code: ERROR_CODES.NOT_OWNER,
+      });
+    }
+    return card;
+  }
+
+  /** Lectura final, combustible y AdBlue solo existen al cerrar. */
+  private assertClosedFieldsAllowed(
+    dto: UpdateShiftCardDto,
+    valorFinal: number | null,
+  ): void {
+    if (valorFinal !== null) return;
+    const tocados = CAMPOS_DE_CIERRE.filter((c) => dto[c] !== undefined);
+    if (tocados.length === 0) return;
+    throw new ConflictException({
+      message: `La tarjeta sigue abierta: ${tocados
+        .map((c) => CAMPO_LABEL[c])
+        .join(', ')} se informan al cerrarla`,
+      code: ERROR_CODES.CARD_NOT_CLOSED,
+    });
+  }
+
+  private cardNotFound(): NotFoundException {
+    return new NotFoundException({
+      message: 'Tarjeta no encontrada',
+      code: ERROR_CODES.CARD_NOT_FOUND,
+    });
   }
 
   /**
@@ -797,6 +1146,8 @@ export class ShiftsService {
           ? await this.storage.sign(card.pumpPhotoKey)
           : null,
         observaciones: card.observaciones,
+        adBlue: card.adBlue,
+        adBlueLiters: card.adBlueLiters,
         belowPreviousReading: card.belowPreviousReading,
         fecha: card.fecha,
         fechaSalida: card.fechaSalida,
