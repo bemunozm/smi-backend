@@ -196,6 +196,11 @@ model Branch {
   transfersOut   StockMovement[] @relation("StockMovementSource")
   transfersIn    StockMovement[] @relation("StockMovementDestination")
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@map("branch")
 }
 
@@ -272,6 +277,11 @@ model Equipment {
   /// de la primera versión de Flota. Ver `EquipmentDocument`.
   documents EquipmentDocument[]
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@index([equipmentClass])
   @@index([status])
   @@index([currentOperatorId])
@@ -321,6 +331,11 @@ model EquipmentDocument {
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@index([equipmentId])
   @@map("equipment_document")
@@ -374,6 +389,11 @@ model ItemCategory {
 
   items InventoryItem[]
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@map("item_category")
 }
 
@@ -406,6 +426,11 @@ model InventoryItem {
   stocks          Stock[]
   movements       StockMovement[]
   compatibilities PartCompatibility[]
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@index([name])
   @@index([type])
@@ -588,6 +613,11 @@ model RegistroCombustible {
   /// tarjeta (excepcional) no debe arrastrarse la carga ya registrada.
   registroHorometroId String?            @unique @map("registro_horometro_id")
   registroHorometro   RegistroHorometro? @relation(fields: [registroHorometroId], references: [id], onDelete: SetNull)
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 }
 
 /// Tarjeta de turno de Supervisión en Terreno (RFC Supervisión en Terreno,
@@ -784,6 +814,11 @@ model Operator {
   /// extra") — inverso de `TrabajoExtraordinario.operatorId`.
   trabajosExtra TrabajoExtraordinario[]
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@map("operator")
 }
 
@@ -924,6 +959,11 @@ model OrdenTrabajo {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@index([estado])
   @@index([equipoId])
   @@map("orden_trabajo")
@@ -954,6 +994,11 @@ model Intervencion {
   insumos        IntervencionInsumo[]
   fecha          DateTime             @default(now())
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@index([ordenId])
   @@map("intervencion")
 }
@@ -975,6 +1020,11 @@ model UmbralMantenimiento {
   tipoMantencion String
   umbralHoras    Int
 
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
+
   @@map("umbral_mantenimiento")
 }
 
@@ -989,6 +1039,11 @@ model Actividad {
   estado      EstadoActividad @default(PENDIENTE)
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
+
+  /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
+  /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
+  /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
+  createdById String? @map("created_by_id")
 
   @@map("actividad")
 }
