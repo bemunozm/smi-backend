@@ -1,5 +1,5 @@
 /**
- * Reporte de salida de turno (RFC Supervisión en Terreno): genera el
+ * Reporte de salida de turno: genera el
  * PDF con pdfmake, lo sube a storage privado y crea la fila `ShiftExitReport`
  * — idempotente por `dto.id` (UUID del cliente), mismo estilo que
  * `ShiftsService.openCard`/`closeCard` (ver el comentario de cabecera de
@@ -26,7 +26,7 @@ import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type { ShiftExitReportSentEvent } from '../common/events/domain-events';
 import { ERROR_CODES } from '../common/errors/error-codes';
 import { StorageService } from '../storage/storage.service';
-import { assertReasonableCapturedAt } from './capture-time';
+import { resolveCapturedAt } from '../common/dates/capture-time';
 import { assertShiftDateWithinWindow, parseDateOnlyUtc } from './date-only';
 import { CreateShiftReportDto } from './dto/create-shift-report.dto';
 import { renderPdfBuffer } from './pdf/pdf-renderer';
@@ -110,10 +110,11 @@ export class ShiftReportsService {
     session: UserSession,
   ): Promise<ShiftReportResponse> {
     const now = new Date();
-    assertReasonableCapturedAt(new Date(dto.requestedAt), now);
+    const { at: requestedAt } = resolveCapturedAt(dto.requestedAt, now);
 
     const existing = await this.prisma.shiftExitReport.findUnique({
       where: { id: dto.id },
+      omit: { createdById: false },
     });
     if (existing) {
       if (existing.createdById !== session.user.id) {
@@ -141,8 +142,7 @@ export class ShiftReportsService {
       where: {
         supervisorId_date_type: {
           // El turno SIEMPRE es el propio del usuario de la sesión, aun para
-          // ADMIN — ver Diseño del RFC Supervisión en Terreno §Reporte
-          // ("mantenerlo simple").
+          // ADMIN, para mantenerlo simple.
           supervisorId: session.user.id,
           date: parseDateOnlyUtc(dto.shiftDate),
           type: dto.shiftType,
@@ -209,7 +209,7 @@ export class ShiftReportsService {
         shiftType: dto.shiftType,
         supervisorName,
         generatedAt: now,
-        requestedAt: new Date(dto.requestedAt),
+        requestedAt,
         cards: cards.map((card) => this.toCardInput(card)),
       }),
     );
@@ -233,7 +233,7 @@ export class ShiftReportsService {
           fileKey,
           fileName,
           cardCount: cards.length,
-          requestedAt: new Date(dto.requestedAt),
+          requestedAt,
           createdById: session.user.id,
           emailStatus: SHIFT_EXIT_REPORT_EMAIL_STATUS_INITIAL,
         },
@@ -250,6 +250,7 @@ export class ShiftReportsService {
         // resulta ser de otro usuario.
         const race = await this.prisma.shiftExitReport.findUnique({
           where: { id: dto.id },
+          omit: { createdById: false },
         });
         if (race && race.createdById === session.user.id) {
           return this.shape(race, missingCardIds);
@@ -262,7 +263,7 @@ export class ShiftReportsService {
       throw error;
     }
 
-    // DESPUÉS del commit — nunca antes (ver Diseño del RFC §Reporte): un
+    // DESPUÉS del commit — nunca antes: un
     // fallo del listener (correo/notificación) no debe poder impedir que la
     // fila ya persistida se devuelva al cliente.
     this.eventEmitter.emit(DOMAIN_EVENTS.SHIFT_EXIT_REPORT_SENT, {
@@ -287,6 +288,7 @@ export class ShiftReportsService {
   async getSignedFileUrl(id: string, session: UserSession): Promise<string> {
     const report = await this.prisma.shiftExitReport.findUnique({
       where: { id },
+      omit: { createdById: false },
     });
     if (!report) {
       throw new NotFoundException('Reporte no encontrado');

@@ -15,9 +15,10 @@ import {
 } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ERROR_CODES } from '../../common/errors/error-codes';
+import { resolveCloseRace } from '../../common/idempotency/resolve-close-race';
 import { OperatorsService } from '../../operators/operators.service';
 import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
-import { assertReasonableCapturedAt } from '../../shifts/capture-time';
+import { resolveCapturedAt } from '../../common/dates/capture-time';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
 import { SalidaHorometroDto } from './dto/salida-horometro.dto';
 
@@ -25,8 +26,8 @@ import { SalidaHorometroDto } from './dto/salida-horometro.dto';
  * Estas 3 columnas nunca deben viajar crudas hacia un cliente. `pumpPhotoKey`
  * es la KEY interna del bucket (la URL firmada se resuelve aparte,
  * `ShiftsService.shapeCard`) — Flota nunca la firma, así que exponerla acá
- * era simplemente una fuga sin contrapartida. `closeClientId` es la clave de
- * idempotencia interna del cierre (Supervisión en Terreno) — filtrarla
+ * sería una fuga sin contrapartida. `closeClientId` es la clave de
+ * idempotencia interna del cierre — filtrarla
  * permite reproducir el 403 de dueño de tarjeta por otro camino
  * (adivinar/copiar el id y reintentar el cierre de otro).
  * `clientClockSkewMs` es auditoría interna del desfase de reloj del
@@ -45,15 +46,6 @@ const HOROMETRO_INTERNAL_FIELDS_OMIT = {
 const TURNO_ABIERTO_MSG =
   'El equipo ya tiene un turno en curso; registrá la salida antes de una nueva entrada.';
 
-/** `capturedAt` (hora del dispositivo) si viene y es razonable; si no, la
- * hora del servidor. */
-function resolveCapturedAt(capturedAt: string | undefined, now: Date): Date {
-  if (!capturedAt) return now;
-  const captured = new Date(capturedAt);
-  assertReasonableCapturedAt(captured, now);
-  return captured;
-}
-
 @Injectable()
 export class HorometroService {
   constructor(
@@ -68,8 +60,7 @@ export class HorometroService {
    * este chequeo, la SALIDA posterior no sabría a cuál de los dos registros
    * abiertos cerrar.
    *
-   * `session` (RFC Supervisión en Terreno) graba `supervisorId` — antes
-   * este flujo no dejaba rastro de quién abrió el turno.
+   * `session` permite grabar `supervisorId`, el rastro de quién abrió el turno.
    */
   async create(dto: CreateHorometroDto, session: UserSession) {
     const userId = session.user.id;
@@ -118,14 +109,16 @@ export class HorometroService {
 
   private async createFresh(dto: CreateHorometroDto, session: UserSession) {
     const now = new Date();
-    const fecha = resolveCapturedAt(dto.capturedAt, now);
+    const { at: fecha, discardedSkewMs } = resolveCapturedAt(
+      dto.capturedAt,
+      now,
+    );
 
-    // Validación del operador de catálogo (RFC Supervisión en Terreno,
-    // OBLIGATORIO, mismo patrón único que Trabajos extra) ANTES de la
-    // transacción: es una precondición pura de la request, no depende de
-    // ningún estado que la tx necesite leer de forma consistente. El
-    // snapshot `operador` se arma acá con el nombre del catálogo — el
-    // cliente ya no lo manda.
+    // Validación del operador de catálogo (OBLIGATORIO, mismo patrón que
+    // Trabajos extra) ANTES de la transacción: es una precondición pura de la
+    // request, no depende de ningún estado que la tx necesite leer de forma
+    // consistente. El snapshot `operador` se arma acá con el nombre del
+    // catálogo — el cliente no lo manda.
     const operator = await this.operators.assertActive(dto.operatorId);
 
     // El registro de terreno y el write del contador de la ficha van en la
@@ -148,8 +141,7 @@ export class HorometroService {
       });
       if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
-      // R1 (RFC Supervisión en Terreno §Diseño): un equipo fuera de servicio
-      // o en taller no puede iniciar un turno nuevo.
+      // Un equipo fuera de servicio o en taller no puede abrir turno.
       if (equipo.status !== EquipmentStatus.OPERATIONAL) {
         throw new ConflictException({
           message: 'El equipo no está operativo',
@@ -185,6 +177,8 @@ export class HorometroService {
             valorInicial: dto.valorInicial,
             nivelCombustible: dto.nivelCombustible ?? null,
             supervisorId: session.user.id,
+            // Hora del dispositivo descartada por desfase: queda auditado.
+            clientClockSkewMs: discardedSkewMs ?? null,
           },
         });
       } catch (error) {
@@ -201,12 +195,11 @@ export class HorometroService {
       }
 
       // El write del valor actual solo aplica al contador que gobierna la
-      // unidad (RFC T01 §2, MEJORA-3): HOURS pisa `currentHourmeter`, KM pisa
+      // unidad: HOURS pisa `currentHourmeter`, KM pisa
       // `currentMileage` — nunca los dos a la vez. Flota SIEMPRE en modo
-      // `'reject'` (RFC Supervisión en Terreno §Diseño: "Flota keeps using
-      // reject") — el modo `'warn'` es exclusivo de la apertura de tarjeta de
-      // turno (`ShiftsService.openCard`).
-      // TODO(motor-preventivo): disparar el umbral de Mantenimiento (Joaquín, guía §5).
+      // `'reject'` — el modo `'warn'` es exclusivo de la apertura de tarjeta
+      // de turno (`ShiftsService.openCard`).
+      // TODO(motor-preventivo): disparar el umbral de Mantenimiento.
       await reconcileEquipmentCounter(
         tx,
         dto.equipoId,
@@ -223,17 +216,19 @@ export class HorometroService {
    * SALIDA del flujo de dos pasos (Flota): cierra el turno que `create()`
    * abrió. Vuelve a cuadrar el contador del equipo, esta vez a `valorFinal`.
    *
-   * `session` (RFC Supervisión en Terreno): si la tarjeta pertenece a
+   * `session`: si la tarjeta pertenece a
    * un turno de Supervisión en Terreno (`shiftId != null`), este endpoint
-   * legacy de Flota YA NO la cierra — se cierra desde
+   * de Flota no la cierra — se cierra desde
    * `POST /api/shift-cards/:id/close`, que además exige litros y foto. Salvo
    * ADMIN, que puede cerrar cualquier tarjeta desde cualquiera de los dos
-   * flujos (respuesta a Q5 del RFC: "tarjetas sin cerrar, las cierra el
-   * ADMIN").
+   * flujos (las tarjetas sin cerrar las cierra el ADMIN).
    */
   async salida(id: string, dto: SalidaHorometroDto, session: UserSession) {
     const now = new Date();
-    const fechaSalida = resolveCapturedAt(dto.capturedAt, now);
+    const { at: fechaSalida, discardedSkewMs } = resolveCapturedAt(
+      dto.capturedAt,
+      now,
+    );
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -284,12 +279,15 @@ export class HorometroService {
           data: {
             valorFinal: dto.valorFinal,
             fechaSalida,
-            // Antes NO se seteaba acá — `closedAt` quedaba `null` para una
-            // tarjeta de Supervisión en
-            // Terreno que un ADMIN cierra por este flujo legacy de Flota, así
-            // que jamás entraba a la ventana de "cerradas en las últimas 48h"
-            // de `ShiftsService.mine` (que filtra por `closedAt >= cutoff`).
+            // Se setea `closedAt` para que una tarjeta de Terreno cerrada por
+            // un ADMIN entre a la ventana de "cerradas en las últimas 48 h"
+            // de `ShiftsService.mine` (filtra por `closedAt >= cutoff`).
             closedAt: now,
+            // Se audita el desfase sin pisar el que dejó la apertura.
+            ...(discardedSkewMs !== undefined &&
+            registro.clientClockSkewMs === null
+              ? { clientClockSkewMs: discardedSkewMs }
+              : {}),
             ...(dto.closeClientId !== undefined
               ? { closeClientId: dto.closeClientId }
               : {}),
@@ -334,26 +332,21 @@ export class HorometroService {
     }
   }
 
-  /** Mismo criterio que `ShiftsService`: mismo `closeClientId` en esta
-   * tarjeta es mi propio reintento; en una tarjeta aún abierta es un id de
-   * cierre ya usado por otra; si no, la tarjeta ya estaba cerrada. */
+  /** Mismo criterio que el cierre de Terreno (ver `resolveCloseRace`). */
   private async resolveCloseRace(id: string, closeClientId: string) {
     const existing = await this.prisma.registroHorometro.findUnique({
       where: { id },
     });
-    if (existing?.closeClientId === closeClientId) {
-      return this.prisma.registroHorometro.findUniqueOrThrow({
-        where: { id },
-        omit: HOROMETRO_INTERNAL_FIELDS_OMIT,
-      });
-    }
-    if (existing && existing.valorFinal == null) {
-      throw new ConflictException({
-        message: 'El id de cierre ya fue usado por otra tarjeta',
-        code: ERROR_CODES.ID_CONFLICT,
-      });
-    }
-    throw this.alreadyClosedError();
+    return resolveCloseRace({
+      existing,
+      closeClientId,
+      replay: () =>
+        this.prisma.registroHorometro.findUniqueOrThrow({
+          where: { id },
+          omit: HOROMETRO_INTERNAL_FIELDS_OMIT,
+        }),
+      alreadyClosed: () => this.alreadyClosedError(),
+    });
   }
 
   private turnoAbiertoError(): BadRequestException {

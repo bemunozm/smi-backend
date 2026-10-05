@@ -1,12 +1,11 @@
 /**
- * `docDefinition` del PDF de reporte de salida de turno (RFC Supervisión en
- * Terreno) — función PURA a propósito (sin tocar pdfmake ni el
+ * `docDefinition` del PDF de reporte de salida de turno — función PURA a propósito (sin tocar pdfmake ni el
  * storage): así es testeable sin renderizar un PDF real. `pdf-renderer.ts`
  * es quien la alimenta a pdfmake y devuelve el `Buffer` final.
  */
 import type { Content, Table, TDocumentDefinitions } from 'pdfmake/interfaces';
 
-import { BUSINESS_TIME_ZONE } from '../date-only';
+import { BUSINESS_TIME_ZONE } from '../../common/dates/business-time';
 
 /** Encabezado de texto del PDF — la razón social del cliente hasta que llegue
  * su logo. Si un segundo cliente aparece, esto se mueve a config (por ahora

@@ -106,7 +106,7 @@ describe('HorometroService', () => {
     // `currentHourmeter`/`currentMileage` en `null` = sin lectura previa, sin
     // piso para la guarda monotónica del contador — así los tests que no la
     // ejercitan no se ven afectados por ella. `status: OPERATIONAL` por
-    // defecto — los tests de R1 lo sobreescriben.
+    // defecto — los tests de equipo no operativo lo sobreescriben.
     tx.equipment.findUnique.mockResolvedValue({
       id: 'e1',
       status: 'OPERATIONAL',
@@ -122,8 +122,8 @@ describe('HorometroService', () => {
       (cb: (client: typeof tx) => unknown) => cb(tx),
     );
 
-    // Operador del catálogo por defecto — activo (obligatorio, RFC
-    // Supervisión en Terreno). Los tests del describe `operatorId
+    // Operador del catálogo por defecto — activo (obligatorio).
+    // Los tests del describe `operatorId
     // (catálogo)` sobreescriben esto.
     assertActive.mockResolvedValue({
       id: 'op_1',
@@ -164,12 +164,40 @@ describe('HorometroService', () => {
         expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(before);
       });
 
-      it('un capturedAt absurdo es 400 INVALID_CAPTURE_TIME y no abre la transacción', async () => {
+      it('un capturedAt absurdo no rechaza: fecha es la hora del servidor y un desfase que no cabe en INTEGER se descarta', async () => {
+        const before = Date.now();
+
+        await service.create(
+          { ...dto, capturedAt: '2001-01-01T00:00:00.000Z' },
+          session,
+        );
+
+        const data = lastCallData(tx.registroHorometro.create);
+        expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(before);
+        expect(data.clientClockSkewMs).toBeNull();
+      });
+
+      it('un capturedAt viejo pero representable deja el desfase auditado', async () => {
+        const before = Date.now();
+
+        await service.create(
+          {
+            ...dto,
+            capturedAt: new Date(
+              Date.now() - 10 * 24 * 60 * 60 * 1000,
+            ).toISOString(),
+          },
+          session,
+        );
+
+        const data = lastCallData(tx.registroHorometro.create);
+        expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(before);
+        expect(data.clientClockSkewMs).toBeGreaterThan(9 * 24 * 60 * 60 * 1000);
+      });
+
+      it('un capturedAt con formato inválido es 400 INVALID_CAPTURE_TIME y no abre la transacción', async () => {
         await expect(
-          service.create(
-            { ...dto, capturedAt: '2001-01-01T00:00:00.000Z' },
-            session,
-          ),
+          service.create({ ...dto, capturedAt: '2026-W01' }, session),
         ).rejects.toMatchObject({
           response: { code: 'INVALID_CAPTURE_TIME' },
         });
@@ -283,7 +311,7 @@ describe('HorometroService', () => {
       expect(tx.equipment.updateMany).not.toHaveBeenCalled();
     });
 
-    describe('R1 — el equipo debe estar operativo', () => {
+    describe('equipo no operativo', () => {
       it('rechaza con 409 EQUIPMENT_NOT_OPERATIONAL si el equipo está en taller', async () => {
         tx.equipment.findUnique.mockResolvedValue({
           id: 'e1',
@@ -648,10 +676,9 @@ describe('HorometroService', () => {
         nivelCombustible: 80,
       });
       expect(closeData.fechaSalida).toBeInstanceOf(Date);
-      // Antes NO se seteaba acá — una tarjeta de Supervisión en Terreno
-      // cerrada por un ADMIN desde este flujo legacy de Flota nunca entraba
-      // a la ventana de "cerradas en las
-      // últimas 48h" de `ShiftsService.mine` (filtra por `closedAt`).
+      // Se setea `closedAt` para que una tarjeta de Terreno cerrada por un
+      // ADMIN entre a la ventana de "cerradas en las últimas 48 h" de
+      // `ShiftsService.mine`.
       expect(closeData.closedAt).toBeInstanceOf(Date);
       expect(tx.equipment.updateMany).toHaveBeenCalledWith({
         where: {
@@ -791,11 +818,26 @@ describe('HorometroService', () => {
         );
       });
 
-      it('un capturedAt absurdo es 400 INVALID_CAPTURE_TIME y no abre la transacción', async () => {
+      it('un capturedAt absurdo no rechaza la salida: fechaSalida es la hora del servidor', async () => {
+        const before = Date.now();
+
+        await service.salida(
+          'r1',
+          { valorFinal: 130, capturedAt: '2001-01-01T00:00:00.000Z' },
+          session,
+        );
+
+        const data = lastCallData(tx.registroHorometro.update);
+        expect((data.fechaSalida as Date).getTime()).toBeGreaterThanOrEqual(
+          before,
+        );
+      });
+
+      it('un capturedAt con formato inválido es 400 INVALID_CAPTURE_TIME y no abre la transacción', async () => {
         await expect(
           service.salida(
             'r1',
-            { valorFinal: 130, capturedAt: '2001-01-01T00:00:00.000Z' },
+            { valorFinal: 130, capturedAt: '2026-W01' },
             session,
           ),
         ).rejects.toMatchObject({
@@ -1016,10 +1058,10 @@ describe('HorometroService', () => {
   });
 });
 
-// O2 — límites (`@Min`/`@Max`) en los DTOs de horómetro: `nivelCombustible`
+// Límites (`@Min`/`@Max`) en los DTOs de horómetro: `nivelCombustible`
 // es un porcentaje (0-100), `valorInicial` no puede ser negativo. Mismo
 // patrón que `UpdateItemDto` en `items.service.spec.ts`. `operatorId` es
-// OBLIGATORIO (RFC Supervisión en Terreno) y `operador` sale del
+// OBLIGATORIO y `operador` sale del
 // DTO — con `forbidNonWhitelisted: true` global, mandarlo es un 400.
 describe('CreateHorometroDto — límites', () => {
   const base = {

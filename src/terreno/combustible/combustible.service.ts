@@ -8,17 +8,14 @@ import { StorageService } from '../../storage/storage.service';
 import { CreateCombustibleDto } from './dto/create-combustible.dto';
 import { UpdateCombustibleDto } from './dto/update-combustible.dto';
 
-/** `createdById` es interno: no sale en ninguna respuesta. */
-const COMBUSTIBLE_OMIT = {
-  createdById: true,
-} satisfies Prisma.RegistroCombustibleOmit;
+/** Un registro tal como sale a la API: sin `createdById`. */
+type RegistroCombustibleRow = Omit<
+  Prisma.RegistroCombustibleGetPayload<object>,
+  'createdById'
+>;
 
-type RegistroCombustibleRow = Prisma.RegistroCombustibleGetPayload<{
-  omit: typeof COMBUSTIBLE_OMIT;
-}>;
-
-/** Forma de un registro en la API — nunca expone `fotoKey` (ver Diseño del
- * RFC R2-storage, "Combustible"): `fotoUrl` es la key firmada cuando existe
+/** Forma de un registro en la API — nunca expone `fotoKey`:
+ * `fotoUrl` es la key firmada cuando existe
  * `fotoKey`, o el valor legacy tal cual si el registro no tiene `fotoKey`. */
 export type CombustibleResponse<T> = Omit<T, 'fotoKey'> & {
   fotoUrl: string | null;
@@ -41,6 +38,7 @@ export class CombustibleService {
       findExisting: async (id) => {
         const existing = await this.prisma.registroCombustible.findUnique({
           where: { id },
+          omit: { createdById: false },
         });
         if (!existing) return null;
         const { createdById, ...registro } = existing;
@@ -70,17 +68,15 @@ export class CombustibleService {
     let registro: RegistroCombustibleRow;
     try {
       registro = await this.prisma.registroCombustible.create({
-        omit: COMBUSTIBLE_OMIT,
         data: {
           ...(dto.id ? { id: dto.id } : {}),
           createdById: userId,
           equipoId: dto.equipoId,
           litros: dto.litros,
           tipo: dto.tipo,
-          // `fotoUrl` (legacy) ya no es un campo de creación — ver
+          // `fotoUrl` (legacy) no es un campo de creación — ver
           // `CreateCombustibleDto`. Se omite la key: Prisma inserta NULL
-          // (mismo resultado que antes con `dto.fotoUrl ?? null`, ahora
-          // siempre `null` para filas nuevas).
+          // (siempre `null` para filas nuevas).
           fotoKey: finalKey ?? null,
           // Sin `fecha` en el DTO, se omite la key y Prisma aplica el
           // `@default(now())` del schema — comportamiento previo intacto.
@@ -103,7 +99,6 @@ export class CombustibleService {
     const registros = await this.prisma.registroCombustible.findMany({
       orderBy: { fecha: 'desc' },
       include: { equipo: { select: { internalCode: true } } },
-      omit: COMBUSTIBLE_OMIT,
     });
     return Promise.all(registros.map((registro) => this.shape(registro)));
   }
@@ -111,7 +106,6 @@ export class CombustibleService {
   async findOne(id: string) {
     const reg = await this.prisma.registroCombustible.findUnique({
       where: { id },
-      omit: COMBUSTIBLE_OMIT,
     });
     if (!reg) throw new NotFoundException('Registro no encontrado');
     return this.shape(reg);
@@ -121,7 +115,6 @@ export class CombustibleService {
     const registro = await this.prisma.registroCombustible.update({
       where: { id },
       data: dto,
-      omit: COMBUSTIBLE_OMIT,
     });
     return this.shape(registro);
   }

@@ -84,8 +84,8 @@ describe('CombustibleService', () => {
     expect('fecha' in res).toBe(false);
   });
 
-  describe('fotoUrl legacy — solo LECTURA, ya no se puede crear con ella', () => {
-    it('findOne devuelve fotoUrl legacy tal cual cuando el registro no tiene fotoKey (dato histórico — el cierre de R2 retiró fotoUrl del DTO de creación)', async () => {
+  describe('fotoUrl legacy — solo LECTURA, no se puede crear con ella', () => {
+    it('findOne devuelve fotoUrl legacy tal cual cuando el registro no tiene fotoKey (dato histórico — fotoUrl no está en el DTO de creación)', async () => {
       prisma.registroCombustible.findUnique.mockResolvedValue({
         id: 'c1',
         equipoId: 'e1',
@@ -309,7 +309,6 @@ describe('CombustibleService', () => {
       expect(prisma.registroCombustible.findMany).toHaveBeenCalledWith({
         orderBy: { fecha: 'desc' },
         include: { equipo: { select: { internalCode: true } } },
-        omit: { createdById: true },
       });
       expect(res).toMatchObject({ equipo: { internalCode: 'EX-001' } });
       expect(res).not.toHaveProperty('fotoKey');
@@ -333,7 +332,7 @@ describe('CombustibleService', () => {
       expect(res).not.toHaveProperty('fotoKey');
     });
 
-    it('update no toca fotoKey (UpdateCombustibleDto ya no tiene campos propios, ver el cierre de R2) y re-shapea la salida', async () => {
+    it('update no toca fotoKey (UpdateCombustibleDto no tiene campos propios) y re-shapea la salida', async () => {
       prisma.registroCombustible.update.mockResolvedValue({
         id: 'c1',
         equipoId: 'e1',
@@ -349,7 +348,6 @@ describe('CombustibleService', () => {
       expect(prisma.registroCombustible.update).toHaveBeenCalledWith({
         where: { id: 'c1' },
         data: {},
-        omit: { createdById: true },
       });
       // El registro YA tenía fotoUrl legacy antes de este update (dato
       // histórico) — se sigue devolviendo tal cual, aunque el DTO de update

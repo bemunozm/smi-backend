@@ -60,11 +60,11 @@ export class CreateTrabajoExtraDto {
   equipoId!: string;
 
   /**
-   * Operador del catálogo propio (`Operator`) — OBLIGATORIO (RFC Supervisión
-   * en Terreno). `operador` YA NO se recibe acá: el servicio lo arma desde
+   * Operador del catálogo propio (`Operator`) — OBLIGATORIO. `operador` no
+   * se recibe acá: el servicio lo arma desde
    * `OperatorsService.assertActive(operatorId).name`, nunca desde texto que
    * mande el cliente. Con `forbidNonWhitelisted: true` global, mandar
-   * `operador` en el body ahora es un 400.
+   * `operador` en el body es un 400.
    */
   @IsString()
   @IsNotEmpty()

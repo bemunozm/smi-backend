@@ -3,15 +3,12 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import type { Hallazgo } from '@prisma/client';
 
-import {
-  assertExpected,
-  type ExpectedFields,
-} from '../../common/concurrency/expected-fields';
-import { lockRow } from '../../common/concurrency/lock-row';
+import { assertExpectedLocked } from '../../common/concurrency/assert-expected-locked';
+import { type ExpectedValues } from '../../common/concurrency/expected-fields';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { assertReasonableCapturedAt } from '../../shifts/capture-time';
-import { formatBusinessDate } from '../../shifts/date-only';
+import { resolveCapturedAt } from '../../common/dates/capture-time';
+import { formatBusinessDate } from '../../common/dates/business-time';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type {
   HallazgoCreatedEvent,
@@ -53,6 +50,29 @@ const ESTADO_LABEL: Record<string, string> = {
   CERRADO: 'Cerrado',
 };
 
+/** Los datos de un hallazgo tal como quedarían después de aplicar el body. */
+function mergeDatos(
+  actual: DatosHallazgo,
+  dto: UpdateHallazgoDto,
+): DatosHallazgo {
+  return {
+    equipoId: dto.equipoId ?? actual.equipoId,
+    descripcion: dto.descripcion?.trim() ?? actual.descripcion,
+    prioridad: dto.prioridad ?? actual.prioridad,
+    estado: dto.estado ?? actual.estado,
+  };
+}
+
+/** Solo los campos que admiten precondición `X-Expected`. */
+function datosDe(h: DatosHallazgo): DatosHallazgo {
+  return {
+    equipoId: h.equipoId,
+    descripcion: h.descripcion,
+    prioridad: h.prioridad,
+    estado: h.estado,
+  };
+}
+
 /**
  * Relación que toda lectura/escritura devuelve. Una sola definición para que
  * `create`, `findAll`, `findOne` y `update` entreguen la misma forma: el
@@ -64,19 +84,11 @@ const HALLAZGO_INCLUDE = {
   equipo: { select: { internalCode: true } },
 } satisfies Prisma.HallazgoInclude;
 
-/**
- * `createdById` es interno (solo sirve para el chequeo de propiedad en
- * reintentos): se omite en el SELECT de toda query cuyo resultado sale a la
- * API, en vez de filtrarlo después.
- */
-const HALLAZGO_OMIT = {
-  createdById: true,
-} satisfies Prisma.HallazgoOmit;
-
-type HallazgoWithEquipo = Prisma.HallazgoGetPayload<{
-  include: typeof HALLAZGO_INCLUDE;
-  omit: typeof HALLAZGO_OMIT;
-}>;
+/** Un hallazgo tal como sale a la API: sin `createdById`. */
+type HallazgoWithEquipo = Omit<
+  Prisma.HallazgoGetPayload<{ include: typeof HALLAZGO_INCLUDE }>,
+  'createdById'
+>;
 
 /**
  * Forma de un hallazgo en la API — nunca expone `fotoKey` (igual que
@@ -121,7 +133,7 @@ export class HallazgosService {
   }
 
   private async createFresh(dto: CreateHallazgoDto, userId: string) {
-    const fecha = this.resolveFecha(dto.capturedAt);
+    const { at: fecha } = resolveCapturedAt(dto.capturedAt);
 
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },
@@ -143,14 +155,13 @@ export class HallazgosService {
           descripcion: dto.descripcion,
           prioridad: dto.prioridad,
           estado: 'ABIERTO',
-          // `fotoUrl` (legacy) ya no es un campo de creación — ver
+          // `fotoUrl` (legacy) no es un campo de creación — ver
           // `CreateHallazgoDto`. Se omite la key: Prisma inserta NULL.
           fotoKey: finalKey ?? null,
           createdById: userId,
           fecha,
         },
         include: HALLAZGO_INCLUDE,
-        omit: HALLAZGO_OMIT,
       });
     } catch (error: unknown) {
       // El objeto ya está reclamado en el bucket: si la fila no se escribe,
@@ -179,7 +190,6 @@ export class HallazgosService {
     const registros = await this.prisma.hallazgo.findMany({
       orderBy: { fecha: 'desc' },
       include: HALLAZGO_INCLUDE,
-      omit: HALLAZGO_OMIT,
     });
     return Promise.all(registros.map((r) => this.shape(r)));
   }
@@ -188,14 +198,13 @@ export class HallazgosService {
     const reg = await this.prisma.hallazgo.findUnique({
       where: { id },
       include: HALLAZGO_INCLUDE,
-      omit: HALLAZGO_OMIT,
     });
     if (!reg) throw new NotFoundException('Hallazgo no encontrado');
     return this.shape(reg);
   }
 
   /**
-   * Edita un hallazgo ya registrado (Acta N.° 004, R13).
+   * Edita un hallazgo ya registrado.
    *
    * Sin autorización, pero no silencioso: lo que cambió queda en `ChangeLog`
    * —en la misma transacción que la edición— y el administrador recibe un
@@ -206,119 +215,98 @@ export class HallazgosService {
     id: string,
     dto: UpdateHallazgoDto,
     editor: Editor,
-    expected?: ExpectedFields,
+    expected?: ExpectedValues,
   ) {
-    const actual = await this.prisma.hallazgo.findUnique({
-      where: { id },
-      include: HALLAZGO_INCLUDE,
-      omit: HALLAZGO_OMIT,
-    });
-    if (!actual) throw new NotFoundException('Hallazgo no encontrado');
-
-    let codigoNuevo = actual.equipo.internalCode;
-    if (dto.equipoId && dto.equipoId !== actual.equipoId) {
-      const equipo = await this.prisma.equipment.findUnique({
+    let equipoNuevo: { internalCode: string } | null = null;
+    if (dto.equipoId) {
+      equipoNuevo = await this.prisma.equipment.findUnique({
         where: { id: dto.equipoId },
+        select: { internalCode: true },
       });
-      if (!equipo) throw new NotFoundException('Equipo no encontrado');
-      codigoNuevo = equipo.internalCode;
+      if (!equipoNuevo) throw new NotFoundException('Equipo no encontrado');
     }
 
-    const nuevo: DatosHallazgo = {
-      equipoId: dto.equipoId ?? actual.equipoId,
-      descripcion: dto.descripcion?.trim() ?? actual.descripcion,
-      prioridad: dto.prioridad ?? actual.prioridad,
-      estado: dto.estado ?? actual.estado,
-    };
+    const { registro, cambios, codigo } = await this.prisma.$transaction(
+      async (tx) => {
+        // Todo se calcula sobre la fila vigente, leída con el bloqueo tomado:
+        // una edición ajena de OTRO campo, confirmada antes de este bloqueo,
+        // no se revierte al escribir ni queda mal registrada en el historial.
+        const vigente = await assertExpectedLocked({
+          tx,
+          table: 'hallazgo',
+          id,
+          expected,
+          read: (t) =>
+            t.hallazgo.findUnique({
+              where: { id },
+              include: HALLAZGO_INCLUDE,
+            }),
+          comparable: datosDe,
+          desired: (actual) => ({ ...mergeDatos(actual, dto) }),
+          labels: CAMPO_LABEL,
+          notFoundMessage: 'Hallazgo no encontrado',
+        });
+        const nuevo = mergeDatos(vigente, dto);
+        const codigoNuevo =
+          equipoNuevo?.internalCode ?? vigente.equipo.internalCode;
 
-    // Falla rápido, sin tocar la base; se repite bajo bloqueo en la transacción.
-    assertExpected(
-      { ...this.datosDe(actual) },
-      expected,
-      { ...nuevo },
-      CAMPO_LABEL,
+        const codigos: Record<string, string> = {
+          [vigente.equipoId]: vigente.equipo.internalCode,
+          [nuevo.equipoId]: codigoNuevo,
+        };
+        const diff = diffFields<DatosHallazgo>(vigente, nuevo, [
+          {
+            field: 'equipoId',
+            label: 'Equipo',
+            format: (v) => codigos[v] ?? v,
+          },
+          { field: 'descripcion', label: 'Descripción' },
+          {
+            field: 'prioridad',
+            label: 'Prioridad',
+            format: (v) => PRIORIDAD_LABEL[v] ?? v,
+          },
+          {
+            field: 'estado',
+            label: 'Estado',
+            format: (v) => ESTADO_LABEL[v] ?? v,
+          },
+        ]);
+        if (diff.length === 0) {
+          return { registro: vigente, cambios: diff, codigo: codigoNuevo };
+        }
+
+        const editado = await tx.hallazgo.update({
+          where: { id },
+          data: nuevo,
+          include: HALLAZGO_INCLUDE,
+        });
+        await this.changeLog.record(tx, 'hallazgo', id, editor, diff);
+        return { registro: editado, cambios: diff, codigo: codigoNuevo };
+      },
     );
 
-    const codigos: Record<string, string> = {
-      [actual.equipoId]: actual.equipo.internalCode,
-      [nuevo.equipoId]: codigoNuevo,
-    };
-    const cambios = diffFields<DatosHallazgo>(actual, nuevo, [
-      {
-        field: 'equipoId',
-        label: 'Equipo',
-        format: (v) => codigos[v] ?? v,
-      },
-      { field: 'descripcion', label: 'Descripción' },
-      {
-        field: 'prioridad',
-        label: 'Prioridad',
-        format: (v) => PRIORIDAD_LABEL[v] ?? v,
-      },
-      { field: 'estado', label: 'Estado', format: (v) => ESTADO_LABEL[v] ?? v },
-    ]);
-    if (cambios.length === 0) return this.shape(actual);
+    if (cambios.length > 0) {
+      this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, {
+        entity: 'hallazgo',
+        entityId: id,
+        entityArticle: 'el',
+        entityLabel: `hallazgo de ${codigo} del ${formatBusinessDate(registro.fecha)}`,
+        editedBy: editor.name,
+        changes: cambios.map(({ label, before, after }) => ({
+          label,
+          before,
+          after,
+        })),
+      } satisfies RecordEditedEvent);
+    }
 
-    const editado = await this.prisma.$transaction(async (tx) => {
-      if (expected) {
-        // Entre la lectura de arriba y esta transacción otra edición pudo
-        // aplicarse: se relee con la fila bloqueada antes de pisarla.
-        await lockRow(tx, 'hallazgo', id);
-        const vigente = await tx.hallazgo.findUnique({ where: { id } });
-        if (!vigente) throw new NotFoundException('Hallazgo no encontrado');
-        assertExpected(
-          { ...this.datosDe(vigente) },
-          expected,
-          { ...nuevo },
-          CAMPO_LABEL,
-        );
-      }
-      const reg = await tx.hallazgo.update({
-        where: { id },
-        data: nuevo,
-        include: HALLAZGO_INCLUDE,
-        omit: HALLAZGO_OMIT,
-      });
-      await this.changeLog.record(tx, 'hallazgo', id, editor, cambios);
-      return reg;
-    });
-
-    this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, {
-      entity: 'hallazgo',
-      entityId: id,
-      entityLabel: `hallazgo de ${codigoNuevo} del ${formatBusinessDate(actual.fecha)}`,
-      editedBy: editor.name,
-      changes: cambios.map(({ label, before, after }) => ({
-        label,
-        before,
-        after,
-      })),
-    } satisfies RecordEditedEvent);
-
-    return this.shape(editado);
-  }
-
-  private datosDe(h: DatosHallazgo): DatosHallazgo {
-    return {
-      equipoId: h.equipoId,
-      descripcion: h.descripcion,
-      prioridad: h.prioridad,
-      estado: h.estado,
-    };
+    return this.shape(registro);
   }
 
   /** Los cambios de un hallazgo, del más reciente al más viejo. */
   findChanges(id: string) {
     return this.changeLog.findFor('hallazgo', id);
-  }
-
-  /** `capturedAt` (hora del dispositivo) si viene y es razonable; si no, la
-   * hora del servidor. */
-  private resolveFecha(capturedAt: string | undefined): Date {
-    if (!capturedAt) return new Date();
-    const captured = new Date(capturedAt);
-    assertReasonableCapturedAt(captured);
-    return captured;
   }
 
   /**

@@ -30,13 +30,12 @@ export class CreateHorometroDto {
   equipoId!: string;
 
   /**
-   * Operador del catálogo propio (`Operator`) — OBLIGATORIO (RFC Supervisión
-   * en Terreno: mismo patrón único para Trabajos extra Y la entrada de
-   * Flota).
-   * `operador` YA NO se recibe acá: `HorometroService` arma el snapshot
+   * Operador del catálogo propio (`Operator`) — OBLIGATORIO (mismo patrón
+   * para Trabajos extra y la entrada de Flota).
+   * `operador` no se recibe acá: `HorometroService` arma el snapshot
    * desde `OperatorsService.assertActive(operatorId).name`, nunca desde
    * texto que mande el cliente. Con `forbidNonWhitelisted: true` global,
-   * mandar `operador` en el body ahora es un 400.
+   * mandar `operador` en el body es un 400.
    */
   @IsString()
   @IsNotEmpty()
@@ -50,13 +49,10 @@ export class CreateHorometroDto {
   @Max(1_000_000)
   valorInicial!: number;
 
-  // `valorFinal` SE ELIMINÓ (RFC Supervisión en Terreno): el flujo de
-  // un paso de Terreno (entrada+salida en la misma llamada) queda retirado —
-  // Flota usa el flujo de dos pasos (`create()` ENTRADA / `salida()` SALIDA),
-  // y el flujo de un paso de Supervisión en Terreno pasó a ser
-  // `POST /api/shift-cards` (abre) + `POST /api/shift-cards/:id/close`
-  // (cierra), ver `src/shifts/*`. Con `forbidNonWhitelisted: true` global,
-  // mandar `valorFinal` acá ahora es un 400.
+  // No hay `valorFinal`: Flota usa el flujo de dos pasos (`create()` ENTRADA /
+  // `salida()` SALIDA) y Supervisión en Terreno usa `POST /api/shift-cards`
+  // (abre) + `POST /api/shift-cards/:id/close` (cierra), ver `src/shifts/*`.
+  // Con `forbidNonWhitelisted: true` global, mandar `valorFinal` acá es un 400.
 
   @IsOptional()
   @IsNumber()

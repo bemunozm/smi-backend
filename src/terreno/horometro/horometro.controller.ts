@@ -33,12 +33,9 @@ export class HorometroController {
     };
   }
 
-  // `PATCH /horometro/:id` genérico (`update`) se ELIMINÓ (RFC Supervisión
-  // en Terreno): no validaba nada — podía cerrar una tarjeta en
-  // silencio (`valorFinal` sin pasar por `salida()`) sin cuadrar el contador
-  // del equipo ni respetar el gate de `shiftId`. Ningún uso en el frontend
-  // (grep de `PATCH .../horometro/:id` y `updateHorometro` en
-  // `smi-frontend/src`, confirmado antes de retirarlo).
+  // No hay `PATCH /horometro/:id` genérico: permitiría saltarse la
+  // reconciliación del contador y el gate de `shiftId` (cerrar una tarjeta
+  // con `valorFinal` sin pasar por `salida()`).
 
   @Patch(':id/salida')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])

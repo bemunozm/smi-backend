@@ -183,7 +183,7 @@ describe('ShiftsService', () => {
     });
     tx.equipment.updateMany.mockResolvedValue({ count: 1 });
     // Pre-check de solo lectura ANTES del upsert del `Shift`, ver
-    // `ShiftsService.openCard` — por defecto pasa, los tests de R1/404 lo
+    // `ShiftsService.openCard` — por defecto pasa, los tests de equipo no operativo/404 lo
     // sobreescriben.
     prisma.equipment.findUnique.mockResolvedValue({ status: 'OPERATIONAL' });
     tx.registroHorometro.create.mockImplementation(
@@ -310,7 +310,7 @@ describe('ShiftsService', () => {
       }
     });
 
-    it('EQUIPMENT_NOT_OPERATIONAL: 409 si el equipo no está operativo (R1)', async () => {
+    it('EQUIPMENT_NOT_OPERATIONAL: 409 si el equipo no está operativo', async () => {
       tx.equipment.findUnique.mockResolvedValue({
         status: 'IN_WORKSHOP',
         controlUnit: 'HOURS',
@@ -454,10 +454,13 @@ describe('ShiftsService', () => {
     });
 
     describe('ventana de shiftDate', () => {
-      it('rechaza un shiftDate de más de 8 días de antigüedad con INVALID_SHIFT_DATE, antes de crear el Shift', async () => {
+      it('rechaza un shiftDate de más de 30 días de antigüedad con INVALID_SHIFT_DATE, antes de crear el Shift', async () => {
         expect.assertions(4);
         try {
-          await service.openCard({ ...dto, shiftDate: '2026-09-01' }, session);
+          const shiftDate = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+          await service.openCard({ ...dto, shiftDate }, session);
         } catch (error: unknown) {
           expect(error).toBeInstanceOf(BadRequestException);
           expect((error as BadRequestException).getResponse()).toMatchObject({
@@ -481,13 +484,47 @@ describe('ShiftsService', () => {
       });
     });
 
-    it('INVALID_CAPTURE_TIME: rechaza un capturedAt más de 24h en el futuro, antes de validar el operador', async () => {
+    it('un capturedAt más de 24h en el futuro no rechaza: la tarjeta se abre con la hora del servidor y deja el desfase', async () => {
+      const antes = Date.now();
+      await service.openCard(
+        { ...dto, capturedAt: iso(25 * 60 * 60 * 1000) },
+        session,
+      );
+
+      const data = lastCallData(tx.registroHorometro.create);
+      expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(antes);
+      expect((data.fecha as Date).getTime()).toBeLessThanOrEqual(Date.now());
+      expect(data.clientClockSkewMs).toBeLessThan(-24 * 60 * 60 * 1000);
+    });
+
+    it('un capturedAt de más de 7 días de antigüedad no rechaza: usa la hora del servidor y deja el desfase', async () => {
+      const antes = Date.now();
+      await service.openCard(
+        { ...dto, capturedAt: iso(-8 * 24 * 60 * 60 * 1000) },
+        session,
+      );
+
+      const data = lastCallData(tx.registroHorometro.create);
+      expect((data.fecha as Date).getTime()).toBeGreaterThanOrEqual(antes);
+      expect(data.clientClockSkewMs).toBeGreaterThan(7 * 24 * 60 * 60 * 1000);
+    });
+
+    it('el header X-Client-Time manda sobre el desfase derivado de capturedAt', async () => {
+      await service.openCard(
+        { ...dto, capturedAt: iso(-8 * 24 * 60 * 60 * 1000) },
+        session,
+        iso(-5000),
+      );
+
+      const data = lastCallData(tx.registroHorometro.create);
+      expect(data.clientClockSkewMs).toBeGreaterThanOrEqual(5000);
+      expect(data.clientClockSkewMs).toBeLessThan(60_000);
+    });
+
+    it('un capturedAt con formato inválido sigue siendo 400 INVALID_CAPTURE_TIME, antes de validar el operador', async () => {
       expect.assertions(3);
       try {
-        await service.openCard(
-          { ...dto, capturedAt: iso(25 * 60 * 60 * 1000) },
-          session,
-        );
+        await service.openCard({ ...dto, capturedAt: '2026-W01' }, session);
       } catch (error: unknown) {
         expect(error).toBeInstanceOf(BadRequestException);
         expect((error as BadRequestException).getResponse()).toMatchObject({
@@ -495,21 +532,6 @@ describe('ShiftsService', () => {
         });
       }
       expect(assertActive).not.toHaveBeenCalled();
-    });
-
-    it('INVALID_CAPTURE_TIME: rechaza un capturedAt de más de 7 días de antigüedad', async () => {
-      expect.assertions(2);
-      try {
-        await service.openCard(
-          { ...dto, capturedAt: iso(-8 * 24 * 60 * 60 * 1000) },
-          session,
-        );
-      } catch (error: unknown) {
-        expect(error).toBeInstanceOf(BadRequestException);
-        expect((error as BadRequestException).getResponse()).toMatchObject({
-          code: 'INVALID_CAPTURE_TIME',
-        });
-      }
     });
 
     it('no rechaza por desfase razonable (ej. 2 días de antigüedad, offline)', async () => {
@@ -588,6 +610,55 @@ describe('ShiftsService', () => {
         registroHorometroId: 'card_1',
       });
       expect(result.pumpPhotoUrl).toBe('https://signed/fuel-photos/final.jpg');
+    });
+
+    it('un capturedAt fuera de ventana no rechaza el cierre: fechaSalida es la hora del servidor y se audita el desfase', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        id: 'card_1',
+        equipoId: 'e1',
+        valorInicial: 100,
+        valorFinal: null,
+        supervisorId: 'sup_1',
+        closeClientId: null,
+        closedAt: null,
+        clientClockSkewMs: null,
+      });
+      const antes = Date.now();
+
+      await service.closeCard(
+        'card_1',
+        { ...dto, capturedAt: iso(-10 * 24 * 60 * 60 * 1000) },
+        session,
+      );
+
+      const data = lastCallData(tx.registroHorometro.updateMany);
+      expect((data.fechaSalida as Date).getTime()).toBeGreaterThanOrEqual(
+        antes,
+      );
+      expect(data.clientClockSkewMs).toBeGreaterThan(9 * 24 * 60 * 60 * 1000);
+    });
+
+    it('el desfase del cierre no pisa el que dejó la apertura', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        id: 'card_1',
+        equipoId: 'e1',
+        valorInicial: 100,
+        valorFinal: null,
+        supervisorId: 'sup_1',
+        closeClientId: null,
+        closedAt: null,
+        clientClockSkewMs: 1234,
+      });
+
+      await service.closeCard(
+        'card_1',
+        { ...dto, capturedAt: iso(-10 * 24 * 60 * 60 * 1000) },
+        session,
+      );
+
+      expect(lastCallData(tx.registroHorometro.updateMany)).not.toHaveProperty(
+        'clientClockSkewMs',
+      );
     });
 
     it('el contador sube al cerrar con un final por encima del vigente', async () => {
@@ -682,7 +753,7 @@ describe('ShiftsService', () => {
       expect(tx.registroCombustible.create).not.toHaveBeenCalled();
     });
 
-    describe('AdBlue al cierre (Acta N.° 004, R12)', () => {
+    describe('AdBlue al cierre', () => {
       it('persiste AdBlue con sus litros', async () => {
         await service.closeCard(
           'card_1',
@@ -870,9 +941,9 @@ describe('ShiftsService', () => {
     it('otro supervisor que reintenta (replay) el closeClientId de una tarjeta YA CERRADA ajena → 403 NOT_OWNER, NUNCA la tarjeta de A', async () => {
       // La tarjeta ya está cerrada, es de sup_1, y el closeClientId coincide
       // EXACTO con el del DTO (`dto.closeClientId === 'close_1'`) — el
-      // escenario exacto del hallazgo: B "adivina"/reenvía el closeClientId
-      // de A. Antes del fix, esto caía en la rama de replay idempotente
-      // (que no chequea dueño) y devolvía la tarjeta completa de A, con la
+      // escenario de fuga: B "adivina"/reenvía el closeClientId
+      // de A. Sin el chequeo de dueño previo, esto caería en la rama de replay
+      // idempotente (que no lo hace) y devolvería la tarjeta completa de A, con la
       // URL firmada de su foto.
       prisma.registroHorometro.findUnique.mockResolvedValue({
         id: 'card_1',
@@ -1040,7 +1111,7 @@ describe('ShiftsService', () => {
     });
   });
 
-  describe('update (PATCH, Acta N.° 004 R13)', () => {
+  describe('update (PATCH)', () => {
     const owner = buildSession('sup_1', 'SUPERVISOR', 'Ana Soto');
 
     function closedCard(overrides: Record<string, unknown> = {}) {
@@ -1070,7 +1141,7 @@ describe('ShiftsService', () => {
 
     beforeEach(() => {
       givenCard(closedCard());
-      tx.$queryRaw.mockResolvedValue([]);
+      tx.$queryRaw.mockResolvedValue([{ id: 'card_1' }]);
       tx.registroHorometro.update.mockResolvedValue({});
       tx.registroCombustible.findUnique.mockResolvedValue(null);
       tx.registroCombustible.create.mockResolvedValue({});
@@ -1411,6 +1482,50 @@ describe('ShiftsService', () => {
           { entityLabel: string },
         ];
         expect(event.entityLabel).toContain('EX-001');
+      });
+
+      it('la etiqueta del aviso usa la fecha del TURNO y el artículo «la»', async () => {
+        // Turno nocturno del 28/09 abierto ya pasada la medianoche UTC.
+        givenCard(
+          closedCard({
+            fecha: new Date('2026-09-29T03:30:00.000Z'),
+            shift: {
+              id: 'shift_1',
+              date: new Date('2026-09-28T00:00:00.000Z'),
+              type: 'NOCTURNO',
+              exitReports: [],
+            },
+          }),
+        );
+
+        await service.update('card_1', { observaciones: 'Cambio' }, owner);
+
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          'record.edited',
+          expect.objectContaining({
+            entityArticle: 'la',
+            entityLabel: 'tarjeta de turno de EX-001 del 28-09-2026',
+          }),
+        );
+      });
+
+      it('una tarjeta sin turno usa la fecha de apertura en horario de negocio', async () => {
+        givenCard(
+          closedCard({
+            shift: null,
+            shiftId: null,
+            fecha: new Date('2026-09-29T02:30:00.000Z'),
+          }),
+        );
+
+        await service.update('card_1', { observaciones: 'Cambio' }, owner);
+
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          'record.edited',
+          expect.objectContaining({
+            entityLabel: 'tarjeta de turno de EX-001 del 28-09-2026',
+          }),
+        );
       });
 
       it('si nada cambió no escribe, no registra y no avisa', async () => {

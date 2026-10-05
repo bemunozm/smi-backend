@@ -1,6 +1,5 @@
 /**
- * Supervisión en Terreno, Módulo A (RFC "Supervisión en Terreno: Módulo A
- * real + offline + roles/operadores + cierre de R2"). La "tarjeta de
+ * Supervisión en Terreno, Módulo A. La "tarjeta de
  * turno" es `RegistroHorometro` reutilizado (ver comentario de cabecera del
  * modelo en `schema.prisma`) — este servicio NO es un dominio nuevo de datos,
  * es un segundo flujo (abrir/cerrar en dos pasos, con id de cliente e
@@ -31,11 +30,9 @@ import type { UserSession } from '@thallesp/nestjs-better-auth';
 import { ROLES, sessionHasRole } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ERROR_CODES } from '../common/errors/error-codes';
-import {
-  assertExpected,
-  type ExpectedFields,
-} from '../common/concurrency/expected-fields';
-import { lockRow } from '../common/concurrency/lock-row';
+import { assertExpectedLocked } from '../common/concurrency/assert-expected-locked';
+import { type ExpectedValues } from '../common/concurrency/expected-fields';
+import { resolveCloseRace } from '../common/idempotency/resolve-close-race';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type { RecordEditedEvent } from '../common/events/domain-events';
 import {
@@ -43,17 +40,18 @@ import {
   diffFields,
   type Editor,
 } from '../change-log/change-log.service';
+import { toEditor } from '../change-log/current-editor.decorator';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
+import { formatBusinessDate } from '../common/dates/business-time';
 import {
-  assertReasonableCapturedAt,
   computeClientClockSkewMs,
+  resolveCapturedAt,
   resolveCapturedAtWithFallback,
-} from './capture-time';
+} from '../common/dates/capture-time';
 import {
   assertShiftDateWithinWindow,
-  formatBusinessDate,
   formatDateOnly,
   parseDateOnlyUtc,
 } from './date-only';
@@ -65,12 +63,11 @@ import { QueryShiftDto } from './dto/query-shift.dto';
 import type { ShiftExitReportEmailStatus } from './shift-exit-report-email-status';
 
 // El tipo de combustible por defecto del cierre de tarjeta está PENDIENTE de
-// confirmar con el cliente (RFC Supervisión en Terreno, "Pedidos al
-// cliente"). Nombrado como constante (no hardcodeado inline) para que ese
-// ajuste, cuando llegue, sea un cambio de una línea.
+// confirmar con el cliente. Nombrado como constante (no hardcodeado inline)
+// para que ese ajuste, cuando llegue, sea un cambio de una línea.
 export const DEFAULT_SHIFT_CLOSE_FUEL_TYPE = 'PETROLEO';
 
-/** Ventana de "mis tarjetas" (RFC §Diseño: URL estable, sin query params de
+/** Ventana de "mis tarjetas" (URL estable, sin query params de
  * fecha, para que el front la pueda cachear offline) — abiertas + cerradas en
  * las últimas 48 h. */
 const MINE_CLOSED_WINDOW_MS = 48 * 60 * 60 * 1000;
@@ -114,7 +111,7 @@ export interface ShiftCardExitReportResponse {
  * `mine` (decisión de diseño: un solo shape que el front maneja en los tres
  * casos, en vez de tres contratos parecidos-pero-no-iguales). NUNCA expone
  * `pumpPhotoKey`/`closeClientId` (keys crudas de storage / clave de
- * idempotencia interna) — ver Diseño del RFC, "nunca fugar `*Key`".
+ * idempotencia interna).
  */
 export interface ShiftCardResponse {
   id: string;
@@ -176,8 +173,8 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-/** Los datos de una tarjeta que se pueden corregir (Acta N.° 004, R13). */
-interface DatosTarjeta {
+/** Los datos de una tarjeta que se pueden corregir. */
+type DatosTarjeta = {
   operatorId: string | null;
   valorInicial: number;
   valorFinal: number | null;
@@ -185,7 +182,7 @@ interface DatosTarjeta {
   adBlue: boolean;
   adBlueLiters: number | null;
   observaciones: string | null;
-}
+};
 
 /** Cómo se llama cada dato en el aviso, el historial y el mensaje de conflicto. */
 const CAMPO_LABEL: Record<keyof DatosTarjeta, string> = {
@@ -205,6 +202,53 @@ const CAMPOS_DE_CIERRE = [
   'adBlue',
   'adBlueLiters',
 ] as const satisfies readonly (keyof UpdateShiftCardDto)[];
+
+/** Solo los campos de la tarjeta que admiten precondición `X-Expected`. */
+function datosDeTarjeta(card: DatosTarjeta): DatosTarjeta {
+  return {
+    operatorId: card.operatorId,
+    valorInicial: card.valorInicial,
+    valorFinal: card.valorFinal,
+    fuelLiters: card.fuelLiters,
+    adBlue: card.adBlue,
+    adBlueLiters: card.adBlueLiters,
+    observaciones: card.observaciones,
+  };
+}
+
+/** Los datos de la tarjeta tal como quedarían después de aplicar el body. */
+function mezclarTarjeta(
+  actual: DatosTarjeta,
+  dto: UpdateShiftCardDto,
+  operador: { id: string } | null,
+): DatosTarjeta {
+  const adBlue = dto.adBlue ?? actual.adBlue;
+  return {
+    operatorId: operador?.id ?? actual.operatorId,
+    valorInicial: dto.valorInicial ?? actual.valorInicial,
+    valorFinal: dto.valorFinal ?? actual.valorFinal,
+    fuelLiters: dto.fuelLiters ?? actual.fuelLiters,
+    adBlue,
+    // Quitar el AdBlue sin decir los litros los limpia; con AdBlue se
+    // conservan salvo que el body los cambie.
+    adBlueLiters:
+      dto.adBlueLiters !== undefined
+        ? dto.adBlueLiters
+        : adBlue
+          ? actual.adBlueLiters
+          : null,
+    observaciones:
+      dto.observaciones !== undefined
+        ? dto.observaciones?.trim() || null
+        : actual.observaciones,
+  };
+}
+
+/** `DD-MM-YYYY` de una fecha de calendario (`Shift.date`, medianoche UTC). */
+function formatDateOnlyForHumans(date: Date): string {
+  const [year, month, day] = formatDateOnly(date).split('-');
+  return `${day}-${month}-${year}`;
+}
 
 /** Resultado de una edición dentro de la transacción. */
 interface ShiftCardEdit {
@@ -235,19 +279,24 @@ export class ShiftsService {
     clientTimeHeader?: string,
   ): Promise<ShiftCardResponse> {
     const now = new Date();
-    const capturedAt = new Date(dto.capturedAt);
-    assertReasonableCapturedAt(capturedAt, now);
+    // La hora del dispositivo nunca rechaza la apertura: fuera de ventana se
+    // usa la del servidor y el desfase queda auditado.
+    const { at: capturedAt, discardedSkewMs } = resolveCapturedAt(
+      dto.capturedAt,
+      now,
+    );
     // Ventana razonable de `shiftDate` — antes de tocar cualquier estado
     // (ni el operador, ni menos el `Shift`, que sí escribe).
     assertShiftDateWithinWindow(dto.shiftDate, now);
-    const clientClockSkewMs = computeClientClockSkewMs(clientTimeHeader, now);
+    const clientClockSkewMs =
+      computeClientClockSkewMs(clientTimeHeader, now) ?? discardedSkewMs;
 
     // Precondición pura de la request — antes de tocar el equipo/turno.
     const operator = await this.operators.assertActive(dto.operatorId);
 
     // Lectura del equipo ANTES del upsert del `Shift` (que sí escribe) —
     // así una request con un `equipoId` que no existe, o un equipo fuera de
-    // servicio (R1), no alcanza a crear un
+    // servicio, no alcanza a crear un
     // `Shift` para una fecha arbitraria. El chequeo DENTRO de la tx (más
     // abajo) se mantiene igual — repetido a propósito: cierra la ventana de
     // carrera contra un cambio de estado concurrente del equipo; este
@@ -267,8 +316,8 @@ export class ShiftsService {
     const supervisorId = session.user.id;
 
     // Upsert del `Shift` por clave natural (supervisorId, date, type) FUERA
-    // de la transacción de la tarjeta (RFC §Diseño): el turno es un recurso
-    // compartido entre tarjetas (y con el Módulo B de Alexander) — no debe
+    // de la transacción de la tarjeta: el turno es un recurso
+    // compartido entre tarjetas (y con el Módulo B) — no debe
     // depender de que ESTA tarjeta específica llegue a crearse.
     const shift = await this.upsertShift(
       supervisorId,
@@ -310,7 +359,7 @@ export class ShiftsService {
         });
         if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
-        // R1: un equipo fuera de servicio o en taller no puede abrir turno.
+        // Un equipo fuera de servicio o en taller no puede abrir turno.
         if (equipo.status !== EquipmentStatus.OPERATIONAL) {
           throw new ConflictException({
             message: 'El equipo no está operativo',
@@ -338,7 +387,7 @@ export class ShiftsService {
           });
         }
 
-        // Modo `'warn'` (exclusivo de la apertura de tarjeta, RFC §Diseño):
+        // Modo `'warn'` (exclusivo de la apertura de tarjeta):
         // una lectura menor que la vigente NO se rechaza ni mueve el
         // contador — se marca `belowPreviousReading` para auditoría.
         const { belowPrevious } = await reconcileEquipmentCounter(
@@ -411,10 +460,10 @@ export class ShiftsService {
     }
 
     // El chequeo de dueño va INMEDIATAMENTE después del 404, ANTES que el
-    // replay idempotente de abajo. Antes, un
-    // supervisor B que reenviaba (adivinado, filtrado, o simplemente
-    // reintentado a mano) el `closeClientId` de una tarjeta A ajena caía en
-    // la rama de replay, que devolvía la tarjeta COMPLETA de A —incluida la
+    // replay idempotente de abajo. Si no, un
+    // supervisor B que reenviara (adivinado, filtrado, o simplemente
+    // reintentado a mano) el `closeClientId` de una tarjeta A ajena caería en
+    // la rama de replay, que devolvería la tarjeta COMPLETA de A —incluida la
     // URL firmada de su foto— sin pasar nunca por este chequeo.
     const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
     if (card.supervisorId !== session.user.id && !isAdmin) {
@@ -443,8 +492,10 @@ export class ShiftsService {
       });
     }
 
-    const capturedAt = new Date(dto.capturedAt);
-    assertReasonableCapturedAt(capturedAt, now);
+    const { at: capturedAt, discardedSkewMs } = resolveCapturedAt(
+      dto.capturedAt,
+      now,
+    );
     // `photoCapturedAt` es EXIF del dispositivo (puede no parsear, ej.
     // `"2026-W01"`, o venir con el reloj de la cámara mal
     // configurado) — a diferencia de `capturedAt`, fuera de rango o
@@ -490,6 +541,11 @@ export class ShiftsService {
             observaciones: dto.observaciones ?? null,
             adBlue: dto.adBlue ?? false,
             adBlueLiters: dto.adBlue ? (dto.adBlueLiters ?? null) : null,
+            // Hora del dispositivo descartada por desfase: se audita sin pisar
+            // la marca que la apertura ya haya dejado.
+            ...(discardedSkewMs !== undefined && card.clientClockSkewMs === null
+              ? { clientClockSkewMs: discardedSkewMs }
+              : {}),
           },
         });
 
@@ -545,7 +601,7 @@ export class ShiftsService {
               tipo: DEFAULT_SHIFT_CLOSE_FUEL_TYPE,
               // Comparte la MISMA key que la tarjeta — así la carga aparece
               // sola en la ficha y en el historial de combustible sin
-              // duplicar la foto (RFC §Diseño).
+              // duplicar la foto.
               fotoKey: pumpPhotoKey,
               fecha: photoCapturedAt,
               registroHorometroId: id,
@@ -584,8 +640,7 @@ export class ShiftsService {
   }
 
   /**
-   * `PATCH /api/shift-cards/:id` — corrige una tarjeta ya enviada (Acta N.° 004,
-   * R13). Solo el supervisor dueño o un ADMIN.
+   * `PATCH /api/shift-cards/:id` — corrige una tarjeta ya enviada. Solo el supervisor dueño o un ADMIN.
    *
    * Es seguro de reintentar desde la cola offline: la fila se bloquea
    * (`FOR UPDATE`) y se relee dentro de la transacción, y `X-Expected` deja
@@ -598,7 +653,7 @@ export class ShiftsService {
     id: string,
     dto: UpdateShiftCardDto,
     session: UserSession,
-    expected?: ExpectedFields,
+    expected?: ExpectedValues,
   ): Promise<ShiftCardResponse> {
     const camposRecibidos = Object.values(dto).some((v) => v !== undefined);
     if (!camposRecibidos) {
@@ -616,10 +671,7 @@ export class ShiftsService {
       dto.operatorId !== undefined && dto.operatorId !== previa.operatorId
         ? await this.operators.assertActive(dto.operatorId)
         : null;
-    const editor: Editor = {
-      id: session.user.id,
-      name: session.user.name?.trim() || session.user.email,
-    };
+    const editor = toEditor(session.user);
 
     const { card, event } = await this.prisma.$transaction(
       (tx): Promise<ShiftCardEdit> =>
@@ -642,60 +694,53 @@ export class ShiftsService {
     dto: UpdateShiftCardDto,
     operator: { id: string; name: string } | null,
     editor: Editor,
-    expected: ExpectedFields | undefined,
+    expected: ExpectedValues | undefined,
   ): Promise<ShiftCardEdit> {
-    // Serializa ediciones y cierres concurrentes sobre la misma tarjeta: lo
-    // que se lee a continuación es lo que se va a pisar.
-    await lockRow(tx, 'registroHorometro', id);
-    const actual = await tx.registroHorometro.findUnique({
-      where: { id },
-      include: SHIFT_CARD_INCLUDE,
-    });
-    if (!actual) throw this.cardNotFound();
-    this.assertClosedFieldsAllowed(dto, actual.valorFinal);
-
-    const antes: DatosTarjeta = {
-      operatorId: actual.operatorId,
-      valorInicial: actual.valorInicial,
-      valorFinal: actual.valorFinal,
-      fuelLiters: actual.fuelLiters,
-      adBlue: actual.adBlue,
-      adBlueLiters: actual.adBlueLiters,
-      observaciones: actual.observaciones,
-    };
-
     // Un operador que cambió entre la validación y el bloqueo (carrera
     // improbable) se valida de nuevo en vez de guardarse sin chequear.
-    let operadorNuevo: { id: string; name: string } | null = null;
-    if (dto.operatorId !== undefined && dto.operatorId !== actual.operatorId) {
-      operadorNuevo =
-        operator?.id === dto.operatorId
-          ? operator
-          : await this.operators.assertActive(dto.operatorId);
-    }
-
-    const adBlue = dto.adBlue ?? actual.adBlue;
-    const despues: DatosTarjeta = {
-      operatorId: operadorNuevo?.id ?? actual.operatorId,
-      valorInicial: dto.valorInicial ?? actual.valorInicial,
-      valorFinal: dto.valorFinal ?? actual.valorFinal,
-      fuelLiters: dto.fuelLiters ?? actual.fuelLiters,
-      adBlue,
-      // Quitar el AdBlue sin decir los litros los limpia; con AdBlue se
-      // conservan salvo que el body los cambie.
-      adBlueLiters:
-        dto.adBlueLiters !== undefined
-          ? dto.adBlueLiters
-          : adBlue
-            ? actual.adBlueLiters
-            : null,
-      observaciones:
-        dto.observaciones !== undefined
-          ? dto.observaciones?.trim() || null
-          : actual.observaciones,
+    const resolverOperador = async (
+      actual: ShiftCardRecord,
+    ): Promise<{ id: string; name: string } | null> => {
+      if (
+        dto.operatorId === undefined ||
+        dto.operatorId === actual.operatorId
+      ) {
+        return null;
+      }
+      return operator?.id === dto.operatorId
+        ? operator
+        : this.operators.assertActive(dto.operatorId);
+    };
+    const resuelto: { operador: { id: string; name: string } | null } = {
+      operador: null,
     };
 
-    assertExpected({ ...antes }, expected, { ...despues }, CAMPO_LABEL);
+    // Bloquea la fila, la relee y compara `X-Expected`: lo que sigue se calcula
+    // sobre el valor vigente, serializado contra ediciones y cierres
+    // concurrentes de la misma tarjeta.
+    const actual = await assertExpectedLocked({
+      tx,
+      table: 'registroHorometro',
+      id,
+      expected,
+      read: (t) =>
+        t.registroHorometro.findUnique({
+          where: { id },
+          include: SHIFT_CARD_INCLUDE,
+        }),
+      comparable: datosDeTarjeta,
+      desired: async (vigente) => {
+        this.assertClosedFieldsAllowed(dto, vigente.valorFinal);
+        resuelto.operador = await resolverOperador(vigente);
+        return { ...mezclarTarjeta(vigente, dto, resuelto.operador) };
+      },
+      labels: CAMPO_LABEL,
+      notFoundMessage: 'Tarjeta no encontrada',
+      notFoundError: () => this.cardNotFound(),
+    });
+    const operadorNuevo = resuelto.operador;
+    const antes = datosDeTarjeta(actual);
+    const despues = mezclarTarjeta(actual, dto, operadorNuevo);
 
     if (
       despues.valorFinal != null &&
@@ -785,7 +830,14 @@ export class ShiftsService {
       event: {
         entity: 'shift_card',
         entityId: id,
-        entityLabel: `tarjeta de turno de ${actual.equipo.internalCode} del ${formatBusinessDate(actual.fecha)}`,
+        entityArticle: 'la',
+        // El turno al que pertenece la tarjeta, no la hora en que se abrió: un
+        // turno nocturno abierto de noche cruza la medianoche.
+        entityLabel: `tarjeta de turno de ${actual.equipo.internalCode} del ${
+          actual.shift
+            ? formatDateOnlyForHumans(actual.shift.date)
+            : formatBusinessDate(actual.fecha)
+        }`,
         editedBy: editor.name,
         changes: cambios.map(({ label, before, after }) => ({
           label,
@@ -952,7 +1004,7 @@ export class ShiftsService {
 
   /** Upsert por clave natural `(supervisorId, date, type)`. Prisma compila
    * `upsert` a un `INSERT ... ON CONFLICT` atómico cuando la DB lo soporta,
-   * pero el RFC pide explícitamente re-leer una vez ante un P2002 igual —
+   * pero igual se re-lee una vez ante un P2002 —
    * defensa en profundidad ante cualquier caso borde del motor. */
   private async upsertShift(supervisorId: string, date: string, type: string) {
     const dbDate = parseDateOnlyUtc(date);
@@ -1014,9 +1066,8 @@ export class ShiftsService {
     });
   }
 
-  /** Mismo criterio que `resolveOpenRace`, para el cierre: mismo
-   * `closeClientId` → 200 (gané mi propia carrera); si no → 409
-   * `ALREADY_CLOSED`. */
+  /** Mismo criterio que `resolveOpenRace`, para el cierre (ver
+   * `resolveCloseRace`). */
   private async resolveCloseRace(
     id: string,
     closeClientId: string,
@@ -1025,27 +1076,15 @@ export class ShiftsService {
       where: { id },
       include: SHIFT_CARD_INCLUDE,
     });
-    if (existing?.closeClientId === closeClientId) {
-      return this.shapeCard(existing);
-    }
-
-    // `closeClientId` es `@unique` a nivel de TODA la tabla, no por tarjeta
-    // — si el P2002 vino de un `closeClientId`
-    // reusado en OTRA tarjeta, `existing` (la tarjeta `id`) puede seguir
-    // abierta (`valorFinal == null`). Antes esto caía siempre en
-    // `ALREADY_CLOSED` ("la tarjeta ya fue cerrada"), un mensaje engañoso
-    // sobre una tarjeta que en realidad sigue abierta — el conflicto real es
-    // el id de cierre duplicado, no el estado de esta tarjeta.
-    if (existing && existing.valorFinal == null) {
-      throw new ConflictException({
-        message: 'El id de cierre ya fue usado por otra tarjeta',
-        code: ERROR_CODES.ID_CONFLICT,
-      });
-    }
-
-    throw new ConflictException({
-      message: this.buildAlreadyClosedMessage(existing?.closedAt ?? null),
-      code: ERROR_CODES.ALREADY_CLOSED,
+    return resolveCloseRace({
+      existing,
+      closeClientId,
+      replay: (card) => this.shapeCard(card),
+      alreadyClosed: () =>
+        new ConflictException({
+          message: this.buildAlreadyClosedMessage(existing?.closedAt ?? null),
+          code: ERROR_CODES.ALREADY_CLOSED,
+        }),
     });
   }
 

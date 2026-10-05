@@ -22,7 +22,7 @@ function assertNonEmptyId(id: string): void {
 }
 
 /**
- * Reporte de salida de turno (RFC Supervisión en Terreno). Mismo
+ * Reporte de salida de turno. Mismo
  * gate de roles que `ShiftCardsController` — el reporte solo tiene sentido
  * para quien puede abrir/cerrar tarjetas.
  */

@@ -13,10 +13,8 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
-import {
-  EXPECTED_HEADER,
-  parseExpectedHeader,
-} from '../common/concurrency/expected-fields';
+import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { UpdateShiftCardDto } from './dto/update-shift-card.dto';
@@ -36,7 +34,7 @@ export class ShiftCardsController {
   /**
    * Abre una tarjeta. `201` en el caso normal; también `201` en un reintento
    * (replay) — el body es idéntico a la primera vez, así que no vale la pena
-   * la complejidad de devolver `200` solo en ese caso (el RFC acepta
+   * la complejidad de devolver `200` solo en ese caso (el contrato acepta
    * cualquiera de los dos para el replay).
    */
   @Post()
@@ -65,7 +63,7 @@ export class ShiftCardsController {
   }
 
   /**
-   * Corrección de una tarjeta ya enviada (Acta N.° 004, R13). `X-Expected`
+   * Corrección de una tarjeta ya enviada. `X-Expected`
    * (opcional) lleva los valores que el cliente vio al editar; ver
    * `assertExpected`.
    */
@@ -74,15 +72,10 @@ export class ShiftCardsController {
     @Param('id') id: string,
     @Body() dto: UpdateShiftCardDto,
     @Session() session: UserSession,
-    @Headers(EXPECTED_HEADER) expectedHeader?: string,
+    @ExpectedFields() expected?: ExpectedValues,
   ) {
     return {
-      data: await this.service.update(
-        id,
-        dto,
-        session,
-        parseExpectedHeader(expectedHeader),
-      ),
+      data: await this.service.update(id, dto, session, expected),
       message: 'Tarjeta actualizada. Se avisó al administrador.',
     };
   }

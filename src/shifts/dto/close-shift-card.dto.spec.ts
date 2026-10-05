@@ -124,7 +124,7 @@ describe('CloseShiftCardDto', () => {
   });
 });
 
-describe('CloseShiftCardDto — AdBlue (Acta N.° 004, R12)', () => {
+describe('CloseShiftCardDto — AdBlue', () => {
   async function errorsFor(overrides: Record<string, unknown>) {
     return validate(plainToInstance(CloseShiftCardDto, base(overrides)));
   }

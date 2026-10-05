@@ -17,7 +17,7 @@ import { SHIFT_TYPES, type ShiftType } from '../../../shifts/shift-type';
 import { ACTIVIDADES } from './create-trabajo-extra.dto';
 
 /**
- * Edición de un trabajo ya registrado (Acta N.° 004, R13): se puede cambiar
+ * Edición de un trabajo ya registrado: se puede cambiar
  * cualquier dato, sin autorización previa. Cada campo es opcional —se manda
  * solo lo que cambió— y valida igual que al crear. Las reglas que cruzan
  * campos (final ≥ inicial, «Otro» con texto) las aplica el servicio sobre el
