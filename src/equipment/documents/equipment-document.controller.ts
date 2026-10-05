@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   HttpStatus,
   NotFoundException,
   Param,
@@ -15,6 +16,8 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import { ExpectedFields } from '../../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import { CreateEquipmentDocumentDto } from './dto/create-equipment-document.dto';
 import { UpdateEquipmentDocumentDto } from './dto/update-equipment-document.dto';
 import { EquipmentDocumentService } from './equipment-document.service';
@@ -29,8 +32,7 @@ function assertNonEmptyId(id: string, param = 'id'): void {
 
 /**
  * Documentos del equipo (revisión técnica, seguro, permiso de circulación,
- * certificaciones, otros), con archivo adjunto y CRUD propio — reemplaza las
- * columnas planas R1/R2 de la primera versión de Flota. Controller separado
+ * certificaciones, otros), con archivo adjunto y CRUD propio. Controller separado
  * de `EquipmentController` (mismo prefijo `equipment`, sin colisión de rutas:
  * ver métodos abajo), igual que `HorometroController` vive aparte de
  * `EquipmentController` para el dominio de Terreno.
@@ -72,10 +74,11 @@ export class EquipmentDocumentController {
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentDocumentDto,
     @Session() session: UserSession,
+    @ExpectedFields() expected?: ExpectedValues,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto, session.user.id),
+      data: await this.service.update(id, dto, session.user.id, expected),
       message: 'Documento actualizado',
     };
   }
@@ -91,8 +94,7 @@ export class EquipmentDocumentController {
   /**
    * "Ver/descargar" del archivo adjunto: 302 a una URL RECIÉN firmada (no la
    * que viaja en el listado, que puede haber quedado vieja si la pestaña
-   * lleva horas abierta) — ver Diseño del RFC R2-storage, "Contrato de la
-   * API". Mismo acceso de lectura que `findByEquipment` (cualquier sesión
+   * lleva horas abierta). Mismo acceso de lectura que `findByEquipment` (cualquier sesión
    * autenticada, sin `@Roles` propio). Los errores (404 sin archivo) siguen
    * el `{data,message}` del filtro global: `@Redirect()` solo intercepta el
    * `return`, no las excepciones.

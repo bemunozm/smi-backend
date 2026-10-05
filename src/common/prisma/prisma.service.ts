@@ -24,7 +24,42 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
+
+/**
+ * `createdById` es el `user.id` del dueño de la fila: solo sirve para decidir
+ * si un reintento con el mismo id de cliente es del mismo usuario, y nunca debe
+ * salir en una respuesta. Se omite a nivel de cliente y no por consulta
+ * porque `omit` por consulta NO se propaga a las relaciones incluidas
+ * (`include: { homeBranch: true }` lo filtraría); el global sí. Donde el
+ * código necesita leer al dueño lo pide explícito (`select: { createdById:
+ * true }` u `omit: { createdById: false }`).
+ *
+ * Los tipos de Prisma siguen declarando `createdById` en cada fila: la clase
+ * extiende el cliente sin parametrizar `omit` porque, parametrizado, el
+ * `PrismaService` deja de ser asignable a `Prisma.TransactionClient` y los
+ * helpers que aceptan ambos dejan de compilar. Por eso una lectura del dueño
+ * sin `select`/`omit: false` compila y devuelve `undefined`; los e2e de
+ * idempotencia (`ID_CONFLICT` para filas propias) lo detectan.
+ */
+const CLIENT_OPTIONS = {
+  omit: {
+    branch: { createdById: true },
+    equipment: { createdById: true },
+    equipmentDocument: { createdById: true },
+    itemCategory: { createdById: true },
+    inventoryItem: { createdById: true },
+    registroCombustible: { createdById: true },
+    shiftExitReport: { createdById: true },
+    operator: { createdById: true },
+    trabajoExtraordinario: { createdById: true },
+    hallazgo: { createdById: true },
+    ordenTrabajo: { createdById: true },
+    intervencion: { createdById: true },
+    umbralMantenimiento: { createdById: true },
+    actividad: { createdById: true },
+  },
+} as const satisfies Prisma.PrismaClientOptions;
 
 @Injectable()
 export class PrismaService
@@ -32,6 +67,10 @@ export class PrismaService
   implements OnModuleInit, OnModuleDestroy
 {
   private readonly logger = new Logger(PrismaService.name);
+
+  constructor() {
+    super(CLIENT_OPTIONS);
+  }
 
   async onModuleInit(): Promise<void> {
     await this.$connect();

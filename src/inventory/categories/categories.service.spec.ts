@@ -1,8 +1,12 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
+import { ERROR_CODES } from '../../common/errors/error-codes';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { prismaError } from '../../common/testing/fixtures';
 import { CategoriesService } from './categories.service';
+
+const USER = 'user_1';
 
 describe('CategoriesService', () => {
   let service: CategoriesService;
@@ -49,7 +53,7 @@ describe('CategoriesService', () => {
       // selector mostraría las dos.
       findFirst.mockResolvedValue({ name: 'Filtros' });
 
-      await expect(service.create({ name: 'filtros' })).rejects.toThrow(
+      await expect(service.create({ name: 'filtros' }, USER)).rejects.toThrow(
         ConflictException,
       );
       expect(create).not.toHaveBeenCalled();
@@ -58,11 +62,77 @@ describe('CategoriesService', () => {
     it('crea la categoría cuando el nombre está libre', async () => {
       create.mockResolvedValue({ id: 'c1', name: 'Filtros' });
 
-      await service.create({ name: 'Filtros' });
+      await service.create({ name: 'Filtros' }, USER);
 
       expect(create).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { name: 'Filtros' } }),
+        expect.objectContaining({
+          data: { name: 'Filtros', createdById: USER },
+        }),
       );
+    });
+
+    describe('id del cliente (reintento offline)', () => {
+      const ID = '11111111-1111-4111-8111-111111111111';
+
+      it('replay del mismo usuario: devuelve la fila actual sin crear ni validar el nombre', async () => {
+        findUnique
+          .mockResolvedValueOnce({ createdById: USER })
+          .mockResolvedValueOnce({
+            id: ID,
+            name: 'Filtros',
+            _count: { items: 0 },
+          });
+
+        const result = await service.create({ id: ID, name: 'Filtros' }, USER);
+
+        expect(result).toEqual({
+          id: ID,
+          name: 'Filtros',
+          _count: { items: 0 },
+        });
+        expect(create).not.toHaveBeenCalled();
+        expect(findFirst).not.toHaveBeenCalled();
+      });
+
+      it('id ocupado por otro usuario: 409 ID_CONFLICT', async () => {
+        findUnique.mockResolvedValueOnce({ createdById: 'otro' });
+
+        await expect(
+          service.create({ id: ID, name: 'Filtros' }, USER),
+        ).rejects.toMatchObject({
+          response: { code: ERROR_CODES.ID_CONFLICT },
+        });
+        expect(create).not.toHaveBeenCalled();
+      });
+
+      it('carrera sobre la PK: devuelve la fila ganadora', async () => {
+        findUnique
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ createdById: USER })
+          .mockResolvedValueOnce({
+            id: ID,
+            name: 'Filtros',
+            _count: { items: 0 },
+          });
+        create.mockRejectedValue(prismaError('P2002', { target: ['id'] }));
+
+        await expect(
+          service.create({ id: ID, name: 'Filtros' }, USER),
+        ).resolves.toMatchObject({ id: ID });
+      });
+
+      it('P2002 por nombre repetido sigue siendo el 409 de siempre', async () => {
+        findUnique.mockResolvedValue(null);
+        create.mockRejectedValue(prismaError('P2002', { target: ['name'] }));
+
+        const error = await service
+          .create({ id: ID, name: 'Filtros' }, USER)
+          .catch((e: unknown) => e);
+
+        expect((error as ConflictException).message).toBe(
+          'Ya existe una categoría llamada "Filtros"',
+        );
+      });
     });
   });
 

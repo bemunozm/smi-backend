@@ -1,9 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { MovementDirection, Prisma, StockMovement } from '@prisma/client';
 
+import { ERROR_CODES } from '../../common/errors/error-codes';
+import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StockService } from '../stock.service';
 import { CreateMovementDto } from './dto/create-movement.dto';
+import { isManualMovementReason } from './movement-reasons';
 import { QueryMovementsDto } from './dto/query-movements.dto';
 
 const DEFAULT_LIMIT = 100;
@@ -55,6 +58,7 @@ export class MovementsService {
     performedById: string,
   ): Promise<StockMovement> {
     const input = {
+      id: dto.id,
       itemId: dto.itemId,
       branchId: dto.branchId,
       quantity: dto.quantity,
@@ -66,8 +70,36 @@ export class MovementsService {
       notes: dto.notes ?? null,
     };
 
-    return dto.direction === MovementDirection.IN
-      ? this.stock.receive(input)
-      : this.stock.issue(input);
+    // Con `id` del cliente, el reintento propio devuelve el asiento ya
+    // registrado (con su `resultingBalance` de entonces) sin mover saldo.
+    return createOrReturn({
+      id: dto.id,
+      userId: performedById,
+      conflictMessage: 'Ya existe un movimiento con ese id de otro usuario',
+      findExisting: async (id) => {
+        const movement = await this.prisma.stockMovement.findUnique({
+          where: { id },
+        });
+        if (!movement) return null;
+        // Un id que pertenece a un traspaso, un ajuste o un movimiento de otro
+        // ítem o sentido no es un reintento de ESTE movimiento.
+        if (
+          !isManualMovementReason(movement.reason) ||
+          movement.direction !== dto.direction ||
+          movement.itemId !== dto.itemId
+        ) {
+          throw new ConflictException({
+            message:
+              'Ya existe un movimiento con ese id que no es este movimiento manual',
+            code: ERROR_CODES.ID_CONFLICT,
+          });
+        }
+        return { ownerId: movement.performedById, result: movement };
+      },
+      create: () =>
+        dto.direction === MovementDirection.IN
+          ? this.stock.receive(input)
+          : this.stock.issue(input),
+    });
   }
 }

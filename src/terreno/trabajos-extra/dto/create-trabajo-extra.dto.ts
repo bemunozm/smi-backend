@@ -2,11 +2,13 @@ import { Transform } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
+  IsDateString,
   IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -43,15 +45,26 @@ export const ACTIVIDAD_LABEL: Record<string, string> = {
 };
 
 export class CreateTrabajoExtraDto {
+  /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
+   * offline. Opcional para no romper a un cliente que no lo manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
+  /** Hora del DISPOSITIVO al registrar el trabajo — ver `capture-time.ts`. */
+  @IsOptional()
+  @IsDateString()
+  capturedAt?: string;
+
   @IsString()
   equipoId!: string;
 
   /**
-   * Operador del catálogo propio (`Operator`) — OBLIGATORIO (RFC Supervisión
-   * en Terreno). `operador` YA NO se recibe acá: el servicio lo arma desde
+   * Operador del catálogo propio (`Operator`) — OBLIGATORIO. `operador` no
+   * se recibe acá: el servicio lo arma desde
    * `OperatorsService.assertActive(operatorId).name`, nunca desde texto que
    * mande el cliente. Con `forbidNonWhitelisted: true` global, mandar
-   * `operador` en el body ahora es un 400.
+   * `operador` en el body es un 400.
    */
   @IsString()
   @IsNotEmpty()

@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
 } from 'class-validator';
@@ -12,6 +13,12 @@ import {
 import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
 
 export class CreateCombustibleDto {
+  /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
+   * offline. Opcional para no romper a un cliente que no lo manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
   @IsString()
   equipoId!: string;
 
@@ -27,14 +34,10 @@ export class CreateCombustibleDto {
    * `POST /api/files`. El DTO valida solo la FORMA — `CombustibleService`
    * valida ownership vía `StorageService.claimTmp`.
    *
-   * `fotoUrl` (legacy, URL servida por `/api/uploads`) YA NO es un campo de
-   * este DTO — se retiró en el cierre de R2 (RFC Supervisión en Terreno):
-   * `/api/uploads` se eliminó por completo, así que ya no hay forma
-   * de producir un `fotoUrl` válido. La columna y el mapeo de LECTURA en
-   * `CombustibleService.shape` siguen intactos, para que las filas viejas
-   * que ya tenían ese valor sigan renderizando (aunque el link en sí quede
-   * roto). Cualquier request que mande `fotoUrl` ahora se rechaza con 400
-   * (`forbidNonWhitelisted`).
+   * `fotoUrl` no se acepta: la foto entra solo por `fotoKey` (subida previa
+   * a `tmp/`); un cliente que la mande recibe 400 (`forbidNonWhitelisted`).
+   * La columna y el mapeo de LECTURA en `CombustibleService.shape` se
+   * mantienen para que las filas viejas con ese valor sigan renderizando.
    */
   @IsOptional()
   @IsString()

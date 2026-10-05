@@ -1,6 +1,6 @@
 /**
  * Fixtures de test compartidos entre specs de servicios (`*.service.spec.ts`)
- * — antes duplicados, byte a byte en varios casos, en cada archivo.
+ * — centralizados para no duplicarlos en cada archivo.
  */
 import { Prisma } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';

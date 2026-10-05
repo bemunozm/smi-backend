@@ -1,6 +1,6 @@
 /**
  * Cliente S3-compatible (MinIO en local, Cloudflare R2 en producción) para
- * los 3 usos de Flota — ver Diseño del RFC R2-storage. Los clientes S3 son
+ * los 3 usos de Flota. Los clientes S3 son
  * perezosos (se crean recién al primer uso real), igual que el transport de
  * `MailService` (ver `src/mail/mail.service.ts`).
  *
@@ -270,7 +270,7 @@ export class StorageService implements OnModuleInit {
       );
     } catch (error) {
       if (this.isNoSuchKey(error)) {
-        // `code` (RFC Supervisión en Terreno) para que el outbox
+        // `code` para que el outbox
         // offline del front distinga ESTE 400 (hay que volver a subir el
         // archivo desde el blob local) de cualquier otro 400 de negocio, sin
         // parsear el mensaje.
@@ -291,7 +291,7 @@ export class StorageService implements OnModuleInit {
   }
 
   /**
-   * `DeleteObject` individual — NUNCA batch (ver Diseño del RFC). Nunca
+   * `DeleteObject` individual — NUNCA batch. Nunca
    * lanza: un objeto huérfano se resuelve manualmente o vía lifecycle, pero
    * un borrado best-effort fallido no debe tumbar el flujo de dominio que ya
    * persistió en la base de datos.
@@ -309,7 +309,7 @@ export class StorageService implements OnModuleInit {
   }
 
   /**
-   * URL firmada con ventana estable (ver Diseño del RFC, "Firma"): dentro de
+   * URL firmada con ventana estable: dentro de
    * la misma ventana de `W = floor(TTL/2)` segundos siempre se devuelve la
    * MISMA url (memoizada), para no romper formularios abiertos, aprovechar
    * el caché HTTP y no llenar el service worker de URLs distintas para el

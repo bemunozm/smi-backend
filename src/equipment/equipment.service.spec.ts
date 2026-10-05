@@ -8,6 +8,7 @@ import { ControlUnit, EquipmentClass, EquipmentStatus } from '@prisma/client';
 
 import { ROLES } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { prismaError } from '../common/testing/fixtures';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
@@ -53,6 +54,7 @@ describe('EquipmentService', () => {
   const deleteBestEffort = jest.fn();
   const sign = jest.fn();
   const assertActive = jest.fn();
+  const queryRaw = jest.fn();
 
   beforeEach(async () => {
     [
@@ -72,6 +74,7 @@ describe('EquipmentService', () => {
       deleteBestEffort,
       sign,
       assertActive,
+      queryRaw,
     ].forEach((m) => m.mockReset());
     userFindMany.mockResolvedValue([]);
     // Sin turno abierto por defecto — los tests de `openShift` lo sobreescriben.
@@ -105,6 +108,14 @@ describe('EquipmentService', () => {
             equipmentDocument: {
               findMany: equipmentDocumentFindMany,
             },
+            // Con `X-Expected` la escritura va en una transacción que bloquea
+            // la fila: el mock ejecuta el callback con el mismo cliente.
+            $queryRaw: queryRaw,
+            $transaction: (fn: (tx: unknown) => unknown) =>
+              fn({
+                equipment: { findUnique, update },
+                $queryRaw: queryRaw,
+              }),
           },
         },
         {
@@ -518,7 +529,7 @@ describe('EquipmentService', () => {
       const result = await service.create(DTO_BASE, USER_ID);
 
       expect(create).toHaveBeenCalledWith({
-        data: DTO_BASE,
+        data: { ...DTO_BASE, createdById: USER_ID },
         include: EQUIPMENT_USAGE_INCLUDE,
       });
       expect(result).toMatchObject({ id: 'eq_1', ...DTO_BASE });
@@ -611,7 +622,7 @@ describe('EquipmentService', () => {
 
       expect(claimTmp).not.toHaveBeenCalled();
       expect(create).toHaveBeenCalledWith({
-        data: DTO_BASE,
+        data: { ...DTO_BASE, createdById: USER_ID },
         include: EQUIPMENT_USAGE_INCLUDE,
       });
     });
@@ -640,7 +651,11 @@ describe('EquipmentService', () => {
         'equipment-photo',
       );
       expect(create).toHaveBeenCalledWith({
-        data: { ...DTO_BASE, photoKey: 'equipment-photos/final.jpg' },
+        data: {
+          ...DTO_BASE,
+          photoKey: 'equipment-photos/final.jpg',
+          createdById: USER_ID,
+        },
         include: EQUIPMENT_USAGE_INCLUDE,
       });
       expect(result).toMatchObject({
@@ -1592,6 +1607,214 @@ describe('EquipmentService', () => {
       await service.findAll({});
 
       expect(sign).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('id del cliente (reintento offline)', () => {
+    const ID = '11111111-1111-4111-8111-111111111111';
+    const dto = { ...DTO_BASE, id: ID };
+    const row = {
+      id: ID,
+      ...DTO_BASE,
+      currentOperatorId: null,
+      currentSupervisorId: null,
+      photoKey: null,
+      horometros: [],
+    };
+
+    it('replay del mismo usuario: devuelve la ficha sin reclamar la foto ni crear', async () => {
+      findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(row);
+
+      const result = await service.create(
+        { ...dto, photoKey: 'tmp/user1234567890123456/raw.jpg' },
+        USER_ID,
+      );
+
+      expect(result).toMatchObject({ id: ID, internalCode: 'EX-001' });
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('id ocupado por otro usuario: 409 ID_CONFLICT', async () => {
+      findUnique.mockResolvedValueOnce({ createdById: 'otro' });
+
+      await expect(service.create(dto, USER_ID)).rejects.toMatchObject({
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('carrera sobre la PK: descarta su copia de la foto y devuelve la ficha ganadora', async () => {
+      claimTmp.mockResolvedValue('equipment-photos/perdedora.jpg');
+      findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce(row);
+      create.mockRejectedValue(prismaError('P2002', { target: ['id'] }));
+
+      const result = await service.create(
+        { ...dto, photoKey: 'tmp/user1234567890123456/raw.jpg' },
+        USER_ID,
+      );
+
+      expect(discard).toHaveBeenCalledWith('equipment-photos/perdedora.jpg');
+      expect(result).toMatchObject({ id: ID });
+    });
+
+    it('internalCode duplicado con otro id NO es carrera: el 409 de siempre', async () => {
+      findUnique.mockResolvedValue(null);
+      create.mockRejectedValue(
+        prismaError('P2002', { target: ['internal_code'] }),
+      );
+
+      const error = await service.create(dto, USER_ID).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).message).toBe(
+        'Ya existe un equipo con el código "EX-001"',
+      );
+    });
+
+    it('crea con el id del cliente', async () => {
+      findUnique.mockResolvedValue(null);
+      create.mockResolvedValue(row);
+
+      await service.create(dto, USER_ID);
+
+      const [{ data }] = create.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({ id: ID, createdById: USER_ID });
+    });
+  });
+
+  describe('X-Expected', () => {
+    const vigente = {
+      id: 'eq_1',
+      currentOperatorId: null,
+      currentSupervisorId: null,
+      photoKey: null,
+      horometros: [],
+    };
+
+    beforeEach(() => {
+      queryRaw.mockResolvedValue([{ id: 'eq_1' }]);
+    });
+
+    it('update: con la base vigente escribe bajo bloqueo', async () => {
+      findUnique
+        .mockResolvedValueOnce({ photoKey: null })
+        .mockResolvedValueOnce({ brand: 'Volvo', status: 'OPERATIONAL' });
+      update.mockResolvedValue(vigente);
+
+      await service.update('eq_1', { brand: 'CAT' }, USER_ID, {
+        brand: 'Volvo',
+      });
+
+      expect(queryRaw).toHaveBeenCalledTimes(1);
+      expect(update).toHaveBeenCalledTimes(1);
+    });
+
+    it('update: si alguien cambió la marca, 409 STALE_UPDATE sin escribir ni borrar la foto', async () => {
+      findUnique
+        .mockResolvedValueOnce({ photoKey: 'equipment-photos/vieja.jpg' })
+        .mockResolvedValueOnce({ brand: 'Komatsu' });
+
+      await expect(
+        service.update('eq_1', { brand: 'CAT' }, USER_ID, { brand: 'Volvo' }),
+      ).rejects.toMatchObject({
+        response: { code: ERROR_CODES.STALE_UPDATE },
+      });
+      expect(update).not.toHaveBeenCalled();
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('update: la foto no entra a la precondición (un expected.photoKey no provoca conflicto)', async () => {
+      findUnique
+        .mockResolvedValueOnce({ photoKey: null })
+        .mockResolvedValueOnce({ brand: 'Volvo' });
+      update.mockResolvedValue(vigente);
+
+      await expect(
+        service.update('eq_1', { brand: 'Volvo' }, USER_ID, {
+          photoKey: 'otra',
+        }),
+      ).resolves.toBeDefined();
+    });
+
+    it('update: el reintento de una edición ya aplicada (actual == deseado) pasa', async () => {
+      findUnique
+        .mockResolvedValueOnce({ photoKey: null })
+        .mockResolvedValueOnce({ brand: 'CAT' });
+      update.mockResolvedValue(vigente);
+
+      await expect(
+        service.update('eq_1', { brand: 'CAT' }, USER_ID, { brand: 'Volvo' }),
+      ).resolves.toBeDefined();
+    });
+
+    it('updateStatus: estado cambiado por otro -> 409 STALE_UPDATE', async () => {
+      findUnique
+        .mockResolvedValueOnce({ id: 'eq_1' })
+        .mockResolvedValueOnce({ status: 'OUT_OF_SERVICE' });
+
+      await expect(
+        service.updateStatus(
+          'eq_1',
+          { status: EquipmentStatus.IN_WORKSHOP },
+          { status: 'OPERATIONAL' },
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ERROR_CODES.STALE_UPDATE },
+      });
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('updateAssignment: compara operatorId/supervisorId con los nombres de la API', async () => {
+      findUnique.mockResolvedValueOnce({ id: 'eq_1' }).mockResolvedValueOnce({
+        currentOperatorId: 'op_otro',
+        currentSupervisorId: null,
+      });
+
+      await expect(
+        service.updateAssignment(
+          'eq_1',
+          { operatorId: null },
+          { operatorId: 'op_1' },
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ERROR_CODES.STALE_UPDATE },
+      });
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('updateAssignment: con la asignación vigente libera bajo bloqueo', async () => {
+      findUnique.mockResolvedValueOnce({ id: 'eq_1' }).mockResolvedValueOnce({
+        currentOperatorId: 'op_1',
+        currentSupervisorId: null,
+      });
+      update.mockResolvedValue(vigente);
+
+      await service.updateAssignment(
+        'eq_1',
+        { operatorId: null },
+        { operatorId: 'op_1' },
+      );
+
+      expect(update).toHaveBeenCalledTimes(1);
+    });
+
+    it('sin header no abre transacción ni bloquea (última escritura gana)', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1', photoKey: null });
+      update.mockResolvedValue(vigente);
+
+      await service.updateStatus('eq_1', {
+        status: EquipmentStatus.IN_WORKSHOP,
+      });
+
+      expect(queryRaw).not.toHaveBeenCalled();
     });
   });
 });

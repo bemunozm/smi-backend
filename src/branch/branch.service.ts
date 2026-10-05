@@ -5,10 +5,32 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
+import {
+  assertExpectedLocked,
+  definedFields,
+} from '../common/concurrency/assert-expected-locked';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
+import {
+  createOrReturn,
+  isPrimaryKeyViolation,
+} from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { QueryBranchDto } from './dto/query-branch.dto';
 import { UpdateBranchDto } from './dto/update-branch.dto';
+
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
+const CAMPO_LABEL: Record<string, string> = {
+  name: 'Nombre',
+  address: 'Dirección',
+  isActive: 'Activa',
+};
+
+const UPDATE_FIELDS = {
+  name: true,
+  address: true,
+  isActive: true,
+} satisfies Prisma.BranchSelect;
 
 @Injectable()
 export class BranchService {
@@ -22,29 +44,71 @@ export class BranchService {
       where.name = { contains: filtros.q, mode: 'insensitive' };
     }
 
-    return this.prisma.branch.findMany({ where, orderBy: { name: 'asc' } });
+    return this.prisma.branch.findMany({
+      where,
+      orderBy: { name: 'asc' },
+    });
   }
 
   async findOne(id: string) {
-    const branch = await this.prisma.branch.findUnique({ where: { id } });
+    const branch = await this.prisma.branch.findUnique({
+      where: { id },
+    });
     if (!branch) {
       throw new NotFoundException(`Sucursal "${id}" no encontrada`);
     }
     return branch;
   }
 
-  async create(dto: CreateBranchDto) {
-    try {
-      return await this.prisma.branch.create({ data: dto });
-    } catch (error: unknown) {
-      throw this.mapUniqueConstraintError(error, dto.name);
-    }
+  async create(dto: CreateBranchDto, userId: string) {
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe una sucursal con ese id de otro usuario',
+      findExisting: async (id) => {
+        const branch = await this.prisma.branch.findUnique({
+          where: { id },
+          omit: { createdById: false },
+        });
+        if (!branch) return null;
+        const { createdById, ...result } = branch;
+        return { ownerId: createdById, result };
+      },
+      create: async () => {
+        try {
+          return await this.prisma.branch.create({
+            data: { ...dto, createdById: userId },
+          });
+        } catch (error: unknown) {
+          // Un choque con la PK es la carrera de dos reintentos con el mismo
+          // id: lo resuelve `createOrReturn`, no es un nombre repetido.
+          if (isPrimaryKeyViolation(error)) throw error;
+          throw this.mapUniqueConstraintError(error, dto.name);
+        }
+      },
+    });
   }
 
-  async update(id: string, dto: UpdateBranchDto) {
+  async update(id: string, dto: UpdateBranchDto, expected?: ExpectedValues) {
     await this.assertExiste(id);
+    const write = (db: Prisma.TransactionClient) =>
+      db.branch.update({ where: { id }, data: dto });
     try {
-      return await this.prisma.branch.update({ where: { id }, data: dto });
+      if (!expected) return await write(this.prisma);
+      return await this.prisma.$transaction(async (tx) => {
+        await assertExpectedLocked({
+          tx,
+          table: 'branch',
+          id,
+          expected,
+          read: (db) =>
+            db.branch.findUnique({ where: { id }, select: UPDATE_FIELDS }),
+          desired: definedFields(dto),
+          labels: CAMPO_LABEL,
+          notFoundMessage: `Sucursal "${id}" no encontrada`,
+        });
+        return write(tx);
+      });
     } catch (error: unknown) {
       throw this.mapUniqueConstraintError(error, dto.name);
     }

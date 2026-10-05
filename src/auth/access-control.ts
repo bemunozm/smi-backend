@@ -40,13 +40,13 @@ const adminRole = ac.newRole({
 
 /**
  * SUPERVISOR / MANTENEDOR: placeholders SIN permisos del plugin admin
- * todavía (decisión del tech lead: "permisos livianos" en este MVP). Lo
+ * todavía (permisos livianos en este MVP). Lo
  * importante en este tier es que existan como roles AC válidos — así
  * `hasPermission` los resuelve correctamente en vez de caer en el bug de
  * roles inexistentes. Los permisos finos (qué puede hacer cada rol sobre
  * qué recurso) se afinan cuando lleguen los endpoints de dominio.
  *
- * OPERADOR ya NO es un rol de Better Auth: el operador es un catálogo
+ * OPERADOR no es un rol de Better Auth: el operador es un catálogo
  * propio (`Operator`, `src/operators/*`), sin
  * acceso a la plataforma — no necesita (ni puede tener) un rol AC.
  */

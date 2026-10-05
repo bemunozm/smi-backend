@@ -33,7 +33,7 @@ export class UpdateEquipmentDocumentDto {
   expiryDate?: string | null;
 
   /**
-   * Tri-state (ver Diseño del RFC R2-storage, "Contrato de la API"):
+   * Tri-state:
    * `undefined` deja el archivo intacto, `null` lo borra, un string es la
    * key `tmp/<userId>/<uuid>.<ext>` de un archivo nuevo — mismo criterio que
    * `CreateEquipmentDocumentDto.fileKey`.

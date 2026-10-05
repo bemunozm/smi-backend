@@ -4,14 +4,18 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import { ExpectedFields } from '../../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { QueryCategoriesDto } from './dto/query-categories.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -46,19 +50,26 @@ export class CategoriesController {
 
   @Post()
   @Roles([ROLES.ADMIN])
-  async create(@Body() dto: CreateCategoryDto) {
+  async create(
+    @Body() dto: CreateCategoryDto,
+    @Session() session: UserSession,
+  ) {
     return {
-      data: await this.service.create(dto),
+      data: await this.service.create(dto, session.user.id),
       message: 'Categoría creada',
     };
   }
 
   @Patch(':id')
   @Roles([ROLES.ADMIN])
-  async update(@Param('id') id: string, @Body() dto: UpdateCategoryDto) {
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateCategoryDto,
+    @ExpectedFields() expected?: ExpectedValues,
+  ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto),
+      data: await this.service.update(id, dto, expected),
       message: 'Categoría actualizada',
     };
   }

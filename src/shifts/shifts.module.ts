@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { ChangeLogModule } from '../change-log/change-log.module';
 import { OperatorsModule } from '../operators/operators.module';
 import { StorageModule } from '../storage/storage.module';
 import { ShiftCardsController } from './shift-cards.controller';
@@ -9,8 +10,8 @@ import { ShiftsController } from './shifts.controller';
 import { ShiftsService } from './shifts.service';
 
 /**
- * Supervisión en Terreno, Módulo A (RFC Supervisión en Terreno, Fases 2-3).
- * Módulo nuevo y propio — NO vive dentro de `TerrenoModule` (Alexander):
+ * Supervisión en Terreno, Módulo A.
+ * Módulo propio — NO vive dentro de `TerrenoModule`:
  * reutiliza `RegistroHorometro` como tabla, pero es un dominio/flujo aparte
  * (abrir/cerrar en dos pasos con idempotencia por id de cliente), igual que
  * Flota (`HorometroModule`) también escribe sobre esa misma tabla sin vivir
@@ -19,7 +20,7 @@ import { ShiftsService } from './shifts.service';
  * llave natural — pero son servicios separados: el reporte no toca tarjetas.
  */
 @Module({
-  imports: [StorageModule, OperatorsModule],
+  imports: [StorageModule, OperatorsModule, ChangeLogModule],
   controllers: [ShiftCardsController, ShiftsController, ShiftReportsController],
   providers: [ShiftsService, ShiftReportsService],
   // `ShiftReportsService` se exporta para que `NotificationsModule` marque

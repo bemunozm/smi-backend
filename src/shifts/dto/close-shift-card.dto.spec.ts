@@ -123,3 +123,60 @@ describe('CloseShiftCardDto', () => {
     });
   });
 });
+
+describe('CloseShiftCardDto — AdBlue', () => {
+  async function errorsFor(overrides: Record<string, unknown>) {
+    return validate(plainToInstance(CloseShiftCardDto, base(overrides)));
+  }
+
+  it('un cierre antiguo sin los campos sigue siendo válido', async () => {
+    expect(await errorsFor({})).toHaveLength(0);
+  });
+
+  it('acepta AdBlue con litros', async () => {
+    expect(await errorsFor({ adBlue: true, adBlueLiters: 12.5 })).toHaveLength(
+      0,
+    );
+  });
+
+  it('acepta el tope (1000 L)', async () => {
+    expect(await errorsFor({ adBlue: true, adBlueLiters: 1000 })).toHaveLength(
+      0,
+    );
+  });
+
+  it.each([
+    ['sin litros', { adBlue: true }],
+    ['litros null', { adBlue: true, adBlueLiters: null }],
+    ['litros 0', { adBlue: true, adBlueLiters: 0 }],
+    ['litros negativos', { adBlue: true, adBlueLiters: -3 }],
+    ['sobre el tope', { adBlue: true, adBlueLiters: 1000.5 }],
+    ['litros NaN', { adBlue: true, adBlueLiters: NaN }],
+    ['litros como texto', { adBlue: true, adBlueLiters: '10' }],
+  ])('rechaza AdBlue %s', async (_name, overrides) => {
+    expect(await errorsFor(overrides)).not.toHaveLength(0);
+  });
+
+  it('rechaza litros con adBlue false o ausente, con un mensaje claro', async () => {
+    for (const overrides of [
+      { adBlue: false, adBlueLiters: 5 },
+      { adBlueLiters: 5 },
+    ]) {
+      const errors = await errorsFor(overrides);
+      expect(errors).toHaveLength(1);
+      expect(Object.values(errors[0].constraints ?? {})[0]).toContain(
+        'Sin AdBlue',
+      );
+    }
+  });
+
+  it('acepta adBlue false con litros null', async () => {
+    expect(await errorsFor({ adBlue: false, adBlueLiters: null })).toHaveLength(
+      0,
+    );
+  });
+
+  it('rechaza adBlue que no es booleano', async () => {
+    expect(await errorsFor({ adBlue: 'si' })).not.toHaveLength(0);
+  });
+});

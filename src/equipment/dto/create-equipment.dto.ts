@@ -6,6 +6,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   Max,
   MaxLength,
@@ -25,6 +26,12 @@ const normalizeCode = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toUpperCase() : value;
 
 export class CreateEquipmentDto {
+  /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
+   * offline. Opcional para no romper a un cliente que no lo manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
   @Transform(normalizeCode)
   @IsString()
   @MinLength(1)
@@ -90,7 +97,7 @@ export class CreateEquipmentDto {
 
   /**
    * Key `tmp/<userId>/<uuid>.<ext>` de una foto recién subida por
-   * `POST /api/files` (ver Diseño del RFC R2-storage, "Contrato de la API").
+   * `POST /api/files`.
    * El DTO valida solo la FORMA (regex + largo) — `EquipmentService` valida
    * en capas que el segmento userId sea `session.user.id` y que la
    * extensión sea válida para "equipment-photo" (`StorageService.claimTmp`

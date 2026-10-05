@@ -48,9 +48,8 @@ const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 const DEFAULT_PORT = 3000;
 const DEFAULT_OCR_THREADS = 2;
 
-// `NODE_ENV` no se usaba en ningún otro lado del backend hasta ahora — acá
-// es la única señal para decidir si las vars de STORAGE_* son obligatorias
-// (producción, R2) o si se puede caer al MinIO local del docker-compose
+// `NODE_ENV` es la única señal para decidir si las vars de STORAGE_* son obligatorias
+// (producción, Cloudflare R2) o si se puede caer al MinIO local del docker-compose
 // (cualquier otro valor, incluido "test" que usa Jest por defecto).
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -67,8 +66,7 @@ const DEFAULT_DEV_STORAGE_REGION = 'us-east-1';
 const DEFAULT_STORAGE_SIGNED_URL_TTL_SECONDS = 3600;
 export const MIN_STORAGE_SIGNED_URL_TTL_SECONDS = 60;
 // NO es 604800 (el máximo real de SigV4/`getSignedUrl`): `StorageService.sign`
-// firma con `expiresIn = TTL + W` donde `W = floor(TTL/2)` (ver Diseño del
-// RFC R2-storage, "Firma") — con TTL=604800 eso daría expiresIn=907200,
+// firma con `expiresIn = TTL + W` donde `W = floor(TTL/2)` — con TTL=604800 eso daría expiresIn=907200,
 // que el SDK rechaza. 403200 es el máximo TTL tal que TTL + floor(TTL/2)
 // == 604800 exacto (403200 + 201600 = 604800) — ver env.spec.ts.
 export const MAX_STORAGE_SIGNED_URL_TTL_SECONDS = 403200;
@@ -205,9 +203,9 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Lista de correos separada por comas — usada por `SHIFT_REPORT_EXTRA_RECIPIENTS`
- * (RFC Supervisión en Terreno): destinatarios adicionales del PDF de
- * reporte de salida de turno que NO tienen cuenta en el sistema (ej. Sergio
- * Torres, del cliente). Vacía por defecto (nadie adicional) — cada entrada se
+ * : destinatarios adicionales del PDF de
+ * reporte de salida de turno que NO tienen cuenta en el sistema (ej. un
+ * contacto del cliente). Vacía por defecto (nadie adicional) — cada entrada se
  * valida como correo al arrancar, para fallar rápido ante un typo en vez de
  * descubrirlo recién cuando un envío silencioso "funciona" pero no llega.
  */
@@ -297,7 +295,7 @@ export const env: AppEnv = {
   storageSignedUrlTtlSeconds: parseStorageSignedUrlTtlSeconds(
     process.env.STORAGE_SIGNED_URL_TTL_SECONDS,
   ),
-  // Reporte de salida de turno (RFC Supervisión en Terreno): correos
+  // Reporte de salida de turno: correos
   // extra (sin cuenta) que reciben el PDF por email — ver
   // `NotificationsListener.onShiftExitReportSent`.
   shiftReportExtraRecipients: parseEmailList(

@@ -11,11 +11,11 @@ function assertNonEmptyId(id: string): void {
 }
 
 /**
- * Ficha consolidada de un equipo (requerimientos §5.5, Núcleo). Cruza los
+ * Ficha consolidada de un equipo (Núcleo). Cruza los
  * dominios de Flota, Terreno, Mantenimiento e Inventario en una sola línea de
  * tiempo. Solo lectura, por eso comparte roles con quienes operan sobre un
  * equipo en el día a día — los 3 roles de plataforma (ADMIN, SUPERVISOR,
- * MANTENEDOR). El operador no entra en este chequeo porque ya no es un rol
+ * MANTENEDOR). El operador no entra en este chequeo porque no es un rol
  * de usuario: es un catálogo propio (`Operator`, `src/operators/*`) sin
  * acceso a la plataforma.
  */

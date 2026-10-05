@@ -2,14 +2,18 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
-import { Roles } from '@thallesp/nestjs-better-auth';
+import { Roles, Session } from '@thallesp/nestjs-better-auth';
+import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
+import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
 import { CreateOrdenDto } from './dto/create-orden.dto';
 import { FindOrdenesQueryDto } from './dto/find-ordenes-query.dto';
@@ -57,8 +61,11 @@ export class OrdenesController {
 
   @Post()
   @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
-  async create(@Body() dto: CreateOrdenDto): Promise<OrdenDetailResponse> {
-    const data = await this.ordenesService.create(dto);
+  async create(
+    @Body() dto: CreateOrdenDto,
+    @Session() session: UserSession,
+  ): Promise<OrdenDetailResponse> {
+    const data = await this.ordenesService.create(dto, session.user.id);
     return { data, message: 'Orden de trabajo creada' };
   }
 
@@ -67,9 +74,10 @@ export class OrdenesController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateOrdenDto,
+    @ExpectedFields() expected?: ExpectedValues,
   ): Promise<OrdenDetailResponse> {
     assertNonEmptyId(id);
-    const data = await this.ordenesService.update(id, dto);
+    const data = await this.ordenesService.update(id, dto, expected);
     return { data, message: 'Orden de trabajo actualizada' };
   }
 

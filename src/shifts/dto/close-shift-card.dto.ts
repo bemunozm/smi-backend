@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsNumber,
   IsOptional,
@@ -13,6 +14,7 @@ import {
 
 import { normalizeObservaciones } from '../../common/normalize-observaciones';
 import { TMP_KEY_REGEX } from '../../storage/storage-keys';
+import { IsAdBlueLitersConsistent } from '../adblue';
 
 export class CloseShiftCardDto {
   /** UUID v4 generado por el CLIENTE en ESTE intento de cierre — la clave de
@@ -35,6 +37,19 @@ export class CloseShiftCardDto {
   @Min(0)
   @Max(10_000)
   fuelLiters!: number;
+
+  /** AdBlue cargado en el turno (el cliente exige registrarlo al cerrar). Opcional: un cierre
+   * encolado antes de que existiera el campo sigue siendo válido y se lee como
+   * «sin AdBlue». */
+  @IsOptional()
+  @IsBoolean()
+  adBlue?: boolean;
+
+  /** Litros de AdBlue: obligatorios con `adBlue: true`, ausentes (o `null`)
+   * sin él. Sin `@IsOptional` a propósito: tiene que correr también cuando
+   * falta, para exigirlo con `adBlue: true`. */
+  @IsAdBlueLitersConsistent()
+  adBlueLiters?: number | null;
 
   /** Key `tmp/<userId>/<uuid>.<ext>` de la foto del surtidor/horómetro,
    * subida antes por `POST /api/files` — obligatoria AUN con `fuelLiters ===

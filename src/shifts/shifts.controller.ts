@@ -8,7 +8,7 @@ import { ShiftsService } from './shifts.service';
 
 /**
  * `GET /api/shifts?date&type` — el turno con sus tarjetas y operadores.
- * Contrato compartido con el Módulo B de Alexander ("lista viva"), ver
+ * Contrato compartido con el Módulo B ("lista viva"), ver
  * `ShiftsService.findShifts`.
  */
 @Controller('shifts')

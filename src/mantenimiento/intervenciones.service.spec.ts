@@ -84,7 +84,7 @@ describe('IntervencionesService', () => {
     ordenTrabajoFindUnique.mockResolvedValue(null);
 
     await expect(
-      service.create('missing', { tipo: 'CORRECTIVA', detalle: 'x' }),
+      service.create('missing', { tipo: 'CORRECTIVA', detalle: 'x' }, 'user_1'),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(transaction).not.toHaveBeenCalled();
   });
@@ -93,12 +93,16 @@ describe('IntervencionesService', () => {
     ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1' });
     txIntervencionCreate.mockResolvedValue(MOCK_INTERVENCION);
 
-    const result = await service.create('orden_1', {
-      tipo: 'CORRECTIVA',
-      detalle: 'Aislado el circuito',
-      horasHombre: 1.5,
-      insumos: [{ insumoId: 'ORG-008', cantidad: 2 }],
-    });
+    const result = await service.create(
+      'orden_1',
+      {
+        tipo: 'CORRECTIVA',
+        detalle: 'Aislado el circuito',
+        horasHombre: 1.5,
+        insumos: [{ insumoId: 'ORG-008', cantidad: 2 }],
+      },
+      'user_1',
+    );
 
     expect(transaction).toHaveBeenCalledTimes(1);
 

@@ -2,7 +2,6 @@ import type { Content, Table } from 'pdfmake/interfaces';
 
 import {
   buildShiftExitReportDocDefinition,
-  formatSantiagoDateTime,
   formatShiftDateEs,
   formatShiftTypeEs,
   type ShiftReportCardInput,
@@ -16,6 +15,8 @@ const CARD: ShiftReportCardInput = {
   valorFinal: 108.5,
   horasMaquina: 8.5,
   fuelLiters: 40,
+  adBlue: true,
+  adBlueLiters: 12.5,
   observaciones: null,
 };
 
@@ -36,15 +37,6 @@ describe('formatShiftTypeEs', () => {
   it('DIURNO -> Diurno, NOCTURNO -> Nocturno', () => {
     expect(formatShiftTypeEs('DIURNO')).toBe('Diurno');
     expect(formatShiftTypeEs('NOCTURNO')).toBe('Nocturno');
-  });
-});
-
-describe('formatSantiagoDateTime', () => {
-  it('formatea en es-CL/America/Santiago', () => {
-    // 2026-09-28T15:00:00Z -> 12:00 en Santiago (UTC-3 en esa fecha).
-    const result = formatSantiagoDateTime(new Date('2026-09-28T15:00:00.000Z'));
-    expect(result).toContain('28-09-2026');
-    expect(result).toContain('12:00');
   });
 });
 
@@ -102,6 +94,8 @@ describe('buildShiftExitReportDocDefinition', () => {
       valorFinal: null,
       horasMaquina: null,
       fuelLiters: null,
+      adBlue: false,
+      adBlueLiters: null,
     };
     const doc = buildShiftExitReportDocDefinition({
       shiftDate: '2026-09-28',
@@ -119,9 +113,45 @@ describe('buildShiftExitReportDocDefinition', () => {
     );
     expect(tableContent).toBeDefined();
     const dataRow = tableContent!.table.body[1];
-    // [equipo, operador, inicial, final, horas, litros, observaciones]
+    // [equipo, operador, inicial, final, horas, litros, adblue, observaciones]
     expect(dataRow[3]).toMatchObject({ text: 'En curso' });
     expect(dataRow[4]).toMatchObject({ text: '—' });
+    expect(dataRow[6]).toMatchObject({ text: '—' });
+  });
+
+  describe('AdBlue', () => {
+    function adBlueCell(card: ShiftReportCardInput) {
+      const doc = buildShiftExitReportDocDefinition({
+        shiftDate: '2026-09-28',
+        shiftType: 'DIURNO',
+        supervisorName: 'Ana Soto',
+        generatedAt: new Date(),
+        requestedAt: new Date(),
+        cards: [card],
+      });
+      const table = (doc.content as Content[]).find(
+        (c): c is Content & { table: Table } =>
+          typeof c === 'object' && c !== null && 'table' in c,
+      )!.table;
+      return { header: table.body[0][6], cell: table.body[1][6], table };
+    }
+
+    it('la tabla tiene la columna AdBlue (L) y una fila por tarjeta del mismo ancho', () => {
+      const { header, table } = adBlueCell(CARD);
+      expect(header).toMatchObject({ text: 'AdBlue (L)' });
+      expect(table.widths).toHaveLength(table.body[0].length);
+      expect(table.body[1]).toHaveLength(table.body[0].length);
+    });
+
+    it('muestra los litros cuando hubo AdBlue', () => {
+      expect(adBlueCell(CARD).cell).toMatchObject({ text: '12,5' });
+    });
+
+    it('muestra "—" cuando no hubo AdBlue', () => {
+      expect(
+        adBlueCell({ ...CARD, adBlue: false, adBlueLiters: null }).cell,
+      ).toMatchObject({ text: '—' });
+    });
   });
 
   it('la tabla muestra las horas máquina calculadas para una tarjeta cerrada', () => {

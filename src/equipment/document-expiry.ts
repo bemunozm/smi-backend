@@ -1,7 +1,7 @@
 /**
  * Vigencia de documentos de un equipo (`EquipmentDocument`), derivada on-read
  * a partir de `expiryDate` — nunca se persiste. Extraído de
- * `EquipmentService` (donde nació para R1/R2 como columnas planas) para que
+ * `EquipmentService` para que
  * `EquipmentDocumentService` lo reutilice sin duplicar la lógica: ambos
  * necesitan el mismo cálculo de `status`/`daysToExpiry`.
  */

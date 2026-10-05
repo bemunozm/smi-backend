@@ -1,8 +1,20 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import { CurrentEditor } from '../../change-log/current-editor.decorator';
+import type { Editor } from '../../change-log/change-log.service';
+import { ExpectedFields } from '../../common/concurrency/expected-fields.decorator';
+import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import { HallazgosService } from './hallazgos.service';
 import { CreateHallazgoDto } from './dto/create-hallazgo.dto';
 import { UpdateHallazgoDto } from './dto/update-hallazgo.dto';
@@ -36,7 +48,7 @@ export class HallazgosController {
   }
 
   /**
-   * Corrección de un hallazgo ya registrado (Acta N.° 004, R13). Quién edita
+   * Corrección de un hallazgo ya registrado. Quién edita
    * sale de la sesión, nunca del body: es la firma del cambio en el registro.
    */
   @Patch(':id')
@@ -44,14 +56,11 @@ export class HallazgosController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateHallazgoDto,
-    @Session() session: UserSession,
+    @CurrentEditor() editor: Editor,
+    @ExpectedFields() expected?: ExpectedValues,
   ) {
-    const editor = {
-      id: session.user.id,
-      name: session.user.name?.trim() || session.user.email,
-    };
     return {
-      data: await this.service.update(id, dto, editor),
+      data: await this.service.update(id, dto, editor, expected),
       message: 'Hallazgo actualizado. Se avisó al administrador.',
     };
   }

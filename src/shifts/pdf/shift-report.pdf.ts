@@ -1,12 +1,12 @@
 /**
- * `docDefinition` del PDF de reporte de salida de turno (RFC Supervisión en
- * Terreno) — función PURA a propósito (sin tocar pdfmake ni el
+ * `docDefinition` del PDF de reporte de salida de turno — función PURA a propósito (sin tocar pdfmake ni el
  * storage): así es testeable sin renderizar un PDF real. `pdf-renderer.ts`
  * es quien la alimenta a pdfmake y devuelve el `Buffer` final.
  */
 import type { Content, Table, TDocumentDefinitions } from 'pdfmake/interfaces';
 
-import { BUSINESS_TIME_ZONE } from '../date-only';
+import { formatNumber } from '../../common/format/number';
+import { formatBusinessDateTime } from '../../common/dates/business-time';
 
 /** Encabezado de texto del PDF — la razón social del cliente hasta que llegue
  * su logo. Si un segundo cliente aparece, esto se mueve a config (por ahora
@@ -23,6 +23,9 @@ export interface ShiftReportCardInput {
   /** `valorFinal − valorInicial`, `null` si la tarjeta sigue abierta. */
   readonly horasMaquina: number | null;
   readonly fuelLiters: number | null;
+  readonly adBlue: boolean;
+  /** Solo tiene valor cuando `adBlue` es `true`. */
+  readonly adBlueLiters: number | null;
   readonly observaciones: string | null;
 }
 
@@ -57,29 +60,6 @@ export function formatShiftTypeEs(shiftType: string): string {
   return shiftType === 'DIURNO' ? 'Diurno' : 'Nocturno';
 }
 
-/** `es-CL` / `America/Santiago`, `DD-MM-YYYY, HH:mm` (formato nativo de
- * `Intl.DateTimeFormat` para este locale+zona). Usado SOLO para instantes
- * reales (`generatedAt`/`requestedAt`) — nunca para `shiftDate`, que es
- * date-only (ver `formatShiftDateEs`). */
-export function formatSantiagoDateTime(date: Date): string {
-  return new Intl.DateTimeFormat('es-CL', {
-    timeZone: BUSINESS_TIME_ZONE,
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(date);
-}
-
-function formatNumber(value: number): string {
-  return value.toLocaleString('es-CL', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  });
-}
-
 function buildCardRow(card: ShiftReportCardInput): Table['body'][number] {
   return [
     { text: `${card.equipoInternalCode}\n${card.equipoType}`, fontSize: 9 },
@@ -101,6 +81,14 @@ function buildCardRow(card: ShiftReportCardInput): Table['body'][number] {
       fontSize: 9,
       alignment: 'right',
     },
+    {
+      text:
+        card.adBlue && card.adBlueLiters !== null
+          ? formatNumber(card.adBlueLiters)
+          : '—',
+      fontSize: 9,
+      alignment: 'right',
+    },
     { text: card.observaciones ?? '—', fontSize: 9 },
   ];
 }
@@ -113,13 +101,14 @@ function buildCardsTable(cards: readonly ShiftReportCardInput[]): Content {
     { text: 'Horómetro final', style: 'tableHeader', alignment: 'right' },
     { text: 'Horas máquina', style: 'tableHeader', alignment: 'right' },
     { text: 'Litros', style: 'tableHeader', alignment: 'right' },
+    { text: 'AdBlue (L)', style: 'tableHeader', alignment: 'right' },
     { text: 'Observaciones', style: 'tableHeader' },
   ];
 
   return {
     table: {
       headerRows: 1,
-      widths: ['16%', '14%', '12%', '12%', '12%', '10%', '24%'],
+      widths: ['15%', '13%', '11%', '11%', '11%', '9%', '10%', '20%'],
       body: [header, ...cards.map(buildCardRow)],
     },
     layout: 'lightHorizontalLines',
@@ -174,11 +163,11 @@ export function buildShiftExitReportDocDefinition(
         columns: [
           [
             { text: 'Generado el', style: 'label' },
-            { text: formatSantiagoDateTime(input.generatedAt), style: 'value' },
+            { text: formatBusinessDateTime(input.generatedAt), style: 'value' },
           ],
           [
             { text: 'Solicitado el', style: 'label' },
-            { text: formatSantiagoDateTime(input.requestedAt), style: 'value' },
+            { text: formatBusinessDateTime(input.requestedAt), style: 'value' },
           ],
         ],
         margin: [0, 0, 0, 16],

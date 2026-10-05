@@ -4,6 +4,7 @@ import {
   IsEnum,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
 } from 'class-validator';
@@ -11,6 +12,12 @@ import {
 import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
 
 export class CreateEquipmentDocumentDto {
+  /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
+   * offline. Opcional para no romper a un cliente que no lo manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
   @IsEnum(EquipmentDocumentType)
   type!: EquipmentDocumentType;
 
@@ -26,7 +33,7 @@ export class CreateEquipmentDocumentDto {
 
   /**
    * Key `tmp/<userId>/<uuid>.<ext>` de un archivo recién subido por
-   * `POST /api/files` (ver Diseño del RFC R2-storage, "Contrato de la API").
+   * `POST /api/files`.
    * El DTO valida solo la FORMA (regex + largo) — `EquipmentDocumentService`
    * valida en capas que el segmento userId sea `session.user.id` y que la
    * extensión sea válida para "equipment-document" (imagen o PDF) vía

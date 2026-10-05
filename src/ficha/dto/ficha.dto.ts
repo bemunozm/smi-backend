@@ -28,7 +28,7 @@ export interface EventoFicha {
 /**
  * Subconjunto de `Equipment` que se muestra en el encabezado de la ficha.
  * Campos en inglés porque siguen 1:1 los nombres reales del modelo `Equipment`
- * (Flota, RFC T01) — el resto de la ficha (Terreno/Mantenimiento) sigue en
+ * (Flota) — el resto de la ficha (Terreno/Mantenimiento) sigue en
  * español, dominio de sus dueños.
  */
 export interface EquipoFichaResumen {

@@ -63,7 +63,7 @@ describe('NotificationsListener', () => {
     listener = module.get<NotificationsListener>(NotificationsListener);
   });
 
-  /** Acta N.° 004, R11: la alerta va a mantenedores y administrador. */
+  /** La alerta va a mantenedores y administrador. */
   it('hallazgo.created notifica a MANTENEDOR + ADMIN, no a SUPERVISOR', async () => {
     await listener.onHallazgoCreated({
       hallazgoId: 'h1',
@@ -302,11 +302,12 @@ describe('NotificationsListener', () => {
     });
   });
 
-  /** Acta N.° 004, R13: cada edición de un registro enviado se avisa al admin. */
+  /** Cada edición de un registro enviado se avisa al admin. */
   it('record.edited avisa al ADMIN con cada dato y su antes y después', async () => {
     await listener.onRecordEdited({
       entity: 'trabajo_extra',
       entityId: 't1',
+      entityArticle: 'el',
       entityLabel: 'trabajo extra de CA-011 del 01-10-2026',
       editedBy: 'Limbert Villacorta',
       changes: [
@@ -324,6 +325,25 @@ describe('NotificationsListener', () => {
         cuerpo:
           'Horómetro final: 1.212 h → 1.214,5 h\nOperador: Juan Rojas → Pedro Soto',
         data: { entity: 'trabajo_extra', entityId: 't1' },
+      }),
+    );
+  });
+
+  it('record.edited concuerda el artículo con el registro («la tarjeta»)', async () => {
+    await listener.onRecordEdited({
+      entity: 'shift_card',
+      entityId: 'c1',
+      entityArticle: 'la',
+      entityLabel: 'tarjeta de turno de BD-005 del 04-10-2026',
+      editedBy: 'Supervisor SMI',
+      changes: [{ label: 'Litros', before: '10', after: '12' }],
+    });
+
+    expect(createForRoles).toHaveBeenCalledWith(
+      [ROLES.ADMIN],
+      expect.objectContaining({
+        titulo:
+          'Supervisor SMI modificó la tarjeta de turno de BD-005 del 04-10-2026',
       }),
     );
   });
