@@ -6,12 +6,19 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   ValidateNested,
 } from 'class-validator';
 
 import { CreateTareaDto } from './create-tarea.dto';
 
 export class CreateOrdenDto {
+  /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
+   * offline. Opcional para no romper a un cliente que no lo manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
+
   @IsString()
   @IsNotEmpty()
   equipoId!: string;

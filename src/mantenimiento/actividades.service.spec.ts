@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ActividadesService } from './actividades.service';
 
@@ -24,8 +25,10 @@ describe('ActividadesService', () => {
   const create = jest.fn();
   const update = jest.fn();
   const userFindMany = jest.fn();
+  const queryRaw = jest.fn();
 
   beforeEach(async () => {
+    queryRaw.mockReset();
     findMany.mockReset();
     findUnique.mockReset();
     create.mockReset();
@@ -40,6 +43,12 @@ describe('ActividadesService', () => {
           useValue: {
             actividad: { findMany, findUnique, create, update },
             user: { findMany: userFindMany },
+            $queryRaw: queryRaw,
+            $transaction: (fn: (tx: unknown) => unknown) =>
+              fn({
+                actividad: { findUnique, update },
+                $queryRaw: queryRaw,
+              }),
           },
         },
       ],
@@ -109,5 +118,95 @@ describe('ActividadesService', () => {
       },
     });
     expect(result.estado).toBe('COMPLETADA');
+  });
+
+  describe('create con id del cliente (reintento offline)', () => {
+    const ID = '11111111-1111-4111-8111-111111111111';
+    const dto = {
+      id: ID,
+      descripcion: 'Verificar torque',
+      origen: 'EQUIPO' as const,
+    };
+
+    it('replay del mismo usuario: devuelve la actividad sin crear otra', async () => {
+      findUnique.mockResolvedValue({
+        ...MOCK_ACTIVIDAD,
+        id: ID,
+        createdById: 'u1',
+      });
+      userFindMany.mockResolvedValue([]);
+
+      const result = await service.create(dto, 'u1');
+
+      expect(result.id).toBe(ID);
+      expect(result).not.toHaveProperty('createdById');
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('id ocupado por otro usuario: 409 ID_CONFLICT', async () => {
+      findUnique.mockResolvedValue({
+        ...MOCK_ACTIVIDAD,
+        id: ID,
+        createdById: 'otro',
+      });
+
+      await expect(service.create(dto, 'u1')).rejects.toMatchObject({
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('crea con el id del cliente y el dueño', async () => {
+      findUnique.mockResolvedValue(null);
+      create.mockResolvedValue({ ...MOCK_ACTIVIDAD, id: ID });
+      userFindMany.mockResolvedValue([]);
+
+      await service.create(dto, 'u1');
+
+      const [{ data }] = create.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({ id: ID, createdById: 'u1' });
+    });
+  });
+
+  describe('update con X-Expected', () => {
+    beforeEach(() => {
+      queryRaw.mockResolvedValue([{ id: 'actividad_1' }]);
+      userFindMany.mockResolvedValue([]);
+    });
+
+    it('si otro cambió el estado: 409 STALE_UPDATE y no escribe', async () => {
+      findUnique
+        .mockResolvedValueOnce(MOCK_ACTIVIDAD)
+        .mockResolvedValueOnce({ estado: 'CANCELADA' });
+
+      await expect(
+        service.update(
+          'actividad_1',
+          { estado: 'COMPLETADA' },
+          { estado: 'PENDIENTE' },
+        ),
+      ).rejects.toMatchObject({
+        response: { code: ERROR_CODES.STALE_UPDATE },
+      });
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('con el estado vigente escribe bajo bloqueo', async () => {
+      findUnique
+        .mockResolvedValueOnce(MOCK_ACTIVIDAD)
+        .mockResolvedValueOnce({ estado: 'PENDIENTE' });
+      update.mockResolvedValue({ ...MOCK_ACTIVIDAD, estado: 'COMPLETADA' });
+
+      await service.update(
+        'actividad_1',
+        { estado: 'COMPLETADA' },
+        { estado: 'PENDIENTE' },
+      );
+
+      expect(queryRaw).toHaveBeenCalledTimes(1);
+      expect(update).toHaveBeenCalledTimes(1);
+    });
   });
 });

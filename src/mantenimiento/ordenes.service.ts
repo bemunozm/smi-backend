@@ -3,6 +3,12 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EstadoOT } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 
+import {
+  assertExpectedLocked,
+  definedFields,
+} from '../common/concurrency/assert-expected-locked';
+import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import { createOrReturn } from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type {
@@ -48,6 +54,14 @@ const TAREA_SELECT = {
   posicion: true,
 } satisfies Prisma.TareaOTSelect;
 
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
+const CAMPO_LABEL: Record<string, string> = {
+  estado: 'Estado',
+  asignadoAId: 'Asignado a',
+  prioridad: 'Prioridad',
+  titulo: 'Título',
+};
+
 @Injectable()
 export class OrdenesService {
   private readonly logger = new Logger(OrdenesService.name);
@@ -80,9 +94,32 @@ export class OrdenesService {
     return this.toResponseDto(orden, asignados);
   }
 
-  async create(dto: CreateOrdenDto): Promise<OrdenResponseDto> {
+  async create(dto: CreateOrdenDto, userId: string): Promise<OrdenResponseDto> {
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage:
+        'Ya existe una orden de trabajo con ese id de otro usuario',
+      findExisting: async (id) => {
+        const owner = await this.prisma.ordenTrabajo.findUnique({
+          where: { id },
+          select: { createdById: true },
+        });
+        if (!owner) return null;
+        return { ownerId: owner.createdById, result: () => this.findOne(id) };
+      },
+      create: () => this.createFresh(dto, userId),
+    });
+  }
+
+  private async createFresh(
+    dto: CreateOrdenDto,
+    userId: string,
+  ): Promise<OrdenResponseDto> {
     const orden = await this.prisma.ordenTrabajo.create({
       data: {
+        ...(dto.id ? { id: dto.id } : {}),
+        createdById: userId,
         equipoId: dto.equipoId,
         titulo: dto.titulo,
         prioridad: dto.prioridad,
@@ -110,23 +147,63 @@ export class OrdenesService {
     return this.toResponseDto(orden, asignados);
   }
 
-  async update(id: string, dto: UpdateOrdenDto): Promise<OrdenResponseDto> {
+  async update(
+    id: string,
+    dto: UpdateOrdenDto,
+    expected?: ExpectedFields,
+  ): Promise<OrdenResponseDto> {
     const ordenAnterior = await this.findOrdenOrThrow(id);
 
-    const orden = await this.prisma.ordenTrabajo.update({
-      where: { id },
-      data: {
-        estado: dto.estado,
-        asignadoAId: dto.asignadoAId,
-        prioridad: dto.prioridad,
-        titulo: dto.titulo,
-      },
-      select: ORDEN_SELECT,
-    });
+    const write = (db: Prisma.TransactionClient) =>
+      db.ordenTrabajo.update({
+        where: { id },
+        data: {
+          estado: dto.estado,
+          asignadoAId: dto.asignadoAId,
+          prioridad: dto.prioridad,
+          titulo: dto.titulo,
+        },
+        select: ORDEN_SELECT,
+      });
+
+    let orden: SelectedOrden;
+    let estadoAnterior = ordenAnterior.estado;
+    if (!expected) {
+      orden = await write(this.prisma);
+    } else {
+      // El estado previo se toma bajo el bloqueo: es el que decide si hubo
+      // transición (y por lo tanto aviso), no el de la lectura de arriba.
+      ({ orden, estadoAnterior } = await this.prisma.$transaction(
+        async (tx) => {
+          const vigente = await assertExpectedLocked({
+            tx,
+            table: 'ordenTrabajo',
+            id,
+            expected,
+            read: (db) =>
+              db.ordenTrabajo.findUnique({
+                where: { id },
+                select: {
+                  estado: true,
+                  asignadoAId: true,
+                  prioridad: true,
+                  titulo: true,
+                },
+              }),
+            desired: definedFields(dto),
+            labels: CAMPO_LABEL,
+            notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
+          });
+          return { orden: await write(tx), estadoAnterior: vigente.estado };
+        },
+      ));
+    }
 
     this.logger.log(`Orden de trabajo actualizada: ${id}`);
 
-    this.emitTransicionEstado(ordenAnterior.estado, orden);
+    // Después del commit: un aviso de una escritura que se revierte avisaría
+    // de un cambio que nunca existió.
+    this.emitTransicionEstado(estadoAnterior, orden);
 
     const asignados = await resolveAsignadosMap(this.prisma, [
       orden.asignadoAId,

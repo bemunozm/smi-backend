@@ -1,6 +1,12 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
+import {
+  assertExpectedLocked,
+  definedFields,
+} from '../common/concurrency/assert-expected-locked';
+import type { ExpectedFields } from '../common/concurrency/expected-fields';
+import { createOrReturn } from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { resolveAsignadosMap } from './common/asignado.util';
 import type { ActividadResponseDto } from './dto/actividad-response.dto';
@@ -25,6 +31,9 @@ type SelectedActividad = Prisma.ActividadGetPayload<{
   select: typeof ACTIVIDAD_SELECT;
 }>;
 
+/** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
+const CAMPO_LABEL: Record<string, string> = { estado: 'Estado' };
+
 @Injectable()
 export class ActividadesService {
   private readonly logger = new Logger(ActividadesService.name);
@@ -47,9 +56,43 @@ export class ActividadesService {
     );
   }
 
-  async create(dto: CreateActividadDto): Promise<ActividadResponseDto> {
+  async create(
+    dto: CreateActividadDto,
+    userId: string,
+  ): Promise<ActividadResponseDto> {
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe una actividad con ese id de otro usuario',
+      findExisting: async (id) => {
+        const existing = await this.prisma.actividad.findUnique({
+          where: { id },
+          select: { ...ACTIVIDAD_SELECT, createdById: true },
+        });
+        if (!existing) return null;
+        const { createdById, ...actividad } = existing;
+        return {
+          ownerId: createdById,
+          result: async () => {
+            const asignados = await resolveAsignadosMap(this.prisma, [
+              actividad.asignadoAId,
+            ]);
+            return this.toResponseDto(actividad, asignados);
+          },
+        };
+      },
+      create: () => this.createFresh(dto, userId),
+    });
+  }
+
+  private async createFresh(
+    dto: CreateActividadDto,
+    userId: string,
+  ): Promise<ActividadResponseDto> {
     const actividad = await this.prisma.actividad.create({
       data: {
+        ...(dto.id ? { id: dto.id } : {}),
+        createdById: userId,
         descripcion: dto.descripcion,
         origen: dto.origen,
         referencia: dto.referencia,
@@ -71,14 +114,35 @@ export class ActividadesService {
   async update(
     id: string,
     dto: UpdateActividadDto,
+    expected?: ExpectedFields,
   ): Promise<ActividadResponseDto> {
     await this.findActividadOrThrow(id);
 
-    const actividad = await this.prisma.actividad.update({
-      where: { id },
-      data: { estado: dto.estado },
-      select: ACTIVIDAD_SELECT,
-    });
+    const write = (db: Prisma.TransactionClient) =>
+      db.actividad.update({
+        where: { id },
+        data: { estado: dto.estado },
+        select: ACTIVIDAD_SELECT,
+      });
+    const actividad = expected
+      ? await this.prisma.$transaction(async (tx) => {
+          await assertExpectedLocked({
+            tx,
+            table: 'actividad',
+            id,
+            expected,
+            read: (db) =>
+              db.actividad.findUnique({
+                where: { id },
+                select: { estado: true },
+              }),
+            desired: definedFields(dto),
+            labels: CAMPO_LABEL,
+            notFoundMessage: `Actividad con id "${id}" no encontrada`,
+          });
+          return write(tx);
+        })
+      : await write(this.prisma);
 
     this.logger.log(`Actividad actualizada: ${id} -> estado=${dto.estado}`);
 
