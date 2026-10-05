@@ -23,9 +23,12 @@ export class TrabajosExtraController {
 
   @Post()
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async create(@Body() dto: CreateTrabajoExtraDto) {
+  async create(
+    @Body() dto: CreateTrabajoExtraDto,
+    @Session() session: UserSession,
+  ) {
     return {
-      data: await this.service.create(dto),
+      data: await this.service.create(dto, session.user.id),
       message: 'Trabajo registrado',
     };
   }

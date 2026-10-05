@@ -816,9 +816,17 @@ model TrabajoExtraordinario {
   otraActividad    String?   @map("otra_actividad")
   descripcion      String
   observaciones    String?
+  /// Hora de captura del dispositivo cuando el cliente la manda (registro
+  /// offline); si no, la del servidor. `createdAt` es siempre la del servidor.
   fecha            DateTime  @default(now())
+  /// Dueño de la fila (soft ref a `user.id`, sin relación): clave de
+  /// idempotencia junto con `id` para el reenvío offline. Null en las filas
+  /// legacy, que ningún usuario puede reclamar.
+  createdById      String?   @map("created_by_id")
+  createdAt        DateTime  @default(now()) @map("created_at")
 
   @@index([operatorId])
+  @@index([createdById])
 }
 
 model Hallazgo {
@@ -834,7 +842,16 @@ model Hallazgo {
   /// ya cargados conservan su `fotoUrl` y se siguen viendo; los nuevos suben
   /// por `POST /api/files` y guardan la key.
   fotoKey     String?
+  /// Hora de captura del dispositivo cuando el cliente la manda (registro
+  /// offline); si no, la del servidor. `createdAt` es siempre la del servidor.
   fecha       DateTime  @default(now())
+  /// Dueño de la fila (soft ref a `user.id`, sin relación): clave de
+  /// idempotencia junto con `id` para el reenvío offline. Null en las filas
+  /// legacy, que ningún usuario puede reclamar.
+  createdById String?   @map("created_by_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([createdById])
 }
 
 // ---------------------------------------------------------------------------
