@@ -329,6 +329,7 @@ describe('EquipmentService', () => {
           equipoId: 'eq_1',
           valorInicial: 100,
           operador: 'Juan Rojas',
+          operatorId: 'op_1',
           turno: 'DIURNO',
           fecha,
           supervisorId: 'sup_1',
@@ -349,6 +350,7 @@ describe('EquipmentService', () => {
           equipoId: true,
           valorInicial: true,
           operador: true,
+          operatorId: true,
           turno: true,
           fecha: true,
           supervisorId: true,
@@ -360,6 +362,7 @@ describe('EquipmentService', () => {
           id: 'r1',
           valorInicial: 100,
           operador: 'Juan Rojas',
+          operatorId: 'op_1',
           turno: 'DIURNO',
           fecha,
           supervisorName: 'Ana Torres',
@@ -367,6 +370,36 @@ describe('EquipmentService', () => {
         },
       });
       expect(sinTurno).toMatchObject({ openShift: null });
+    });
+
+    it('openShift.operatorId es null en una tarjeta legacy sin operador del catálogo', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'eq_1',
+          currentOperatorId: null,
+          currentSupervisorId: null,
+          horometros: [],
+        },
+      ]);
+      registroHorometroFindMany.mockResolvedValue([
+        {
+          id: 'r1',
+          equipoId: 'eq_1',
+          valorInicial: 100,
+          operador: 'Juan Rojas',
+          operatorId: null,
+          turno: 'DIURNO',
+          fecha: new Date('2026-09-15T08:00:00.000Z'),
+          supervisorId: null,
+          shiftId: null,
+        },
+      ]);
+
+      const [conTurno] = await service.findAll({});
+
+      expect(conTurno).toMatchObject({
+        openShift: { operador: 'Juan Rojas', operatorId: null },
+      });
     });
 
     it('openShift.supervisorName es null si la tarjeta no tiene supervisorId (dato legacy)', async () => {

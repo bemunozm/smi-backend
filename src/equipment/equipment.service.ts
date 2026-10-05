@@ -75,6 +75,11 @@ export interface OpenShiftSummary {
   id: string;
   valorInicial: number;
   operador: string;
+  /** Operador del catálogo (`RegistroHorometro.operatorId`) de la tarjeta
+   * abierta, o `null` en tarjetas legacy sin catálogo. El front lo usa para
+   * proponer, al registrar un trabajo extra, al operador del equipo en turno
+   * — `operador` es solo el snapshot de texto y no sirve para eso. */
+  operatorId: string | null;
   turno: string;
   fecha: Date;
   /** Nombre del supervisor que abrió la tarjeta (`RegistroHorometro.supervisorId`),
@@ -629,6 +634,7 @@ export class EquipmentService {
         equipoId: true,
         valorInicial: true,
         operador: true,
+        operatorId: true,
         turno: true,
         fecha: true,
         supervisorId: true,
@@ -653,6 +659,7 @@ export class EquipmentService {
           id: turno.id,
           valorInicial: turno.valorInicial,
           operador: turno.operador,
+          operatorId: turno.operatorId,
           turno: turno.turno,
           fecha: turno.fecha,
           supervisorName: turno.supervisorId
