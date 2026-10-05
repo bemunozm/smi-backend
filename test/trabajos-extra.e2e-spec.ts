@@ -341,7 +341,7 @@ maybeDescribe('Trabajos extra — operador del catálogo (e2e)', () => {
   });
 
   describe('POST /api/trabajos-extra — equipo con turno abierto', () => {
-    it('400 con code EQUIPMENT_ON_SHIFT', async () => {
+    it('201: un equipo con turno en curso admite el trabajo extra', async () => {
       const equipo = await createFreshEquipo('ONSHIFT');
       const operador = await createOperator(`Operador Turno E2E ${RUN_ID}`);
       const turno = await prisma.registroHorometro.create({
@@ -357,13 +357,89 @@ maybeDescribe('Trabajos extra — operador del catálogo (e2e)', () => {
         const response = await supervisorAgent
           .post('/api/trabajos-extra')
           .send(baseTrabajoExtraPayload(equipo.id, operador.id))
-          .expect(400);
-        expect((response.body as ErrorEnvelope).code).toBe(
-          'EQUIPMENT_ON_SHIFT',
-        );
+          .expect(201);
+        const data = (response.body as ApiEnvelope<TrabajoExtraData>).data;
+        expect(data.equipoId).toBe(equipo.id);
+        expect(data.operador).toBe(operador.name);
       } finally {
         await prisma.registroHorometro.delete({ where: { id: turno.id } });
       }
+    });
+  });
+
+  describe('PATCH /api/trabajos-extra/:id — edición con operador del catálogo', () => {
+    let trabajoId: string;
+    let equipo: EquipmentData;
+    let operadorA: OperatorData;
+    let operadorB: OperatorData;
+
+    it('crea el trabajo y dos operadores frescos', async () => {
+      equipo = await createFreshEquipo('EDIT');
+      operadorA = await createOperator(`Operador A Edit E2E ${RUN_ID}`);
+      operadorB = await createOperator(`Operador B Edit E2E ${RUN_ID}`);
+      const response = await supervisorAgent
+        .post('/api/trabajos-extra')
+        .send(baseTrabajoExtraPayload(equipo.id, operadorA.id))
+        .expect(201);
+      trabajoId = (response.body as ApiEnvelope<TrabajoExtraData>).data.id;
+    });
+
+    it('400: `operador` de texto libre ya no se acepta al editar', async () => {
+      await supervisorAgent
+        .patch(`/api/trabajos-extra/${trabajoId}`)
+        .send({ operador: 'Texto libre' })
+        .expect(400);
+    });
+
+    it('cambia de operador por catálogo: el nombre lo deriva el servidor, con equipo y sin createdById', async () => {
+      const response = await supervisorAgent
+        .patch(`/api/trabajos-extra/${trabajoId}`)
+        .send({ operatorId: operadorB.id })
+        .expect(200);
+      const data = (response.body as ApiEnvelope<TrabajoExtraData>).data;
+
+      expect(data.operatorId).toBe(operadorB.id);
+      expect(data.operador).toBe(operadorB.name);
+      expect(data).toHaveProperty('equipo.internalCode', equipo.internalCode);
+      expect(data).not.toHaveProperty('createdById');
+    });
+
+    it('el registro de cambios muestra el operador por nombre', async () => {
+      const response = await adminAgent
+        .get(`/api/trabajos-extra/${trabajoId}/changes`)
+        .expect(200);
+      const entries = (
+        response.body as ApiEnvelope<
+          { changes: { label: string; before: string; after: string }[] }[]
+        >
+      ).data;
+
+      expect(entries[0].changes).toEqual([
+        {
+          field: 'operador',
+          label: 'Operador',
+          before: operadorA.name,
+          after: operadorB.name,
+        },
+      ]);
+    });
+
+    it('409 OPERATOR_INACTIVE: no se puede asignar un operador dado de baja', async () => {
+      const inactivo = await createOperator(
+        `Operador Baja Edit E2E ${RUN_ID}`,
+        false,
+      );
+      const response = await supervisorAgent
+        .patch(`/api/trabajos-extra/${trabajoId}`)
+        .send({ operatorId: inactivo.id })
+        .expect(409);
+      expect((response.body as ErrorEnvelope).code).toBe('OPERATOR_INACTIVE');
+    });
+
+    it('limpia el registro de cambios del trabajo', async () => {
+      await prisma.changeLog.deleteMany({
+        where: { entity: 'trabajo_extra', entityId: trabajoId },
+      });
     });
   });
 

@@ -5,12 +5,16 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Test } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { TrabajosExtraService } from './trabajos-extra.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { ChangeLogService } from '../../change-log/change-log.service';
+import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import { OperatorsService } from '../../operators/operators.service';
 import { CreateTrabajoExtraDto } from './dto/create-trabajo-extra.dto';
+import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
 
 describe('TrabajosExtraService', () => {
   let service: TrabajosExtraService;
@@ -25,10 +29,14 @@ describe('TrabajosExtraService', () => {
       findMany: jest.fn(),
       update: jest.fn(),
     },
-    // Un equipo con turno en curso está ocupado y no admite trabajos extra.
+    // Se mockea para probar que un turno abierto ya NO bloquea el trabajo.
     registroHorometro: { findFirst: jest.fn() },
+    // La edición y su registro de cambios van en una sola transacción.
+    $transaction: jest.fn(),
   };
   const assertActive = jest.fn();
+  const eventEmitter = { emit: jest.fn() };
+  const changeLog = { record: jest.fn(), findFor: jest.fn() };
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
@@ -36,6 +44,8 @@ describe('TrabajosExtraService', () => {
         TrabajosExtraService,
         { provide: PrismaService, useValue: prisma },
         { provide: OperatorsService, useValue: { assertActive } },
+        { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: ChangeLogService, useValue: changeLog },
       ],
     }).compile();
     service = mod.get(TrabajosExtraService);
@@ -44,7 +54,6 @@ describe('TrabajosExtraService', () => {
       id: 'e1',
       internalCode: 'CA-011',
     });
-    // Por defecto el equipo está libre: sin turno en curso.
     prisma.registroHorometro.findFirst.mockResolvedValue(null);
     prisma.trabajoExtraordinario.findUnique.mockResolvedValue(null);
     prisma.trabajoExtraordinario.findFirst.mockResolvedValue(null);
@@ -162,27 +171,26 @@ describe('TrabajosExtraService', () => {
     });
   });
   /**
-   * Un equipo con turno en curso está ocupado. Las horas del trabajo
-   * extraordinario y las del turno se facturan por separado, y mientras el
-   * turno siga abierto no se sabe cuáles serán sus horas — las del trabajo
-   * podrían terminar contadas dos veces.
+   * El trabajo extraordinario usa la misma máquina del turno durante sus
+   * tiempos en ralentí: un equipo con turno abierto tiene que poder registrar
+   * su trabajo.
    */
-  it('rechaza el trabajo si el equipo tiene un turno en curso', async () => {
+  it('acepta el trabajo aunque el equipo tenga un turno en curso', async () => {
     prisma.registroHorometro.findFirst.mockResolvedValue({ id: 'h1' });
 
-    await expect(
-      createAs({
-        equipoId: 'e1',
-        operatorId: 'op_1',
-        faena: 'Patillo',
-        turno: 'DIURNO',
-        horometroInicial: 1200,
-        horometroFinal: 1212,
-        actividades: ['REGULACION_CARGA'],
-        descripcion: 'Carga de material',
-      }),
-    ).rejects.toThrow(/tiene un turno en curso/);
-    expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    const res = await createAs({
+      equipoId: 'e1',
+      operatorId: 'op_1',
+      faena: 'Patillo',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      actividades: ['REGULACION_CARGA'],
+      descripcion: 'Carga de material',
+    });
+
+    expect(prisma.trabajoExtraordinario.create).toHaveBeenCalled();
+    expect(res.equipoId).toBe('e1');
   });
 
   it('lanza NotFoundException si el equipo no existe', async () => {
@@ -419,16 +427,190 @@ describe('TrabajosExtraService', () => {
         response: { code: 'ID_CONFLICT' },
       });
     });
+  });
+  /**
+   * Acta N.° 004, R13: un trabajo ya registrado se edita sin autorización,
+   * pero cada cambio queda registrado (quién, qué dato, antes y después) y
+   * se le avisa al administrador.
+   */
+  describe('update', () => {
+    const editor = { id: 'u1', name: 'Limbert Villacorta' };
+    const guardado = {
+      id: 't1',
+      equipoId: 'e1',
+      operatorId: 'op_1',
+      equipo: { internalCode: 'CA-011' },
+      operador: 'Juan Rojas',
+      faena: 'Patillo',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      totalHoras: 12,
+      actividades: ['REGULACION_CARGA'],
+      otraActividad: null,
+      descripcion: 'Carga de material',
+      observaciones: null,
+      fecha: new Date(2026, 9, 1, 10, 0),
+    };
 
-    it('el conflicto de turno abierto lleva el code EQUIPMENT_ON_SHIFT', async () => {
-      prisma.registroHorometro.findFirst.mockResolvedValue({ id: 'h1' });
+    beforeEach(() => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue(guardado);
+      prisma.trabajoExtraordinario.update.mockImplementation(
+        ({ data }: { data: Record<string, unknown> }) => ({
+          ...guardado,
+          ...data,
+        }),
+      );
+      prisma.$transaction.mockImplementation(
+        (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+      );
+    });
 
-      await expect(createAs(payload)).rejects.toMatchObject({
-        status: 400,
-        response: { code: 'EQUIPMENT_ON_SHIFT' },
+    it('guarda el cambio, recalcula las horas y lo registra con su antes y después', async () => {
+      const res = await service.update(
+        't1',
+        { horometroFinal: 1214.5 },
+        editor,
+      );
+
+      expect(res.totalHoras).toBe(14.5);
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'trabajo_extra',
+        't1',
+        editor,
+        [
+          {
+            field: 'horometroFinal',
+            label: 'Horómetro final',
+            before: '1.212 h',
+            after: '1.214,5 h',
+          },
+        ],
+      );
+    });
+
+    it('avisa al administrador quién cambió qué', async () => {
+      assertActive.mockResolvedValue({ id: 'op_2', name: 'Pedro Soto' });
+
+      await service.update('t1', { operatorId: 'op_2' }, editor);
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.RECORD_EDITED,
+        expect.objectContaining({
+          entity: 'trabajo_extra',
+          entityId: 't1',
+          editedBy: 'Limbert Villacorta',
+          changes: [
+            { label: 'Operador', before: 'Juan Rojas', after: 'Pedro Soto' },
+          ],
+        }),
+      );
+    });
+
+    /** El snapshot `operador` lo deriva el servidor del catálogo, nunca el cliente. */
+    it('cambia de operador por catálogo y deriva el nombre en el servidor', async () => {
+      assertActive.mockResolvedValue({ id: 'op_2', name: 'Pedro Soto' });
+
+      await service.update('t1', { operatorId: 'op_2' }, editor);
+
+      expect(assertActive).toHaveBeenCalledWith('op_2');
+      const [args] = prisma.trabajoExtraordinario.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(args.data).toMatchObject({
+        operatorId: 'op_2',
+        operador: 'Pedro Soto',
       });
     });
+
+    it('rechaza un operador inactivo sin escribir nada', async () => {
+      assertActive.mockRejectedValue(new ConflictException('inactivo'));
+
+      await expect(
+        service.update('t1', { operatorId: 'op_x' }, editor),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Editar otro dato no re-valida al operador ya guardado: si se desactivó
+     * después, el registro sigue siendo corregible.
+     */
+    it('no re-valida al operador cuando el body no lo toca', async () => {
+      await service.update('t1', { horometroFinal: 1214.5 }, editor);
+
+      expect(assertActive).not.toHaveBeenCalled();
+    });
+
+    /** `operador` (texto libre) ya no es un campo editable: ver `UpdateTrabajoExtraDto`. */
+    it('el DTO de edición rechaza `operador` de texto libre', async () => {
+      const dto = plainToInstance(UpdateTrabajoExtraDto, { operador: 'X' });
+      const errores = await validate(dto, {
+        whitelist: true,
+        forbidNonWhitelisted: true,
+      });
+      expect(errores).not.toHaveLength(0);
+    });
+
+    /** El aviso dice el código del equipo, no su id interno. */
+    it('registra el cambio de equipo con sus códigos', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        id: 'e2',
+        internalCode: 'CM-003',
+      });
+
+      await service.update('t1', { equipoId: 'e2' }, editor);
+
+      const llamada = changeLog.record.mock.calls[0] as unknown[];
+      const cambios = llamada[4] as { before: string; after: string }[];
+      expect(cambios).toEqual([
+        expect.objectContaining({
+          label: 'Equipo',
+          before: 'CA-011',
+          after: 'CM-003',
+        }),
+      ]);
+    });
+
+    /** Las reglas se aplican al registro combinado, no solo a lo que vino. */
+    it('rechaza un final menor que el inicial ya guardado', async () => {
+      await expect(
+        service.update('t1', { horometroFinal: 1100 }, editor),
+      ).rejects.toThrow(/no puede ser menor/);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    /** Guardar sin cambiar nada no es un cambio: no se registra ni se avisa. */
+    it('no registra ni avisa si nada cambió', async () => {
+      await service.update('t1', { faena: 'Patillo' }, editor);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(changeLog.record).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    /** El PATCH devuelve la misma forma que el listado: con `equipo`, sin `createdById`. */
+    it('las queries de la edición piden equipo y omiten createdById', async () => {
+      await service.update('t1', { faena: 'Kainita' }, editor);
+
+      for (const fn of [
+        prisma.trabajoExtraordinario.findUnique,
+        prisma.trabajoExtraordinario.update,
+      ]) {
+        const [args] = fn.mock.calls[0] as [
+          { include: unknown; omit: unknown },
+        ];
+        expect(args.include).toEqual({
+          equipo: { select: { internalCode: true } },
+        });
+        expect(args.omit).toEqual({ createdById: true });
+      }
+    });
   });
+
   describe('forma de la respuesta (equipo incluido, createdById oculto)', () => {
     const ID = 'b3b6a1f2-6c5e-4d0e-9a55-0f4f0a7d2c11';
     const INCLUDE = { equipo: { select: { internalCode: true } } };
@@ -498,15 +680,12 @@ describe('TrabajosExtraService', () => {
       expect(res).toHaveProperty('equipo', { internalCode: 'CA-011' });
     });
 
-    it('findOne y update omiten createdById en la query', async () => {
+    it('findOne omite createdById en la query', async () => {
       prisma.trabajoExtraordinario.findUnique.mockResolvedValue(row);
-      prisma.trabajoExtraordinario.update.mockResolvedValue(row);
 
       await service.findOne(ID);
-      await service.update(ID, {});
 
       expectQueryShape(prisma.trabajoExtraordinario.findUnique);
-      expectQueryShape(prisma.trabajoExtraordinario.update);
     });
 
     it('el chequeo de propiedad filtra por dueño en la query, sin leer createdById', async () => {

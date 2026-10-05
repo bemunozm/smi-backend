@@ -35,12 +35,30 @@ export class HallazgosController {
     };
   }
 
+  /**
+   * Corrección de un hallazgo ya registrado (Acta N.° 004, R13). Quién edita
+   * sale de la sesión, nunca del body: es la firma del cambio en el registro.
+   */
   @Patch(':id')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async update(@Param('id') id: string, @Body() dto: UpdateHallazgoDto) {
-    return {
-      data: await this.service.update(id, dto),
-      message: 'Hallazgo actualizado',
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateHallazgoDto,
+    @Session() session: UserSession,
+  ) {
+    const editor = {
+      id: session.user.id,
+      name: session.user.name?.trim() || session.user.email,
     };
+    return {
+      data: await this.service.update(id, dto, editor),
+      message: 'Hallazgo actualizado. Se avisó al administrador.',
+    };
+  }
+
+  /** Quién cambió qué y cuándo, del cambio más reciente al más viejo. */
+  @Get(':id/changes')
+  async findChanges(@Param('id') id: string) {
+    return { data: await this.service.findChanges(id), message: 'ok' };
   }
 }

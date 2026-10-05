@@ -33,12 +33,30 @@ export class TrabajosExtraController {
     };
   }
 
+  /**
+   * Edición de un trabajo ya registrado (Acta N.° 004, R13). Quién edita sale
+   * de la sesión, nunca del body: es la firma del cambio en el registro.
+   */
   @Patch(':id')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
-  async update(@Param('id') id: string, @Body() dto: UpdateTrabajoExtraDto) {
-    return {
-      data: await this.service.update(id, dto),
-      message: 'Trabajo actualizado',
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTrabajoExtraDto,
+    @Session() session: UserSession,
+  ) {
+    const editor = {
+      id: session.user.id,
+      name: session.user.name?.trim() || session.user.email,
     };
+    return {
+      data: await this.service.update(id, dto, editor),
+      message: 'Trabajo actualizado. Se avisó al administrador.',
+    };
+  }
+
+  /** Quién cambió qué y cuándo, del cambio más reciente al más viejo. */
+  @Get(':id/changes')
+  async findChanges(@Param('id') id: string) {
+    return { data: await this.service.findChanges(id), message: 'ok' };
   }
 }

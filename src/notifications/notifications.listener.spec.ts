@@ -63,19 +63,22 @@ describe('NotificationsListener', () => {
     listener = module.get<NotificationsListener>(NotificationsListener);
   });
 
-  it('hallazgo.created notifica a SUPERVISOR + ADMIN', async () => {
+  /** Acta N.° 004, R11: la alerta va a mantenedores y administrador. */
+  it('hallazgo.created notifica a MANTENEDOR + ADMIN, no a SUPERVISOR', async () => {
     await listener.onHallazgoCreated({
       hallazgoId: 'h1',
       equipoId: 'e1',
-      prioridad: 'ALTA',
+      equipoCodigo: 'CA-011',
+      prioridad: 'CRITICA',
       descripcion: 'Fuga de aceite',
     });
 
     expect(createForRoles).toHaveBeenCalledTimes(1);
     expect(createForRoles).toHaveBeenCalledWith(
-      [ROLES.SUPERVISOR, ROLES.ADMIN],
+      [ROLES.MANTENEDOR, ROLES.ADMIN],
       expect.objectContaining({
         tipo: 'hallazgo.created',
+        titulo: 'Hallazgo de prioridad crítica en CA-011',
         data: { hallazgoId: 'h1', equipoId: 'e1' },
       }),
     );
@@ -297,5 +300,31 @@ describe('NotificationsListener', () => {
       ).resolves.toBeUndefined();
       errorSpy.mockRestore();
     });
+  });
+
+  /** Acta N.° 004, R13: cada edición de un registro enviado se avisa al admin. */
+  it('record.edited avisa al ADMIN con cada dato y su antes y después', async () => {
+    await listener.onRecordEdited({
+      entity: 'trabajo_extra',
+      entityId: 't1',
+      entityLabel: 'trabajo extra de CA-011 del 01-10-2026',
+      editedBy: 'Limbert Villacorta',
+      changes: [
+        { label: 'Horómetro final', before: '1.212 h', after: '1.214,5 h' },
+        { label: 'Operador', before: 'Juan Rojas', after: 'Pedro Soto' },
+      ],
+    });
+
+    expect(createForRoles).toHaveBeenCalledWith(
+      [ROLES.ADMIN],
+      expect.objectContaining({
+        tipo: 'record.edited',
+        titulo:
+          'Limbert Villacorta modificó el trabajo extra de CA-011 del 01-10-2026',
+        cuerpo:
+          'Horómetro final: 1.212 h → 1.214,5 h\nOperador: Juan Rojas → Pedro Soto',
+        data: { entity: 'trabajo_extra', entityId: 't1' },
+      }),
+    );
   });
 });

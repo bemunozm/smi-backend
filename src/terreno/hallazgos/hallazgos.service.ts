@@ -5,15 +5,43 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
+import type { Hallazgo } from '@prisma/client';
 
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { assertReasonableCapturedAt } from '../../shifts/capture-time';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
-import type { HallazgoCreatedEvent } from '../../common/events/domain-events';
+import type {
+  HallazgoCreatedEvent,
+  RecordEditedEvent,
+} from '../../common/events/domain-events';
+import {
+  ChangeLogService,
+  diffFields,
+  type Editor,
+} from '../../change-log/change-log.service';
 import { StorageService } from '../../storage/storage.service';
 import { CreateHallazgoDto } from './dto/create-hallazgo.dto';
 import { UpdateHallazgoDto } from './dto/update-hallazgo.dto';
+
+/** Los datos de un hallazgo que se pueden corregir. */
+type DatosHallazgo = Pick<
+  Hallazgo,
+  'equipoId' | 'descripcion' | 'prioridad' | 'estado'
+>;
+
+/** Cómo se leen en el registro de cambios y en el aviso al administrador. */
+const PRIORIDAD_LABEL: Record<string, string> = {
+  BAJA: 'Baja',
+  MEDIA: 'Media',
+  ALTA: 'Alta',
+  CRITICA: 'Crítica',
+};
+const ESTADO_LABEL: Record<string, string> = {
+  ABIERTO: 'Abierto',
+  EN_PROCESO: 'En proceso',
+  CERRADO: 'Cerrado',
+};
 
 /**
  * Relación que toda lectura/escritura devuelve. Una sola definición para que
@@ -55,6 +83,7 @@ export class HallazgosService {
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
     private readonly storage: StorageService,
+    private readonly changeLog: ChangeLogService,
   ) {}
 
   async create(dto: CreateHallazgoDto, userId: string) {
@@ -118,6 +147,7 @@ export class HallazgosService {
     this.eventEmitter.emit(DOMAIN_EVENTS.HALLAZGO_CREATED, {
       hallazgoId: hallazgo.id,
       equipoId: hallazgo.equipoId,
+      equipoCodigo: equipo.internalCode,
       prioridad: hallazgo.prioridad,
       descripcion: hallazgo.descripcion,
     } satisfies HallazgoCreatedEvent);
@@ -144,15 +174,87 @@ export class HallazgosService {
     return this.shape(reg);
   }
 
-  async update(id: string, dto: UpdateHallazgoDto) {
-    return this.shape(
-      await this.prisma.hallazgo.update({
+  /**
+   * Edita un hallazgo ya registrado (Acta N.° 004, R13).
+   *
+   * Sin autorización, pero no silencioso: lo que cambió queda en `ChangeLog`
+   * —en la misma transacción que la edición— y el administrador recibe un
+   * aviso con cada dato y su antes y después. Si nada cambió de verdad, no se
+   * escribe ni se avisa.
+   */
+  async update(id: string, dto: UpdateHallazgoDto, editor: Editor) {
+    const actual = await this.prisma.hallazgo.findUnique({
+      where: { id },
+      include: HALLAZGO_INCLUDE,
+      omit: HALLAZGO_OMIT,
+    });
+    if (!actual) throw new NotFoundException('Hallazgo no encontrado');
+
+    let codigoNuevo = actual.equipo.internalCode;
+    if (dto.equipoId && dto.equipoId !== actual.equipoId) {
+      const equipo = await this.prisma.equipment.findUnique({
+        where: { id: dto.equipoId },
+      });
+      if (!equipo) throw new NotFoundException('Equipo no encontrado');
+      codigoNuevo = equipo.internalCode;
+    }
+
+    const nuevo: DatosHallazgo = {
+      equipoId: dto.equipoId ?? actual.equipoId,
+      descripcion: dto.descripcion?.trim() ?? actual.descripcion,
+      prioridad: dto.prioridad ?? actual.prioridad,
+      estado: dto.estado ?? actual.estado,
+    };
+
+    const codigos: Record<string, string> = {
+      [actual.equipoId]: actual.equipo.internalCode,
+      [nuevo.equipoId]: codigoNuevo,
+    };
+    const cambios = diffFields<DatosHallazgo>(actual, nuevo, [
+      {
+        field: 'equipoId',
+        label: 'Equipo',
+        format: (v) => codigos[v] ?? v,
+      },
+      { field: 'descripcion', label: 'Descripción' },
+      {
+        field: 'prioridad',
+        label: 'Prioridad',
+        format: (v) => PRIORIDAD_LABEL[v] ?? v,
+      },
+      { field: 'estado', label: 'Estado', format: (v) => ESTADO_LABEL[v] ?? v },
+    ]);
+    if (cambios.length === 0) return this.shape(actual);
+
+    const editado = await this.prisma.$transaction(async (tx) => {
+      const reg = await tx.hallazgo.update({
         where: { id },
-        data: dto,
+        data: nuevo,
         include: HALLAZGO_INCLUDE,
         omit: HALLAZGO_OMIT,
-      }),
-    );
+      });
+      await this.changeLog.record(tx, 'hallazgo', id, editor, cambios);
+      return reg;
+    });
+
+    this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, {
+      entity: 'hallazgo',
+      entityId: id,
+      entityLabel: `hallazgo de ${codigoNuevo} del ${actual.fecha.toLocaleDateString('es-CL')}`,
+      editedBy: editor.name,
+      changes: cambios.map(({ label, before, after }) => ({
+        label,
+        before,
+        after,
+      })),
+    } satisfies RecordEditedEvent);
+
+    return this.shape(editado);
+  }
+
+  /** Los cambios de un hallazgo, del más reciente al más viejo. */
+  findChanges(id: string) {
+    return this.changeLog.findFor('hallazgo', id);
   }
 
   /**

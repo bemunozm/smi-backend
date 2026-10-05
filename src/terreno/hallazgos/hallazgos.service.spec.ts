@@ -6,6 +6,7 @@ import { HallazgosService } from './hallazgos.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import { StorageService } from '../../storage/storage.service';
+import { ChangeLogService } from '../../change-log/change-log.service';
 
 describe('HallazgosService', () => {
   let service: HallazgosService;
@@ -18,11 +19,14 @@ describe('HallazgosService', () => {
       findMany: jest.fn(),
       update: jest.fn(),
     },
+    // La corrección y su registro de cambios van en una sola transacción.
+    $transaction: jest.fn(),
   };
   const eventEmitter = { emit: jest.fn() };
   // La foto ahora va al storage privado: `claimTmp` mueve la key temporal a su
   // lugar definitivo y `sign` la firma al devolverla.
   const storage = { claimTmp: jest.fn(), sign: jest.fn(), discard: jest.fn() };
+  const changeLog = { record: jest.fn(), findFor: jest.fn() };
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
@@ -31,6 +35,7 @@ describe('HallazgosService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: StorageService, useValue: storage },
+        { provide: ChangeLogService, useValue: changeLog },
       ],
     }).compile();
     service = mod.get(HallazgosService);
@@ -38,7 +43,10 @@ describe('HallazgosService', () => {
     prisma.hallazgo.findUnique.mockReset().mockResolvedValue(null);
     prisma.hallazgo.findFirst.mockReset().mockResolvedValue(null);
     prisma.hallazgo.create.mockReset();
-    prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+    prisma.equipment.findUnique.mockResolvedValue({
+      id: 'e1',
+      internalCode: 'CA-011',
+    });
     storage.claimTmp.mockImplementation((key) => `hallazgo-photos/${key}`);
     storage.sign.mockImplementation((key) => `https://signed.example/${key}`);
     prisma.hallazgo.create.mockImplementation(
@@ -62,7 +70,8 @@ describe('HallazgosService', () => {
     expect(res.prioridad).toBe('ALTA');
   });
 
-  it('emite HALLAZGO_CREATED con el id creado y los campos del hallazgo', async () => {
+  // El código del equipo viaja en el evento para que el aviso diga qué máquina es.
+  it('emite HALLAZGO_CREATED con el id creado, el código del equipo y los campos del hallazgo', async () => {
     await service.create(
       {
         equipoId: 'e1',
@@ -77,6 +86,7 @@ describe('HallazgosService', () => {
       {
         hallazgoId: 'h1',
         equipoId: 'e1',
+        equipoCodigo: 'CA-011',
         prioridad: 'ALTA',
         descripcion: 'Fuga',
       },
@@ -362,15 +372,12 @@ describe('HallazgosService', () => {
       expect(res).toHaveProperty('equipo', { internalCode: 'EXC-01' });
     });
 
-    it('findOne y update omiten createdById en la query', async () => {
+    it('findOne omite createdById en la query', async () => {
       prisma.hallazgo.findUnique.mockResolvedValue(row);
-      prisma.hallazgo.update.mockResolvedValue(row);
 
       await service.findOne(ID);
-      await service.update(ID, {});
 
       expectQueryShape(prisma.hallazgo.findUnique);
-      expectQueryShape(prisma.hallazgo.update);
     });
 
     it('el chequeo de propiedad filtra por dueño en la query, sin leer createdById', async () => {
@@ -382,6 +389,99 @@ describe('HallazgosService', () => {
         { where: unknown },
       ];
       expect(args.where).toEqual({ id: ID, createdById: 'u1' });
+    });
+  });
+
+  /**
+   * Acta N.° 004, R13: un hallazgo se corrige por error humano sin
+   * autorización, pero queda registrado quién cambió qué y se avisa al
+   * administrador.
+   */
+  describe('update', () => {
+    const editor = { id: 'u1', name: 'Limbert Villacorta' };
+    const guardado = {
+      id: 'h1',
+      equipoId: 'e1',
+      equipo: { internalCode: 'CA-011' },
+      descripcion: 'Fuga de aceite',
+      prioridad: 'ALTA',
+      estado: 'ABIERTO',
+      fotoUrl: null,
+      fotoKey: null,
+      fecha: new Date(2026, 9, 1, 16, 25),
+    };
+
+    beforeEach(() => {
+      prisma.hallazgo.findUnique.mockResolvedValue(guardado);
+      prisma.hallazgo.update.mockImplementation(
+        ({ data }: { data: Record<string, unknown> }) => ({
+          ...guardado,
+          ...data,
+        }),
+      );
+      prisma.$transaction.mockImplementation(
+        (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+      );
+    });
+
+    it('guarda la corrección y la registra con su antes y después legibles', async () => {
+      const res = await service.update('h1', { prioridad: 'CRITICA' }, editor);
+
+      expect(res.prioridad).toBe('CRITICA');
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'hallazgo',
+        'h1',
+        editor,
+        [
+          {
+            field: 'prioridad',
+            label: 'Prioridad',
+            before: 'Alta',
+            after: 'Crítica',
+          },
+        ],
+      );
+    });
+
+    it('avisa al administrador con el código del equipo nuevo', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        id: 'e2',
+        internalCode: 'PE-004',
+      });
+
+      await service.update('h1', { equipoId: 'e2' }, editor);
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.RECORD_EDITED,
+        expect.objectContaining({
+          entity: 'hallazgo',
+          editedBy: 'Limbert Villacorta',
+          changes: [{ label: 'Equipo', before: 'CA-011', after: 'PE-004' }],
+        }),
+      );
+    });
+
+    /** El PATCH devuelve la misma forma que el listado: con `equipo`, sin `createdById`. */
+    it('las queries de la edición piden equipo y omiten createdById', async () => {
+      await service.update('h1', { prioridad: 'CRITICA' }, editor);
+
+      for (const fn of [prisma.hallazgo.findUnique, prisma.hallazgo.update]) {
+        const [args] = fn.mock.calls[0] as [
+          { include: unknown; omit: unknown },
+        ];
+        expect(args.include).toEqual({
+          equipo: { select: { internalCode: true } },
+        });
+        expect(args.omit).toEqual({ createdById: true });
+      }
+    });
+
+    it('no registra ni avisa si nada cambió', async () => {
+      await service.update('h1', { descripcion: ' Fuga de aceite ' }, editor);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
   });
 });

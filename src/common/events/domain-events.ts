@@ -18,6 +18,7 @@ export const DOMAIN_EVENTS = {
   ORDEN_COMPLETED: 'orden.completed',
   ITEM_LOW_STOCK: 'item.low-stock',
   SHIFT_EXIT_REPORT_SENT: 'shift.exit-report',
+  RECORD_EDITED: 'record.edited',
 } as const;
 
 export type DomainEventName =
@@ -27,6 +28,8 @@ export type DomainEventName =
 export interface HallazgoCreatedEvent {
   hallazgoId: string;
   equipoId?: string | null;
+  /** Código del equipo (`CA-011`), para que el aviso diga qué máquina es. */
+  equipoCodigo?: string | null;
   prioridad: string;
   descripcion: string;
 }
@@ -80,4 +83,18 @@ export interface ShiftExitReportSentEvent {
   /** `YYYY-MM-DD` — ver `src/shifts/date-only.ts`. */
   shiftDate: string;
   shiftType: string;
+}
+
+/**
+ * Emitido por Terreno (Joaquín) al editar un registro ya enviado (Acta N.°
+ * 004, R13). La edición no pide autorización, pero el administrador se entera
+ * de cada cambio: quién, sobre qué registro y qué dato pasó de qué a qué.
+ */
+export interface RecordEditedEvent {
+  entity: string;
+  entityId: string;
+  /** Cómo se nombra el registro en el aviso: `trabajo extra de CM-003 del 01-10-2026`. */
+  entityLabel: string;
+  editedBy: string;
+  changes: { label: string; before: string; after: string }[];
 }
