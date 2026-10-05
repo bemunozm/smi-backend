@@ -45,7 +45,10 @@ import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
 import { formatNumber } from '../common/format/number';
-import { formatBusinessDate } from '../common/dates/business-time';
+import {
+  formatBusinessDate,
+  formatBusinessDateTime,
+} from '../common/dates/business-time';
 import {
   computeClientClockSkewMs,
   resolveCapturedAt,
@@ -1122,12 +1125,12 @@ export class ShiftsService {
   private buildBusyMessage(supervisorName: string | null, since: Date): string {
     return `El equipo ya tiene una tarjeta de turno abierta por ${
       supervisorName ?? 'otro supervisor'
-    } desde ${since.toISOString()}`;
+    } desde el ${formatBusinessDateTime(since)}`;
   }
 
   private buildAlreadyClosedMessage(closedAt: Date | null): string {
     return closedAt
-      ? `La tarjeta ya fue cerrada el ${closedAt.toISOString()}`
+      ? `La tarjeta ya fue cerrada el ${formatBusinessDateTime(closedAt)}`
       : 'La tarjeta ya fue cerrada';
   }
 

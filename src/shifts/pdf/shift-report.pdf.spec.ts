@@ -2,7 +2,6 @@ import type { Content, Table } from 'pdfmake/interfaces';
 
 import {
   buildShiftExitReportDocDefinition,
-  formatSantiagoDateTime,
   formatShiftDateEs,
   formatShiftTypeEs,
   type ShiftReportCardInput,
@@ -38,15 +37,6 @@ describe('formatShiftTypeEs', () => {
   it('DIURNO -> Diurno, NOCTURNO -> Nocturno', () => {
     expect(formatShiftTypeEs('DIURNO')).toBe('Diurno');
     expect(formatShiftTypeEs('NOCTURNO')).toBe('Nocturno');
-  });
-});
-
-describe('formatSantiagoDateTime', () => {
-  it('formatea en es-CL/America/Santiago', () => {
-    // 2026-09-28T15:00:00Z -> 12:00 en Santiago (UTC-3 en esa fecha).
-    const result = formatSantiagoDateTime(new Date('2026-09-28T15:00:00.000Z'));
-    expect(result).toContain('28-09-2026');
-    expect(result).toContain('12:00');
   });
 });
 

@@ -30,3 +30,20 @@ export function todayInBusinessTimeZone(date: Date): string {
 export function formatBusinessDate(date: Date): string {
   return date.toLocaleDateString('es-CL', { timeZone: BUSINESS_TIME_ZONE });
 }
+
+/**
+ * `DD-MM-YYYY, HH:mm` del instante `date` en `BUSINESS_TIME_ZONE`, para
+ * instantes reales que lee una persona (cierres, generación de un PDF). No
+ * aplica a fechas de calendario sin hora, como la del turno.
+ */
+export function formatBusinessDateTime(date: Date): string {
+  return new Intl.DateTimeFormat('es-CL', {
+    timeZone: BUSINESS_TIME_ZONE,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
+}
