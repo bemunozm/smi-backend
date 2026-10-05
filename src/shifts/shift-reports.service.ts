@@ -356,6 +356,8 @@ export class ShiftReportsService {
           ? round2(card.valorFinal - card.valorInicial)
           : null,
       fuelLiters: card.fuelLiters,
+      adBlue: card.adBlue,
+      adBlueLiters: card.adBlueLiters,
       observaciones: card.observaciones,
     };
   }

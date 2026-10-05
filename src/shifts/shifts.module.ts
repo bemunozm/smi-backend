@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { ChangeLogModule } from '../change-log/change-log.module';
 import { OperatorsModule } from '../operators/operators.module';
 import { StorageModule } from '../storage/storage.module';
 import { ShiftCardsController } from './shift-cards.controller';
@@ -19,7 +20,7 @@ import { ShiftsService } from './shifts.service';
  * llave natural — pero son servicios separados: el reporte no toca tarjetas.
  */
 @Module({
-  imports: [StorageModule, OperatorsModule],
+  imports: [StorageModule, OperatorsModule, ChangeLogModule],
   controllers: [ShiftCardsController, ShiftsController, ShiftReportsController],
   providers: [ShiftsService, ShiftReportsService],
   // `ShiftReportsService` se exporta para que `NotificationsModule` marque

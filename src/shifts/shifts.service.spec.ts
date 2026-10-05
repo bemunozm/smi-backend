@@ -4,8 +4,10 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 
+import { ChangeLogService } from '../change-log/change-log.service';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { buildSession, prismaError } from '../common/testing/fixtures';
 import { OperatorsService } from '../operators/operators.service';
@@ -75,6 +77,8 @@ function buildCardRecord(overrides: Record<string, unknown> = {}) {
     pumpPhotoKey: null,
     observaciones: null,
     closeClientId: null,
+    adBlue: false,
+    adBlueLiters: null,
     belowPreviousReading: false,
     createdAt: new Date('2026-09-28T08:00:00.000Z'),
     closedAt: null,
@@ -108,8 +112,15 @@ describe('ShiftsService', () => {
       updateMany: jest.fn(),
     },
     equipment: { findUnique: jest.fn(), updateMany: jest.fn() },
-    registroCombustible: { create: jest.fn() },
+    registroCombustible: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+    },
     user: { findUnique: jest.fn() },
+    // Bloqueo de la fila (`FOR UPDATE`) al editar una tarjeta.
+    $queryRaw: jest.fn(),
   };
 
   const prisma = {
@@ -130,6 +141,8 @@ describe('ShiftsService', () => {
   const sign = jest.fn();
   const discard = jest.fn();
   const assertActive = jest.fn();
+  const changeLog = { record: jest.fn(), findFor: jest.fn() };
+  const eventEmitter = { emit: jest.fn() };
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
@@ -138,6 +151,8 @@ describe('ShiftsService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: StorageService, useValue: { claimTmp, sign, discard } },
         { provide: OperatorsService, useValue: { assertActive } },
+        { provide: ChangeLogService, useValue: changeLog },
+        { provide: EventEmitter2, useValue: eventEmitter },
       ],
     }).compile();
     service = mod.get(ShiftsService);
@@ -667,6 +682,62 @@ describe('ShiftsService', () => {
       expect(tx.registroCombustible.create).not.toHaveBeenCalled();
     });
 
+    describe('AdBlue al cierre (Acta N.° 004, R12)', () => {
+      it('persiste AdBlue con sus litros', async () => {
+        await service.closeCard(
+          'card_1',
+          { ...dto, adBlue: true, adBlueLiters: 12.5 },
+          session,
+        );
+
+        expect(lastCallData(tx.registroHorometro.updateMany)).toMatchObject({
+          adBlue: true,
+          adBlueLiters: 12.5,
+        });
+      });
+
+      it('un cierre antiguo sin los campos queda sin AdBlue', async () => {
+        await service.closeCard('card_1', dto, session);
+
+        expect(lastCallData(tx.registroHorometro.updateMany)).toMatchObject({
+          adBlue: false,
+          adBlueLiters: null,
+        });
+      });
+
+      it('sin AdBlue nunca se guardan litros', async () => {
+        await service.closeCard(
+          'card_1',
+          { ...dto, adBlue: false, adBlueLiters: 9 },
+          session,
+        );
+
+        expect(lastCallData(tx.registroHorometro.updateMany)).toMatchObject({
+          adBlue: false,
+          adBlueLiters: null,
+        });
+      });
+
+      it('la respuesta incluye adBlue y adBlueLiters', async () => {
+        tx.registroHorometro.findUnique.mockResolvedValue(
+          buildCardRecord({
+            id: 'card_1',
+            valorFinal: 130,
+            adBlue: true,
+            adBlueLiters: 12.5,
+          }),
+        );
+
+        const res = await service.closeCard(
+          'card_1',
+          { ...dto, adBlue: true, adBlueLiters: 12.5 },
+          session,
+        );
+
+        expect(res).toMatchObject({ adBlue: true, adBlueLiters: 12.5 });
+      });
+    });
+
     describe('photoCapturedAt (EXIF del dispositivo)', () => {
       it('un photoCapturedAt válido y dentro de rango se usa como fecha de la carga', async () => {
         const photoCapturedAt = iso(-60_000); // 1 minuto antes de "ahora"
@@ -966,6 +1037,517 @@ describe('ShiftsService', () => {
         });
       }
       expect(discard).toHaveBeenCalledWith('fuel-photos/final.jpg');
+    });
+  });
+
+  describe('update (PATCH, Acta N.° 004 R13)', () => {
+    const owner = buildSession('sup_1', 'SUPERVISOR', 'Ana Soto');
+
+    function closedCard(overrides: Record<string, unknown> = {}) {
+      return buildCardRecord({
+        id: 'card_1',
+        valorInicial: 100,
+        valorFinal: 130,
+        fuelLiters: 0,
+        pumpPhotoKey: 'fuel-photos/final.jpg',
+        closeClientId: 'close_1',
+        closedAt: new Date('2026-09-28T20:00:00.000Z'),
+        fechaSalida: new Date('2026-09-28T19:55:00.000Z'),
+        adBlue: false,
+        adBlueLiters: null,
+        ...overrides,
+      });
+    }
+
+    function givenCard(card: ReturnType<typeof closedCard>) {
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        supervisorId: card.supervisorId,
+        operatorId: card.operatorId,
+        valorFinal: card.valorFinal,
+      });
+      tx.registroHorometro.findUnique.mockResolvedValue(card);
+    }
+
+    beforeEach(() => {
+      givenCard(closedCard());
+      tx.$queryRaw.mockResolvedValue([]);
+      tx.registroHorometro.update.mockResolvedValue({});
+      tx.registroCombustible.findUnique.mockResolvedValue(null);
+      tx.registroCombustible.create.mockResolvedValue({});
+      tx.registroCombustible.update.mockResolvedValue({});
+      tx.registroCombustible.delete.mockResolvedValue({});
+      tx.equipment.findUnique.mockResolvedValue({
+        controlUnit: 'HOURS',
+        currentHourmeter: 130,
+        currentMileage: null,
+      });
+      changeLog.record.mockResolvedValue({});
+    });
+
+    async function errorOf(promise: Promise<unknown>): Promise<unknown> {
+      try {
+        await promise;
+      } catch (error: unknown) {
+        return (error as { getResponse: () => unknown }).getResponse();
+      }
+      throw new Error('se esperaba un error');
+    }
+
+    describe('precondiciones', () => {
+      it('un body vacío es 400', async () => {
+        await expect(
+          service.update('card_1', {}, owner),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('404 CARD_NOT_FOUND si no existe', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue(null);
+
+        expect(
+          await errorOf(service.update('x', { observaciones: 'a' }, owner)),
+        ).toMatchObject({ code: 'CARD_NOT_FOUND' });
+      });
+
+      it('403 NOT_OWNER para otro supervisor', async () => {
+        const other = buildSession('sup_2');
+
+        expect(
+          await errorOf(
+            service.update('card_1', { observaciones: 'a' }, other),
+          ),
+        ).toMatchObject({ code: 'NOT_OWNER' });
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('un ADMIN puede editar la tarjeta de otro', async () => {
+        const admin = buildSession('adm_1', 'ADMIN', 'Admin');
+
+        await service.update('card_1', { observaciones: 'a' }, admin);
+
+        expect(changeLog.record).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        ['valorFinal', { valorFinal: 140 }],
+        ['fuelLiters', { fuelLiters: 10 }],
+        ['adBlue', { adBlue: true, adBlueLiters: 5 }],
+        ['adBlueLiters', { adBlueLiters: 5 }],
+      ])(
+        '409 CARD_NOT_CLOSED si la tarjeta sigue abierta y se toca %s',
+        async (_name, body) => {
+          givenCard(closedCard({ valorFinal: null }));
+
+          expect(
+            await errorOf(service.update('card_1', body, owner)),
+          ).toMatchObject({ code: 'CARD_NOT_CLOSED' });
+          expect(prisma.$transaction).not.toHaveBeenCalled();
+        },
+      );
+
+      it('en una tarjeta abierta sí se editan observaciones, operador y lectura inicial', async () => {
+        givenCard(closedCard({ valorFinal: null }));
+
+        await service.update(
+          'card_1',
+          { observaciones: 'Cambio de turno', valorInicial: 105 },
+          owner,
+        );
+
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          observaciones: 'Cambio de turno',
+          valorInicial: 105,
+        });
+      });
+    });
+
+    describe('horómetro', () => {
+      it('HOURMETER_BELOW_INITIAL si la final queda bajo la inicial', async () => {
+        expect(
+          await errorOf(service.update('card_1', { valorFinal: 90 }, owner)),
+        ).toMatchObject({ code: 'HOURMETER_BELOW_INITIAL' });
+      });
+
+      it('también si es la inicial la que sube por encima de la final guardada', async () => {
+        expect(
+          await errorOf(service.update('card_1', { valorInicial: 140 }, owner)),
+        ).toMatchObject({ code: 'HOURMETER_BELOW_INITIAL' });
+      });
+
+      it('al subir la final reconcilia el contador del equipo', async () => {
+        await service.update('card_1', { valorFinal: 140 }, owner);
+
+        expect(tx.equipment.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({ data: { currentHourmeter: 140 } }),
+        );
+      });
+
+      it('si la final queda bajo el contador no falla ni lo baja: solo marca la auditoría', async () => {
+        tx.equipment.findUnique.mockResolvedValue({
+          controlUnit: 'HOURS',
+          currentHourmeter: 500,
+          currentMileage: null,
+        });
+
+        await service.update('card_1', { valorFinal: 120 }, owner);
+
+        expect(tx.equipment.updateMany).not.toHaveBeenCalled();
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          valorFinal: 120,
+          belowPreviousReading: true,
+        });
+      });
+
+      it('no toca el contador si la lectura final no cambia', async () => {
+        await service.update('card_1', { observaciones: 'a' }, owner);
+
+        expect(tx.equipment.updateMany).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('operador', () => {
+      it('valida al nuevo operador, rederiva el snapshot y lo registra por nombre', async () => {
+        assertActive.mockResolvedValue({ id: 'op_2', name: 'Luis Pérez' });
+
+        await service.update('card_1', { operatorId: 'op_2' }, owner);
+
+        expect(assertActive).toHaveBeenCalledWith('op_2');
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          operatorId: 'op_2',
+          operador: 'Luis Pérez',
+        });
+        expect(changeLog.record).toHaveBeenCalledWith(
+          tx,
+          'shift_card',
+          'card_1',
+          { id: 'sup_1', name: 'Ana Soto' },
+          [
+            {
+              field: 'operatorId',
+              label: 'Operador',
+              before: 'Patricio Rojas',
+              after: 'Luis Pérez',
+            },
+          ],
+        );
+      });
+
+      it('un operador inactivo propaga el 409 sin escribir', async () => {
+        assertActive.mockRejectedValue(
+          new ConflictException({ code: 'OPERATOR_INACTIVE', message: 'x' }),
+        );
+
+        await expect(
+          service.update('card_1', { operatorId: 'op_9' }, owner),
+        ).rejects.toBeInstanceOf(ConflictException);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('si el operador no cambia no se exige que siga activo', async () => {
+        await service.update(
+          'card_1',
+          { operatorId: 'op_1', observaciones: 'a' },
+          owner,
+        );
+
+        expect(assertActive).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('AdBlue', () => {
+      it('con AdBlue sin litros es 400', async () => {
+        await expect(
+          service.update('card_1', { adBlue: true }, owner),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+      });
+
+      it('litros sin AdBlue es 400', async () => {
+        await expect(
+          service.update('card_1', { adBlueLiters: 10 }, owner),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      });
+
+      it('AdBlue en false con litros en el mismo body es 400', async () => {
+        await expect(
+          service.update('card_1', { adBlue: false, adBlueLiters: 5 }, owner),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      });
+
+      it('litros fuera de rango (> 1000) es 400', async () => {
+        await expect(
+          service.update('card_1', { adBlue: true, adBlueLiters: 1001 }, owner),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      });
+
+      it('agrega AdBlue con litros y lo registra con Sí/No legibles', async () => {
+        await service.update(
+          'card_1',
+          { adBlue: true, adBlueLiters: 12.5 },
+          owner,
+        );
+
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          adBlue: true,
+          adBlueLiters: 12.5,
+        });
+        expect(changeLog.record).toHaveBeenCalledWith(
+          tx,
+          'shift_card',
+          'card_1',
+          expect.anything(),
+          [
+            { field: 'adBlue', label: 'AdBlue', before: 'No', after: 'Sí' },
+            {
+              field: 'adBlueLiters',
+              label: 'Litros de AdBlue',
+              before: '—',
+              after: '12.5',
+            },
+          ],
+        );
+      });
+
+      it('con AdBlue ya cargado, cambiar solo los litros alcanza', async () => {
+        givenCard(closedCard({ adBlue: true, adBlueLiters: 10 }));
+
+        await service.update('card_1', { adBlueLiters: 20 }, owner);
+
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          adBlue: true,
+          adBlueLiters: 20,
+        });
+      });
+
+      it('quitar el AdBlue sin mandar litros los limpia', async () => {
+        givenCard(closedCard({ adBlue: true, adBlueLiters: 10 }));
+
+        await service.update('card_1', { adBlue: false }, owner);
+
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          adBlue: false,
+          adBlueLiters: null,
+        });
+      });
+    });
+
+    describe('combustible vinculado', () => {
+      it('0 -> 20 L sin carga vinculada: la crea con la foto, el tipo y la fecha de la tarjeta', async () => {
+        await service.update('card_1', { fuelLiters: 20 }, owner);
+
+        expect(tx.registroCombustible.create).toHaveBeenCalledTimes(1);
+        expect(lastCallData(tx.registroCombustible.create)).toEqual({
+          equipoId: 'e1',
+          litros: 20,
+          tipo: 'PETROLEO',
+          fotoKey: 'fuel-photos/final.jpg',
+          fecha: new Date('2026-09-28T19:55:00.000Z'),
+          registroHorometroId: 'card_1',
+        });
+      });
+
+      it('20 -> 35 L con carga vinculada: actualiza los litros de esa fila', async () => {
+        givenCard(closedCard({ fuelLiters: 20 }));
+        tx.registroCombustible.findUnique.mockResolvedValue({ id: 'fuel_1' });
+
+        await service.update('card_1', { fuelLiters: 35 }, owner);
+
+        expect(tx.registroCombustible.update).toHaveBeenCalledWith({
+          where: { id: 'fuel_1' },
+          data: { litros: 35 },
+        });
+        expect(tx.registroCombustible.create).not.toHaveBeenCalled();
+      });
+
+      it('20 -> 0 L: borra la carga vinculada', async () => {
+        givenCard(closedCard({ fuelLiters: 20 }));
+        tx.registroCombustible.findUnique.mockResolvedValue({ id: 'fuel_1' });
+
+        await service.update('card_1', { fuelLiters: 0 }, owner);
+
+        expect(tx.registroCombustible.delete).toHaveBeenCalledWith({
+          where: { id: 'fuel_1' },
+        });
+      });
+
+      it('si los litros no cambian no toca la carga vinculada', async () => {
+        givenCard(closedCard({ fuelLiters: 20 }));
+
+        await service.update('card_1', { observaciones: 'a' }, owner);
+
+        expect(tx.registroCombustible.findUnique).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('auditoría', () => {
+      it('registra en la misma transacción y avisa después, con etiquetas legibles', async () => {
+        await service.update('card_1', { observaciones: 'Cambio' }, owner);
+
+        expect(changeLog.record).toHaveBeenCalledWith(
+          tx,
+          'shift_card',
+          'card_1',
+          { id: 'sup_1', name: 'Ana Soto' },
+          [
+            {
+              field: 'observaciones',
+              label: 'Observaciones',
+              before: '—',
+              after: 'Cambio',
+            },
+          ],
+        );
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          'record.edited',
+          expect.objectContaining({
+            entity: 'shift_card',
+            entityId: 'card_1',
+            editedBy: 'Ana Soto',
+            changes: [{ label: 'Observaciones', before: '—', after: 'Cambio' }],
+          }),
+        );
+        const [, event] = eventEmitter.emit.mock.calls[0] as [
+          string,
+          { entityLabel: string },
+        ];
+        expect(event.entityLabel).toContain('EX-001');
+      });
+
+      it('si nada cambió no escribe, no registra y no avisa', async () => {
+        await service.update(
+          'card_1',
+          { valorFinal: 130, fuelLiters: 0, observaciones: '  ' },
+          owner,
+        );
+
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+        expect(tx.registroCombustible.create).not.toHaveBeenCalled();
+        expect(changeLog.record).not.toHaveBeenCalled();
+        expect(eventEmitter.emit).not.toHaveBeenCalled();
+      });
+
+      it('si la transacción falla no se avisa', async () => {
+        changeLog.record.mockRejectedValue(new Error('db caída'));
+
+        await expect(
+          service.update('card_1', { observaciones: 'a' }, owner),
+        ).rejects.toThrow('db caída');
+        expect(eventEmitter.emit).not.toHaveBeenCalled();
+      });
+
+      it('responde la tarjeta con AdBlue', async () => {
+        givenCard(closedCard({ adBlue: true, adBlueLiters: 10 }));
+
+        const res = await service.update(
+          'card_1',
+          { adBlueLiters: 10, observaciones: 'a' },
+          owner,
+        );
+
+        expect(res).toMatchObject({ adBlue: true, adBlueLiters: 10 });
+      });
+    });
+
+    describe('X-Expected', () => {
+      it('con la base vigente aplica', async () => {
+        await service.update('card_1', { valorFinal: 140 }, owner, {
+          valorFinal: 130,
+        });
+
+        expect(tx.registroHorometro.update).toHaveBeenCalledTimes(1);
+      });
+
+      it('si el dato cambió por otro lado: 409 STALE_UPDATE nombrando el campo, sin escribir', async () => {
+        const body = await errorOf(
+          service.update('card_1', { valorFinal: 140 }, owner, {
+            valorFinal: 125,
+          }),
+        );
+
+        expect(body).toMatchObject({
+          code: 'STALE_UPDATE',
+          message: expect.stringContaining('Lectura final') as string,
+        });
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+        expect(eventEmitter.emit).not.toHaveBeenCalled();
+      });
+
+      it('el reintento de una edición ya aplicada pasa y no repite escritura ni aviso', async () => {
+        givenCard(closedCard({ valorFinal: 140 }));
+
+        await service.update('card_1', { valorFinal: 140 }, owner, {
+          valorFinal: 130,
+        });
+
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+        expect(changeLog.record).not.toHaveBeenCalled();
+        expect(eventEmitter.emit).not.toHaveBeenCalled();
+      });
+
+      it('un campo esperado que el body no toca no da ni falso pase ni conflicto', async () => {
+        await service.update('card_1', { observaciones: 'a' }, owner, {
+          valorFinal: 999,
+        });
+
+        expect(tx.registroHorometro.update).toHaveBeenCalledTimes(1);
+      });
+
+      it('compara el operador por id y el texto sin espacios', async () => {
+        await service.update('card_1', { observaciones: 'a' }, owner, {
+          operatorId: 'op_1',
+          observaciones: '   ',
+        });
+
+        expect(tx.registroHorometro.update).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('bloquea la fila antes de releerla', async () => {
+      await service.update('card_1', { observaciones: 'a' }, owner);
+
+      expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('findChanges', () => {
+    beforeEach(() => {
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        supervisorId: 'sup_1',
+        operatorId: 'op_1',
+        valorFinal: 130,
+      });
+    });
+
+    it('el dueño lee el historial de su tarjeta', async () => {
+      changeLog.findFor.mockResolvedValue([{ id: 'c1' }]);
+
+      const res = await service.findChanges('card_1', buildSession('sup_1'));
+
+      expect(changeLog.findFor).toHaveBeenCalledWith('shift_card', 'card_1');
+      expect(res).toEqual([{ id: 'c1' }]);
+    });
+
+    it('un ADMIN lo lee aunque no sea el dueño', async () => {
+      changeLog.findFor.mockResolvedValue([]);
+
+      await service.findChanges('card_1', buildSession('adm', 'ADMIN'));
+
+      expect(changeLog.findFor).toHaveBeenCalled();
+    });
+
+    it('otro supervisor: 403 NOT_OWNER', async () => {
+      await expect(
+        service.findChanges('card_1', buildSession('sup_2')),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(changeLog.findFor).not.toHaveBeenCalled();
+    });
+
+    it('404 si la tarjeta no existe', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.findChanges('x', buildSession('sup_1')),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 

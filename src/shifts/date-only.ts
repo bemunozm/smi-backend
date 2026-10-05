@@ -48,6 +48,15 @@ export function todayInBusinessTimeZone(date: Date): string {
   }).format(date);
 }
 
+/**
+ * `DD-MM-YYYY` del instante `date` en el calendario de `BUSINESS_TIME_ZONE`,
+ * para textos que lee una persona (avisos, etiquetas). Sin el huso explícito,
+ * un servidor en UTC muestra el día siguiente para lo registrado de noche.
+ */
+export function formatBusinessDate(date: Date): string {
+  return date.toLocaleDateString('es-CL', { timeZone: BUSINESS_TIME_ZONE });
+}
+
 export function isDateOnlyString(value: string): boolean {
   return DATE_ONLY_REGEX.test(value);
 }

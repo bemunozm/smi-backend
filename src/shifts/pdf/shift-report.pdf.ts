@@ -23,6 +23,9 @@ export interface ShiftReportCardInput {
   /** `valorFinal − valorInicial`, `null` si la tarjeta sigue abierta. */
   readonly horasMaquina: number | null;
   readonly fuelLiters: number | null;
+  readonly adBlue: boolean;
+  /** Solo tiene valor cuando `adBlue` es `true`. */
+  readonly adBlueLiters: number | null;
   readonly observaciones: string | null;
 }
 
@@ -101,6 +104,14 @@ function buildCardRow(card: ShiftReportCardInput): Table['body'][number] {
       fontSize: 9,
       alignment: 'right',
     },
+    {
+      text:
+        card.adBlue && card.adBlueLiters !== null
+          ? formatNumber(card.adBlueLiters)
+          : '—',
+      fontSize: 9,
+      alignment: 'right',
+    },
     { text: card.observaciones ?? '—', fontSize: 9 },
   ];
 }
@@ -113,13 +124,14 @@ function buildCardsTable(cards: readonly ShiftReportCardInput[]): Content {
     { text: 'Horómetro final', style: 'tableHeader', alignment: 'right' },
     { text: 'Horas máquina', style: 'tableHeader', alignment: 'right' },
     { text: 'Litros', style: 'tableHeader', alignment: 'right' },
+    { text: 'AdBlue (L)', style: 'tableHeader', alignment: 'right' },
     { text: 'Observaciones', style: 'tableHeader' },
   ];
 
   return {
     table: {
       headerRows: 1,
-      widths: ['16%', '14%', '12%', '12%', '12%', '10%', '24%'],
+      widths: ['15%', '13%', '11%', '11%', '11%', '9%', '10%', '20%'],
       body: [header, ...cards.map(buildCardRow)],
     },
     layout: 'lightHorizontalLines',
