@@ -21,19 +21,24 @@ services:
 
   # Almacenamiento de archivos de Flota (foto/documento de equipo, foto de
   # combustible) en desarrollo local — en producción se usa Cloudflare R2
-  # (mismo protocolo S3, ver `.env.example` STORAGE_*). Imagen desde quay.io:
-  # Docker Hub retiró `minio/minio` y `minio/mc`, quay.io es la distribución
-  # oficial vigente.
+  # (mismo protocolo S3, ver `.env.example` STORAGE_*).
+  #
+  # Imagen: archivo LEGACY de Bitnami (Broadcom). MinIO retiró el acceso
+  # público a sus imágenes oficiales: Docker Hub dio de baja `minio/minio` y
+  # quay.io responde 401 incluso a pulls anónimos (verificado 10/2026 con el
+  # flujo de token anónimo). `bitnamilegacy` es el archivo congelado de
+  # Broadcom — sin actualizaciones, sirve SOLO para desarrollo local. El
+  # entrypoint de Bitnami ya levanta `minio server` con consola en :9001 (no
+  # lleva `command:`) y los datos viven en /bitnami/minio/data.
   #
   # ⚠️ SIEMPRE levantar con nombres explícitos: `docker compose up -d minio
   # minio-init`. Este `smi-postgres` NO fue creado por este compose (viene de
   # antes) — un `docker compose up` sin nombres puede chocar con contenedores
   # de otro proyecto local (RUKLO) que escuchan en otros puertos.
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
     container_name: smi-minio
     restart: unless-stopped
-    command: server /data --console-address ":9001"
     environment:
       # Credenciales SOLO de desarrollo local — deben calzar con los defaults
       # de `STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY` en
@@ -44,7 +49,7 @@ services:
       - '127.0.0.1:9000:9000'
       - '127.0.0.1:9001:9001'
     volumes:
-      - smi_minio_data:/data
+      - smi_minio_data:/bitnami/minio/data
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
       interval: 5s
@@ -55,7 +60,8 @@ services:
   # anónimo), aplica el lifecycle que expira `tmp/` al día y el CORS
   # GET/HEAD para el front local. Corre una vez y termina (no `restart`).
   minio-init:
-    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    # Cliente `mc` del mismo archivo legacy (ver nota de `minio` arriba).
+    image: bitnamilegacy/minio-client:2025.7.21-debian-12-r3
     container_name: smi-minio-init
     depends_on:
       minio:
