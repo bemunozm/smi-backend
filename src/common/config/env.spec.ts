@@ -1,6 +1,7 @@
 import {
   MAX_STORAGE_SIGNED_URL_TTL_SECONDS,
   MIN_STORAGE_SIGNED_URL_TTL_SECONDS,
+  parseAuthIpAddressHeaders,
   parseAuthRateLimitEnabled,
   parseOcrWorkerUrl,
   parseStorageSignedUrlTtlSeconds,
@@ -82,6 +83,58 @@ describe('parseAuthRateLimitEnabled', () => {
 
   it('string vacío se trata como "sin valor" (usa el default)', () => {
     expect(parseAuthRateLimitEnabled('  ', true)).toBe(true);
+  });
+});
+
+/**
+ * `AUTH_IP_ADDRESS_HEADERS` define de qué header(s) saca Better Auth la IP del
+ * cliente (rate limit de login). Un typo debe fallar al arrancar, no dejar al
+ * rate limit sin ver la IP real.
+ */
+describe('parseAuthIpAddressHeaders', () => {
+  it('sin valor, cae a x-forwarded-for', () => {
+    expect(parseAuthIpAddressHeaders(undefined)).toEqual(['x-forwarded-for']);
+  });
+
+  it('string vacío o solo espacios se trata como "sin valor"', () => {
+    expect(parseAuthIpAddressHeaders('')).toEqual(['x-forwarded-for']);
+    expect(parseAuthIpAddressHeaders('   ')).toEqual(['x-forwarded-for']);
+  });
+
+  it('acepta un solo header', () => {
+    expect(parseAuthIpAddressHeaders('cf-connecting-ip')).toEqual([
+      'cf-connecting-ip',
+    ]);
+  });
+
+  it('acepta una lista y respeta el orden, ignorando espacios alrededor', () => {
+    expect(
+      parseAuthIpAddressHeaders(' cf-connecting-ip , x-forwarded-for '),
+    ).toEqual(['cf-connecting-ip', 'x-forwarded-for']);
+  });
+
+  it('rechaza entradas vacías (coma sobrante o doble)', () => {
+    expect(() => parseAuthIpAddressHeaders('x-forwarded-for,')).toThrow(
+      /AUTH_IP_ADDRESS_HEADERS/,
+    );
+    expect(() => parseAuthIpAddressHeaders('a,,b')).toThrow(
+      /AUTH_IP_ADDRESS_HEADERS/,
+    );
+  });
+
+  it('rechaza mayúsculas', () => {
+    expect(() => parseAuthIpAddressHeaders('X-Forwarded-For')).toThrow(
+      /minúsculas/,
+    );
+  });
+
+  it('rechaza caracteres que no son válidos en un nombre de header', () => {
+    expect(() => parseAuthIpAddressHeaders('x forwarded')).toThrow(
+      /AUTH_IP_ADDRESS_HEADERS/,
+    );
+    expect(() => parseAuthIpAddressHeaders('x-forwarded-for:')).toThrow(
+      /AUTH_IP_ADDRESS_HEADERS/,
+    );
   });
 });
 

@@ -49,6 +49,18 @@ export const auth = betterAuth({
       '/sign-in/email': { window: 60, max: 5 },
     },
   },
+  // Detrás de Traefik (Dokploy) el cliente real no es la IP del socket: el rate
+  // limit y las sesiones necesitan leerla de un header. Traefik reescribe
+  // `X-Forwarded-For` cuando el origen no es de confianza, así que ahí ese
+  // header trae la IP real y es el default. Si algún día se activa el proxy de
+  // Cloudflare (nube naranja) habría que anteponer `cf-connecting-ip`, y SOLO
+  // si el origen acepta tráfico exclusivamente de Cloudflare: si no, cualquiera
+  // puede falsificar ese header y esquivar el rate limit.
+  advanced: {
+    ipAddress: {
+      ipAddressHeaders: [...env.authIpAddressHeaders],
+    },
+  },
   plugins: [
     admin({
       // Roles de Access Control custom — ver access-control.ts para el
