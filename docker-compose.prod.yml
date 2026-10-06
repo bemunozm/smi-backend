@@ -107,11 +107,14 @@ services:
     deploy:
       resources:
         limits:
-          # RSS en regimen ~720MB (ver ocr-python/README.md); 1.5G cubre el
-          # pico y las arenas de ONNX Runtime sin dejar que un fallo del
-          # worker se coma la RAM del VPS.
+          # RSS en regimen ~790MB en ARM64 con 2 CPU (ver ocr-python/README.md);
+          # 1.5G cubre el pico y las arenas de ONNX Runtime sin dejar que un
+          # fallo del worker se coma la RAM del VPS.
           memory: 1.5G
-          cpus: "1.5"
+          # 2.0 = un CPU por hilo ONNX (OCR_THREADS=2). Con 1.5 el cgroup frenaba
+          # el 93% de los periodos y la mediana en ARM era 2.0s por foto; con
+          # 2.0 baja a ~1.44s a cambio de ~50MB mas.
+          cpus: "2.0"
       # `update_config` solo aplica en swarm; en compose sin swarm se ignora.
       # La garantia de que no convivan dos workers (~720MB c/u) es otra:
       # `docker compose up` recrea un servicio deteniendo el contenedor viejo
@@ -143,8 +146,10 @@ services:
         condition: service_started
     ports:
       # Solo loopback: el acceso es por tunel SSH (`ssh -L`). Abrirlo a
-      # internet exige un reverse proxy con TLS delante.
-      - "127.0.0.1:${BACKEND_HOST_PORT:-3000}:3000"
+      # internet exige un reverse proxy con TLS delante. En el host se usa el
+      # 3100 porque el 3000 queda reservado para el panel de administracion de
+      # Dokploy; el contenedor sigue escuchando en el 3000.
+      - "127.0.0.1:${BACKEND_HOST_PORT:-3100}:3000"
     healthcheck:
       test:
         - CMD

@@ -62,7 +62,7 @@ propio, llama a los lectores con esa ruta y borra el temporal en `finally`.
 Las lecturas se **serializan** con un `threading.Lock` (una inferencia a la
 vez sobre las sesiones ONNX compartidas); el backend además las encola en
 serie y degrada a `UNREADABLE` ante cualquier fallo (conexión rechazada, 503,
-timeout de 10 s, cuerpo inválido).
+timeout de 15 s contado desde que la request entra a la cola, cuerpo inválido).
 
 **Vigilante interno.** Si UNA lectura pasa de `OCR_READ_WATCHDOG_SECONDS`
 (default 30), el proceso sale con código 70 (`os._exit`). Es lo que reemplaza
@@ -146,18 +146,39 @@ de contenedor reiniciándose).
 Medida desde afuera del proceso con `bench/ocr_ram_bench.py` (RSS vía psutil,
 `OCR_THREADS=2`, las 106 fotos de `_inbox/total_surtidor`):
 
-| Momento | Windows nativo | Docker x86 (WSL2) |
-|---|---|---|
-| Modelos recién cargados (0 lecturas) | 390 MB | 479 MB |
-| Tras la 1ª foto | 574 MB | 677 MB |
-| Tras la 3ª | 726 MB | 838 MB |
-| Tras la 20ª / todas | 729 MB | 841 MB |
-| Pico (SO) | 747 MB | 841 MB |
+| Momento | Windows nativo | Docker x86 (WSL2) | ARM64, 1.5 CPU | ARM64, 2.0 CPU |
+|---|---|---|---|---|
+| Modelos recién cargados (0 lecturas) | 390 MB | 479 MB | 426 MB | 477 MB |
+| Tras la 1ª foto | 574 MB | 677 MB | 607 MB | 658 MB |
+| Tras la 3ª | 726 MB | 838 MB | 735 MB | 787 MB |
+| Tras la 20ª / todas | 729 MB | 841 MB | 738 MB | 790 MB |
+| Pico (SO) | 747 MB | 841 MB | 738 MB | 790 MB |
+
+Tiempo por foto (worker tibio, lecturas en serie):
+
+| | Windows nativo | Docker x86 (WSL2) | ARM64, 1.5 CPU | ARM64, 2.0 CPU |
+|---|---|---|---|---|
+| 1ª foto | 700 ms | 883 ms | 2058 ms | 1494 ms |
+| Mediana | 567 ms | 687 ms | 1997 ms | 1440 ms |
+| p95 | 632 ms | 997 ms | 2246 ms | 1645 ms |
+| Máximo | 700 ms | 1620 ms | 2317 ms | 1746 ms |
+
+ARM64 = Hetzner CAX21 (Ampere Neoverse-N1, 4 vCPU), Docker, `OCR_THREADS=2`.
+Con 1.5 CPU el cgroup frenaba el 93% de los periodos (2 hilos ONNX contra 1.5
+CPU de cuota); con 2.0 baja al 33% y la mediana cae ~28%, a cambio de ~50 MB.
+El compose de producción usa 2.0.
 
 ONNX Runtime reserva buffers de arena adicionales las primeras 3-6 lecturas y
 después queda estable: dimensionar con el valor **en régimen**, no con el de
-recién cargado. El salto es ~1.9x y ocurre solo. Los números en ARM se miden
-con `scripts/bench-ocr.sh` en el VPS (ver "Benchmark").
+recién cargado. El salto es ~1.9x y ocurre solo.
+
+**Lecturas iguales entre plataformas.** Las 4 corridas dan 96 `CONFIRMED`, 10
+`REVIEW` y 0 `UNREADABLE`. Foto por foto, 105 de 106 son idénticas (valor,
+estado y confianza); el CRNN es idéntico en todas. La única diferencia es una
+lectura de Florence (int8) en una foto que en todas las plataformas queda en
+`REVIEW` porque el CRNN no coincide: ONNX Runtime usa kernels int8 distintos en
+x86 y en ARM, y eso puede cambiar un dígito dudoso. Ninguna lectura confirmada
+cambia.
 
 **Reinicios.** Antes, Node mataba y relanzaba el worker, con un posible
 solape de dos procesos de ~720 MB. Ahora un reinicio es el MISMO contenedor

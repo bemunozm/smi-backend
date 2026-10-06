@@ -99,16 +99,18 @@ contenedores de otros proyectos con nombres que chocarían.
 |---|---|---|
 | `postgres` | `postgres:16` | Volumen con nombre, `pg_isready`. **Sin puertos publicados.** |
 | `migrate` | `Dockerfile` target `migrate` | `prisma migrate deploy`, corre y termina (`restart: "no"`). |
-| `ocr-worker` | `ocr-python/Dockerfile` target `prod` | Modelos montados de solo lectura. Sin puertos publicados. Límite 1.5G / 1.5 CPU. `restart: unless-stopped`. |
+| `ocr-worker` | `ocr-python/Dockerfile` target `prod` | Modelos montados de solo lectura. Sin puertos publicados. Límite 1.5G / 2.0 CPU. `restart: unless-stopped`. |
 | `backend` | `Dockerfile` target `runtime` | Límite 768M. Puerto **solo en `127.0.0.1`**. |
 
 Orden de arranque: `postgres` healthy → `migrate` termina con 0 → `backend`.
 El backend solo espera que `ocr-worker` *arranque*, no que esté listo
 (degrada si no lo está). Las migraciones son automáticas en cada `up`.
 
-Límites: el worker OCR consume ~840 MB en régimen (medido, ver
-`ocr-python/README.md`) y el backend ~160 MB en reposo; los topes dejan margen
-sin que una fuga en uno afecte a los demás. Un worker colgado en una lectura
+Límites: el worker OCR consume ~790 MB en régimen en el VPS ARM64 con 2 CPU
+(medido, ver `ocr-python/README.md`) y el backend ~90-160 MB en reposo; los
+topes dejan margen sin que una fuga en uno afecte a los demás. El worker tiene
+2 CPU porque corre 2 hilos de ONNX Runtime: con 1.5 el cgroup lo frenaba y cada
+foto tardaba ~2 s en ARM en vez de ~1.4 s. Un worker colgado en una lectura
 (> `OCR_READ_WATCHDOG_SECONDS`) sale solo con código distinto de 0 y Docker lo
 reinicia: el compose sin swarm no reinicia contenedores solo por `unhealthy`.
 
@@ -117,12 +119,18 @@ backend) y `edge` (solo el backend, que publica el puerto y sale a R2/SMTP).
 
 ### Puertos y acceso
 
-El backend se publica únicamente en `127.0.0.1:${BACKEND_HOST_PORT:-3000}`.
-Desde un PC, por túnel SSH:
+El backend se publica únicamente en `127.0.0.1:${BACKEND_HOST_PORT:-3100}`.
+En el host se usa el 3100 porque el 3000 queda reservado para el panel de
+administración de Dokploy; dentro del contenedor el backend sigue en el 3000.
+Cuando Dokploy administre el despliegue, las apps se publican por Traefik
+(80/443) con dominio, no por un puerto del host.
+
+Desde un PC, por túnel SSH (con `BETTER_AUTH_URL="http://localhost:3100"` en
+el `.env`):
 
 ```bash
-ssh -L 3000:127.0.0.1:3000 usuario@IP_DEL_VPS
-# luego http://localhost:3000/api/health
+ssh -L 3100:127.0.0.1:3100 usuario@IP_DEL_VPS
+# luego http://localhost:3100/api/health
 ```
 
 Exponerlo a internet exige un reverse proxy con TLS delante (ver
@@ -154,7 +162,7 @@ scp -r ocr-python/models/ usuario@IP_DEL_VPS:/opt/smi/ocr-models/
 # 3. Construir (en el VPS) y levantar
 docker compose -f docker-compose.prod.yml -p smi up -d --build
 docker compose -f docker-compose.prod.yml -p smi ps
-curl http://127.0.0.1:3000/api/health
+curl http://127.0.0.1:3100/api/health
 ```
 
 Mientras no exista el bucket de Cloudflare R2, completa las `STORAGE_*` con
@@ -201,7 +209,7 @@ python ocr-python/bench/compare_runs.py bench-results/<a> bench-results/<b>
 Todas están documentadas en `.env.example`. Las que el compose de producción
 **exige** (se niega a levantar sin ellas): `POSTGRES_PASSWORD`,
 `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `FRONTEND_URL` y las 5 `STORAGE_*`.
-Con default: `POSTGRES_USER` / `POSTGRES_DB`, `BACKEND_HOST_PORT` (3000),
+Con default: `POSTGRES_USER` / `POSTGRES_DB`, `BACKEND_HOST_PORT` (3100),
 `OCR_MODELS_HOST_DIR` (`./ocr-python/models`), `OCR_THREADS` (2),
 `OCR_READ_WATCHDOG_SECONDS` (30), `AUTH_RATE_LIMIT_ENABLED` (true en
 producción), SMTP (opcional) y `SHIFT_REPORT_EXTRA_RECIPIENTS`. El compose fija
