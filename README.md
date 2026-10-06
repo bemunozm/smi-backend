@@ -133,7 +133,7 @@ Es el modo habitual. El dominio es `https://smi.evonova.cl`: el frontend en `/`
 (otra app de Dokploy) y este backend en `/api`. Dokploy clona el repositorio en
 `/etc/dokploy/compose/<appName>/code`, escribe ahí el `.env` con las variables
 de la app y ejecuta
-`docker compose -p <appName> -f docker-compose.prod.yml up -d --build --remove-orphans`
+`docker compose -p <appName> --env-file .env -f docker-compose.prod.yml up -d --build --remove-orphans`
 en el propio VPS (ARM64, ver "Nota ARM64").
 
 1. **Crear la app**: en un proyecto de Dokploy, servicio tipo **Compose** con
