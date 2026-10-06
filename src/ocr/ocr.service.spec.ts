@@ -204,12 +204,14 @@ describe('OcrService', () => {
   });
 
   describe('degradación', () => {
-    it('timeout: aborta el fetch y degrada', async () => {
+    it('timeout: a los 15s aborta el fetch y degrada', async () => {
       jest.useFakeTimers();
       fetchMock.mockImplementation(hangingUntilAborted);
 
       const pending = service.readFuelValue(image);
-      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(14_999);
+      expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
       const result = await pending;
 
       expect(result).toEqual(DEGRADED);
@@ -224,7 +226,7 @@ describe('OcrService', () => {
 
       const first = service.readFuelValue(image);
       const second = service.readFuelValue(image);
-      await jest.advanceTimersByTimeAsync(10_000);
+      await jest.advanceTimersByTimeAsync(15_000);
 
       await expect(first).resolves.toEqual(DEGRADED);
       await expect(second).resolves.toMatchObject({ status: 'CONFIRMED' });

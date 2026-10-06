@@ -59,13 +59,16 @@ const DEGRADED_RESULT: OcrFuelReadingResult = {
 };
 
 /**
- * Tibio (modelos ya cargados) el ensemble responde en ~0.5-0.9s en la
- * máquina de desarrollo (ver benchmark en `ocr-python/README.md`). 10s da
- * margen generoso sin dejar una request colgada indefinidamente si el worker
- * se cuelga; el vigilante del propio worker (`OCR_READ_WATCHDOG_SECONDS`) es
- * quien lo reinicia, esta request solo se degrada.
+ * Tibio (modelos ya cargados) el ensemble responde en ~0.5-0.9s en x86 y en
+ * ~1.4-2s en el VPS ARM64 (ver benchmark en `ocr-python/README.md`). El
+ * plazo cuenta desde que la request entra a la cola serial, así que tiene que
+ * cubrir las lecturas que esperan delante (hasta `MAX_PENDING_REQUESTS`): 15s
+ * alcanza para una ráfaga de varias fotos en ARM sin dejar una request colgada
+ * indefinidamente. Queda por debajo del vigilante del worker
+ * (`OCR_READ_WATCHDOG_SECONDS`, 30s), que es quien lo reinicia; esta request
+ * solo se degrada.
  */
-const REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 15_000;
 /** `/health` solo se consulta al arrancar para loguear el estado: no merece esperar tanto. */
 const STARTUP_HEALTH_TIMEOUT_MS = 3_000;
 /**
@@ -75,7 +78,7 @@ const STARTUP_HEALTH_TIMEOUT_MS = 3_000;
  * uploads concurrentes (varios choferes subiendo fotos a la vez) encolaría
  * sin límite — cada request esperando cada vez más, hasta el timeout de
  * `REQUEST_TIMEOUT_MS` cada una. Mejor degradar de inmediato las que exceden
- * el cupo: el usuario tipea a mano en vez de esperar 10s para lo mismo.
+ * el cupo: el usuario tipea a mano en vez de esperar 15s para lo mismo.
  */
 const MAX_PENDING_REQUESTS = 6;
 
