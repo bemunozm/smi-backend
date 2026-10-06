@@ -1,0 +1,18 @@
+# Override del despliegue MANUAL (sin Dokploy, acceso por tunel SSH). Se
+# SUPERPONE al compose de produccion y solo publica el puerto del backend:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.port.yml -p smi up -d --build
+#
+# Con Dokploy NO se usa: Traefik enruta por dominio y el backend no publica
+# puertos en el host.
+#
+# Variable:
+#   BACKEND_HOST_PORT  puerto del host (default 3100)
+services:
+  backend:
+    ports:
+      # Solo loopback: el acceso es por tunel SSH (`ssh -L`). Abrirlo a
+      # internet exige un reverse proxy con TLS delante. En el host se usa el
+      # 3100 porque el 3000 queda reservado para el panel de administracion de
+      # Dokploy; el contenedor sigue escuchando en el 3000.
+      - "127.0.0.1:${BACKEND_HOST_PORT:-3100}:3000"

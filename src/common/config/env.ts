@@ -38,11 +38,19 @@ export interface AppEnv {
   storageSignedUrlTtlSeconds: number;
   shiftReportExtraRecipients: readonly string[];
   authRateLimitEnabled: boolean;
+  authIpAddressHeaders: readonly string[];
 }
 
 const MIN_SECRET_LENGTH = 32;
 const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 const DEFAULT_PORT = 3000;
+// Mismo default que Better Auth (`advanced.ipAddress.ipAddressHeaders`); se
+// declara acá para que sea explícito y testeable.
+const DEFAULT_AUTH_IP_ADDRESS_HEADERS: readonly string[] = ['x-forwarded-for'];
+// Nombre de header HTTP válido (token RFC 9110) restringido a minúsculas:
+// Better Auth lee los headers por nombre y un typo en mayúsculas pasaría
+// inadvertido hasta que el rate limit dejara de ver la IP real.
+const HEADER_NAME_REGEX = /^[a-z0-9!#$%&'*+.^_`|~-]+$/;
 // Desarrollo local: el worker de `ocr-python/` corre en el host (`python worker.py`).
 // En Docker se sobreescribe con el nombre del servicio (`http://ocr-worker:8010`).
 const DEFAULT_OCR_WORKER_URL = 'http://localhost:8010';
@@ -137,6 +145,30 @@ export function parseAuthRateLimitEnabled(
     return defaultsToProduction;
   }
   return parseBoolean(rawValue);
+}
+
+/**
+ * Headers (en orden de prioridad) de donde Better Auth saca la IP del cliente
+ * para el rate limit y las sesiones. Lista separada por comas; vacía o sin
+ * definir usa `x-forwarded-for`. Cada entrada se valida al arrancar (nombre
+ * de header válido, en minúsculas, sin entradas vacías) para fallar rápido
+ * ante un typo en vez de perder la IP real en silencio.
+ */
+export function parseAuthIpAddressHeaders(
+  rawValue: string | undefined,
+): readonly string[] {
+  if (rawValue === undefined || rawValue.trim().length === 0) {
+    return DEFAULT_AUTH_IP_ADDRESS_HEADERS;
+  }
+  const headers = rawValue.split(',').map((header) => header.trim());
+  for (const header of headers) {
+    if (!HEADER_NAME_REGEX.test(header)) {
+      throw new Error(
+        `Invalid AUTH_IP_ADDRESS_HEADERS env var: "${header}" no es un nombre de header válido en minúsculas (lista separada por comas, sin entradas vacías)`,
+      );
+    }
+  }
+  return headers;
 }
 
 /**
@@ -303,5 +335,8 @@ export const env: AppEnv = {
   ),
   authRateLimitEnabled: parseAuthRateLimitEnabled(
     process.env.AUTH_RATE_LIMIT_ENABLED,
+  ),
+  authIpAddressHeaders: parseAuthIpAddressHeaders(
+    process.env.AUTH_IP_ADDRESS_HEADERS,
   ),
 };

@@ -88,6 +88,8 @@ usuario tipea a mano: el backend nunca falla ni se bloquea por el OCR.
 - `docker-compose.prod.yml` es de **producción**: sin puertos de base de datos,
   credenciales desde `.env`, límites de recursos, sin MinIO (R2) y con el
   backend y el worker OCR como imágenes propias. No reemplaza al anterior.
+- `docker-compose.port.yml` es un override del despliegue **manual** (sin
+  Dokploy): solo publica el backend en `127.0.0.1:${BACKEND_HOST_PORT:-3100}`.
 - `docker-compose.bench.yml` es un override que solo agrega el benchmark.
 
 Usar siempre `-p <proyecto>`: en una máquina de desarrollo pueden existir
@@ -100,7 +102,7 @@ contenedores de otros proyectos con nombres que chocarían.
 | `postgres` | `postgres:16` | Volumen con nombre, `pg_isready`. **Sin puertos publicados.** |
 | `migrate` | `Dockerfile` target `migrate` | `prisma migrate deploy`, corre y termina (`restart: "no"`). |
 | `ocr-worker` | `ocr-python/Dockerfile` target `prod` | Modelos montados de solo lectura. Sin puertos publicados. Límite 1.5G / 2.0 CPU. `restart: unless-stopped`. |
-| `backend` | `Dockerfile` target `runtime` | Límite 768M. Puerto **solo en `127.0.0.1`**. |
+| `backend` | `Dockerfile` target `runtime` | Límite 768M. Solo `expose: 3000`: no publica puertos en el host (Traefik de Dokploy lo enruta; en modo manual, `docker-compose.port.yml` lo publica en `127.0.0.1`). |
 
 Orden de arranque: `postgres` healthy → `migrate` termina con 0 → `backend`.
 El backend solo espera que `ocr-worker` *arranque*, no que esté listo
@@ -115,16 +117,132 @@ foto tardaba ~2 s en ARM en vez de ~1.4 s. Un worker colgado en una lectura
 reinicia: el compose sin swarm no reinicia contenedores solo por `unhealthy`.
 
 Redes: `internal` (sin salida a internet: Postgres, worker OCR, migrate y
-backend) y `edge` (solo el backend, que publica el puerto y sale a R2/SMTP).
+backend) y `edge` (solo el backend, que sale a R2/SMTP). Al desplegar, Dokploy
+le suma al backend su red de proxy (`dokploy-network`) y los labels de Traefik.
 
 ### Puertos y acceso
 
-El backend se publica únicamente en `127.0.0.1:${BACKEND_HOST_PORT:-3100}`.
-En el host se usa el 3100 porque el 3000 queda reservado para el panel de
-administración de Dokploy; dentro del contenedor el backend sigue en el 3000.
-Cuando Dokploy administre el despliegue, las apps se publican por Traefik
-(80/443) con dominio, no por un puerto del host.
+El stack de producción **no publica ningún puerto en el host**: el backend solo
+hace `expose: 3000`. Con Dokploy, Traefik (80/443) lo enruta por dominio (ver
+"Despliegue con Dokploy"). En el host el 3000 queda reservado para el panel de
+Dokploy.
 
+### Despliegue con Dokploy
+
+Es el modo habitual. El dominio es `https://smi.evonova.cl`: el frontend en `/`
+(otra app de Dokploy) y este backend en `/api`. Dokploy clona el repositorio en
+`/etc/dokploy/compose/<appName>/code`, escribe ahí el `.env` con las variables
+de la app y ejecuta
+`docker compose -p <appName> --env-file .env -f docker-compose.prod.yml up -d --build --remove-orphans`
+en el propio VPS (ARM64, ver "Nota ARM64").
+
+1. **Crear la app**: en un proyecto de Dokploy, servicio tipo **Compose** con
+   origen **Git**: repositorio `https://github.com/bemunozm/smi-backend.git`,
+   rama `main`, archivo `./docker-compose.prod.yml`. Método de despliegue:
+   **Docker Compose** (no Stack).
+2. **`appName`**: Dokploy le agrega un sufijo aleatorio al crear la app
+   (`smi-xxxxxx`) y no permite cambiarlo después. El proyecto de compose se
+   llama así, y el volumen de Postgres también: `<appName>_postgres_data`. Al
+   eliminar la app en Dokploy, no marcar el borrado de volúmenes sin un
+   respaldo de la base (ver "Respaldo y migración de la base").
+3. **NO activar "Isolated Deployments"**: el compose ya define sus redes
+   (`internal`, `edge`) y Dokploy suma la de su proxy solo al servicio con
+   dominio.
+4. **Dominio** (pestaña Domains), asociado al servicio `backend`:
+   - Host: `smi.evonova.cl`
+   - Path: `/api`, **sin "Strip Path"** (el backend ya sirve bajo `/api`)
+   - Container port: `3000`
+   - HTTPS activado, certificado **Let's Encrypt**
+
+   Dokploy inyecta en `backend` los labels de Traefik y las redes
+   `dokploy-network` + `default`; no hay que declararlos en el compose.
+5. **Modelos OCR** (no van en git): copiarlos una vez al host y apuntar
+   `OCR_MODELS_HOST_DIR` ahí; es un bind mount absoluto que Dokploy no borra.
+
+   ```bash
+   scp -r ocr-python/models/ usuario@IP_DEL_VPS:/opt/smi/ocr-models/
+   ```
+6. **Variables** (pestaña Environment; Dokploy la escribe como `.env` y la
+   interpolación `${VAR:?msg}` del compose sigue exigiendo las obligatorias):
+
+   ```dotenv
+   # Obligatorias
+   POSTGRES_PASSWORD=<openssl rand -hex 24>
+   BETTER_AUTH_SECRET=<openssl rand -base64 32>
+   BETTER_AUTH_URL=https://smi.evonova.cl
+   FRONTEND_URL=https://smi.evonova.cl
+   STORAGE_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+   STORAGE_BUCKET=<bucket>
+   STORAGE_ACCESS_KEY_ID=<key>
+   STORAGE_SECRET_ACCESS_KEY=<secret>
+   STORAGE_REGION=auto
+   # Modelos OCR (ruta absoluta del host)
+   OCR_MODELS_HOST_DIR=/opt/smi/ocr-models
+   # Opcionales (tienen default; ver "Variables")
+   # POSTGRES_USER, POSTGRES_DB, OCR_THREADS, OCR_READ_WATCHDOG_SECONDS,
+   # AUTH_RATE_LIMIT_ENABLED, AUTH_IP_ADDRESS_HEADERS, STORAGE_PUBLIC_ENDPOINT,
+   # STORAGE_SIGNED_URL_TTL_SECONDS, SMTP_*, SHIFT_REPORT_EXTRA_RECIPIENTS
+   ```
+   `POSTGRES_PASSWORD` va embebida en la URL de conexión: usar solo caracteres
+   seguros para URL. `BACKEND_HOST_PORT` no aplica con Dokploy.
+7. **Deploy**. El servicio `migrate` aplica las migraciones en **cada**
+   despliegue, antes de que arranque el backend. Comprobar con
+   `https://smi.evonova.cl/api/health`.
+
+La IP real del cliente (rate limit de login) llega por `X-Forwarded-For`:
+Traefik lo reescribe cuando el origen no es de confianza. Ver
+`AUTH_IP_ADDRESS_HEADERS` en "Variables".
+
+**Primer admin con Dokploy**: en el VPS, desde el directorio donde Dokploy
+clonó el repositorio (ahí está el `.env` que escribe, y compose lo lee solo):
+
+```bash
+cd /etc/dokploy/compose/<appName>/code
+read -rsp "Password: " ADMIN_PASSWORD; export ADMIN_PASSWORD
+export ADMIN_EMAIL=admin@empresa.cl ADMIN_NAME="Nombre Apellido"
+docker compose -f docker-compose.prod.yml -p <appName> run --rm \
+  -e ADMIN_EMAIL -e ADMIN_NAME -e ADMIN_PASSWORD migrate npm run user:create-admin
+unset ADMIN_PASSWORD
+```
+
+Si se lanza desde un script por SSH, agregar `< /dev/null` al final del
+comando: `docker compose run` consume la entrada estándar y se tragaría el
+resto del script (o las líneas que siguen en la sesión).
+
+#### Respaldo y migración de la base
+
+Respaldo (formato custom, se restaura con `pg_restore`):
+
+```bash
+cd /etc/dokploy/compose/<appName>/code
+docker compose -f docker-compose.prod.yml -p <appName> exec -T postgres \
+  sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
+  > /root/backups/smi-$(date +%Y%m%d-%H%M%S).dump
+```
+
+Para pasar una base existente a un proyecto de compose con otro nombre (por
+ejemplo, del despliegue manual `-p smi` a la app de Dokploy), antes del primer
+deploy de la app y con el stack anterior detenido (`down` sin `-v`), se crea el
+volumen del proyecto nuevo con las etiquetas de compose y se copian los datos
+tal cual:
+
+```bash
+docker volume create \
+  --label com.docker.compose.project=<appName> \
+  --label com.docker.compose.volume=postgres_data \
+  <appName>_postgres_data
+docker run --rm -v smi_postgres_data:/from:ro -v <appName>_postgres_data:/to \
+  alpine cp -a /from/. /to/
+```
+
+Las etiquetas hacen que compose lo adopte como propio, sin el aviso de volumen
+externo. Ambas bases tienen que ser de la misma versión mayor de Postgres (16).
+
+### Despliegue manual con túnel SSH (alternativa)
+
+Sin Dokploy se usa el override `docker-compose.port.yml`, que publica el
+backend solo en `127.0.0.1:${BACKEND_HOST_PORT:-3100}` (el 3000 del host queda
+para el panel de Dokploy; dentro del contenedor el backend sigue en el 3000).
 Desde un PC, por túnel SSH (con `BETTER_AUTH_URL="http://localhost:3100"` en
 el `.env`):
 
@@ -134,7 +252,8 @@ ssh -L 3100:127.0.0.1:3100 usuario@IP_DEL_VPS
 ```
 
 Exponerlo a internet exige un reverse proxy con TLS delante (ver
-`SECURITY-NOTES.md`).
+`SECURITY-NOTES.md`). `scripts/bench-ocr.sh` y los demás scripts no usan el
+puerto del host: funcionan igual en ambos modos.
 
 ### Nota ARM64
 
@@ -148,7 +267,9 @@ para el worker: `onnxruntime` no publica ruedas musl. Si algún día se construy
 en CI en otra arquitectura que la de destino, agregar `binaryTargets` a
 `schema.prisma` (ver el comentario del `Dockerfile`).
 
-### Puesta en marcha en el VPS
+### Puesta en marcha manual en el VPS
+
+Solo para el modo manual (con Dokploy, ver arriba).
 
 ```bash
 # 1. Variables: copiar .env.example a .env y completar la sección "Docker de produccion"
@@ -160,8 +281,8 @@ scp -r ocr-python/models/ usuario@IP_DEL_VPS:/opt/smi/ocr-models/
 #    (el worker verifica su sha256 contra models.manifest.json al arrancar)
 
 # 3. Construir (en el VPS) y levantar
-docker compose -f docker-compose.prod.yml -p smi up -d --build
-docker compose -f docker-compose.prod.yml -p smi ps
+docker compose -f docker-compose.prod.yml -f docker-compose.port.yml -p smi up -d --build
+docker compose -f docker-compose.prod.yml -f docker-compose.port.yml -p smi ps
 curl http://127.0.0.1:3100/api/health
 ```
 
@@ -209,10 +330,14 @@ python ocr-python/bench/compare_runs.py bench-results/<a> bench-results/<b>
 Todas están documentadas en `.env.example`. Las que el compose de producción
 **exige** (se niega a levantar sin ellas): `POSTGRES_PASSWORD`,
 `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `FRONTEND_URL` y las 5 `STORAGE_*`.
-Con default: `POSTGRES_USER` / `POSTGRES_DB`, `BACKEND_HOST_PORT` (3100),
+Con default: `POSTGRES_USER` / `POSTGRES_DB`, `BACKEND_HOST_PORT` (3100, solo
+modo manual con `docker-compose.port.yml`),
 `OCR_MODELS_HOST_DIR` (`./ocr-python/models`), `OCR_THREADS` (2),
 `OCR_READ_WATCHDOG_SECONDS` (30), `AUTH_RATE_LIMIT_ENABLED` (true en
-producción), SMTP (opcional) y `SHIFT_REPORT_EXTRA_RECIPIENTS`. El compose fija
+producción), `AUTH_IP_ADDRESS_HEADERS` (`x-forwarded-for`; headers, en orden,
+de donde Better Auth saca la IP del cliente para el rate limit; si algún día se
+activa el proxy de Cloudflare se antepone `cf-connecting-ip`, y solo si el
+origen acepta tráfico únicamente de Cloudflare), SMTP (opcional) y `SHIFT_REPORT_EXTRA_RECIPIENTS`. El compose fija
 por su cuenta `NODE_ENV=production`, `DATABASE_URL` y `OCR_WORKER_URL`.
 
 ## Project setup
