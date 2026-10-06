@@ -152,27 +152,30 @@ export class OrdenesService {
       orden = await this.prisma.$transaction(async (tx) => {
         const hallazgo = await tx.hallazgo.findUnique({
           where: { id: hallazgoId },
-          select: { id: true, estado: true },
+          select: { id: true },
         });
         if (!hallazgo) {
           throw new NotFoundException(
             `Hallazgo con id "${hallazgoId}" no encontrado`,
           );
         }
-        if (hallazgo.estado !== 'ABIERTO') {
+        // Claim CONDICIONAL atómico: "tómalo solo si sigue ABIERTO". Dos
+        // creates concurrentes sobre el mismo hallazgo no pueden ganar los
+        // dos — el que llega segundo ve count 0 y pierde limpio, sin dejar
+        // una segunda OT ligada en silencio.
+        const claimed = await tx.hallazgo.updateMany({
+          where: { id: hallazgoId, estado: 'ABIERTO' },
+          data: { estado: 'EN_PROCESO' },
+        });
+        if (claimed.count === 0) {
           throw new ConflictException(
             'El hallazgo ya está en proceso o cerrado',
           );
         }
-        const creada = await tx.ordenTrabajo.create({
+        return tx.ordenTrabajo.create({
           data,
           select: ORDEN_SELECT,
         });
-        await tx.hallazgo.update({
-          where: { id: hallazgoId },
-          data: { estado: 'EN_PROCESO' },
-        });
-        return creada;
       });
     } else {
       orden = await this.prisma.ordenTrabajo.create({
@@ -281,8 +284,10 @@ export class OrdenesService {
           : null;
     if (!estadoHallazgo) return;
 
-    await tx.hallazgo.update({
-      where: { id: orden.hallazgoId },
+    // Condicionado a EN_PROCESO: si el supervisor ya lo cerró (o reabrió) a
+    // mano, la transición de la orden no le pisa esa decisión.
+    await tx.hallazgo.updateMany({
+      where: { id: orden.hallazgoId, estado: 'EN_PROCESO' },
       data: { estado: estadoHallazgo },
     });
   }
