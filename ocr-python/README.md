@@ -148,24 +148,24 @@ Medida desde afuera del proceso con `bench/ocr_ram_bench.py` (RSS vía psutil,
 
 | Momento | Windows nativo | Docker x86 (WSL2) | ARM64, 1.5 CPU | ARM64, 2.0 CPU |
 |---|---|---|---|---|
-| Modelos recién cargados (0 lecturas) | 390 MB | 479 MB | 426 MB | 477 MB |
-| Tras la 1ª foto | 574 MB | 677 MB | 607 MB | 658 MB |
-| Tras la 3ª | 726 MB | 838 MB | 735 MB | 787 MB |
-| Tras la 20ª / todas | 729 MB | 841 MB | 738 MB | 790 MB |
-| Pico (SO) | 747 MB | 841 MB | 738 MB | 790 MB |
+| Modelos recién cargados (0 lecturas) | 390 MB | 479 MB | 426 MB | 472 MB |
+| Tras la 1ª foto | 574 MB | 677 MB | 607 MB | 653 MB |
+| Tras la 3ª | 726 MB | 838 MB | 735 MB | 782 MB |
+| Tras la 20ª / todas | 729 MB | 841 MB | 738 MB | 785 MB |
+| Pico (SO) | 747 MB | 841 MB | 738 MB | 785 MB |
 
 Tiempo por foto (worker tibio, lecturas en serie):
 
 | | Windows nativo | Docker x86 (WSL2) | ARM64, 1.5 CPU | ARM64, 2.0 CPU |
 |---|---|---|---|---|
-| 1ª foto | 700 ms | 883 ms | 2058 ms | 1494 ms |
-| Mediana | 567 ms | 687 ms | 1997 ms | 1440 ms |
-| p95 | 632 ms | 997 ms | 2246 ms | 1645 ms |
-| Máximo | 700 ms | 1620 ms | 2317 ms | 1746 ms |
+| 1ª foto | 700 ms | 883 ms | 2058 ms | 1482 ms |
+| Mediana | 567 ms | 687 ms | 1997 ms | 1427 ms |
+| p95 | 632 ms | 997 ms | 2246 ms | 1608 ms |
+| Máximo | 700 ms | 1620 ms | 2317 ms | 1642 ms |
 
 ARM64 = Hetzner CAX21 (Ampere Neoverse-N1, 4 vCPU), Docker, `OCR_THREADS=2`.
 Con 1.5 CPU el cgroup frenaba el 93% de los periodos (2 hilos ONNX contra 1.5
-CPU de cuota); con 2.0 baja al 33% y la mediana cae ~28%, a cambio de ~50 MB.
+CPU de cuota); con 2.0 baja al 32% y la mediana cae ~28%, a cambio de ~50 MB.
 El compose de producción usa 2.0.
 
 ONNX Runtime reserva buffers de arena adicionales las primeras 3-6 lecturas y
