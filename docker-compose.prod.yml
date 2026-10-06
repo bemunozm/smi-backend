@@ -7,8 +7,10 @@
 #     `.env`, limites de recursos, sin MinIO (el storage es Cloudflare R2) y con
 #     el backend + el worker OCR como imagenes propias.
 #
-# Uso (siempre con `-p`, para no chocar con otros proyectos de la maquina):
-#   docker compose -f docker-compose.prod.yml -p smi up -d --build
+# Uso con Dokploy: app Compose desde Git (ver README, "Despliegue con Dokploy").
+# Manual, sin Dokploy (siempre con `-p`, para no chocar con otros proyectos de
+# la maquina), publicando el puerto en loopback:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.port.yml -p smi up -d --build
 #
 # Las imagenes se construyen EN el VPS (ARM nativo); no hay cross-compile.
 # Variables: ver `.env.example` (seccion "Docker de produccion").
@@ -23,6 +25,8 @@ x-backend-env: &backend-env
   BETTER_AUTH_URL: ${BETTER_AUTH_URL:?define BETTER_AUTH_URL en .env}
   FRONTEND_URL: ${FRONTEND_URL:?define FRONTEND_URL en .env}
   AUTH_RATE_LIMIT_ENABLED: ${AUTH_RATE_LIMIT_ENABLED:-}
+  # Vacia = default de env.ts (x-forwarded-for).
+  AUTH_IP_ADDRESS_HEADERS: ${AUTH_IP_ADDRESS_HEADERS:-}
   # Con NODE_ENV=production las 5 vars STORAGE_* son obligatorias (R2). Si el
   # bucket aun no existe, el backend arranca con un aviso y solo fallan las
   # funciones de archivos.
@@ -144,12 +148,13 @@ services:
       # lecturas a UNREADABLE (el usuario tipea a mano), no debe quedar caido.
       ocr-worker:
         condition: service_started
-    ports:
-      # Solo loopback: el acceso es por tunel SSH (`ssh -L`). Abrirlo a
-      # internet exige un reverse proxy con TLS delante. En el host se usa el
-      # 3100 porque el 3000 queda reservado para el panel de administracion de
-      # Dokploy; el contenedor sigue escuchando en el 3000.
-      - "127.0.0.1:${BACKEND_HOST_PORT:-3100}:3000"
+    # Sin `ports:` a proposito: Traefik de Dokploy enruta
+    # `https://smi.evonova.cl/api` -> `backend:3000` por la red del proxy, y
+    # Dokploy inyecta los labels y la red al desplegar (no se declaran aca).
+    # Para el despliegue manual, sin Dokploy, con tunel SSH: sumar
+    # `-f docker-compose.port.yml`, que publica el puerto en loopback.
+    expose:
+      - "3000"
     healthcheck:
       test:
         - CMD
@@ -175,7 +180,7 @@ networks:
   # Sin salida a internet: Postgres y el worker OCR no la necesitan.
   internal:
     internal: true
-  # Solo el backend: publica el puerto en loopback y sale a R2/SMTP.
+  # Solo el backend: sale a R2/SMTP (y Dokploy lo suma a su red de proxy).
   edge: {}
 
 volumes:
