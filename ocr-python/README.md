@@ -1,10 +1,11 @@
 # OCR de litros (surtidor) — ensemble ONNX local
 
 Lee el valor `NNN.NNN` de litros de un display 7-segmentos fotografiado en un
-surtidor. Corre como un **proceso Python persistente** (`worker.py`),
-lanzado una única vez por el backend Node (`src/ocr/ocr.service.ts`, `spawn`
-en `onModuleInit`) y reusado entre requests — cargar ambos modelos toma
-~0.9s, demasiado para pagarlo por cada foto.
+surtidor. Corre como un **servicio HTTP aparte** (`worker.py`, solo stdlib de
+Python): los modelos ONNX se cargan una vez al arrancar (~0.9s, demasiado para
+pagarlo por cada foto) y el backend Node (`src/ocr/ocr.service.ts`) le pega
+por HTTP en `OCR_WORKER_URL`. No es un proceso hijo del backend: su ciclo de
+vida lo gobierna Docker (ver "Despliegue con Docker").
 
 Reemplaza el pipeline anterior (tesseract nativo + localización por
 etiqueta impresa, ~6/19 exactas en el test congelado). Este ensemble da
@@ -15,7 +16,7 @@ congelado — ver la sección "Paridad" más abajo. El VPS **ya no necesita
 ## Arquitectura
 
 ```
-worker.py            proceso persistente — protocolo JSON-lines por stdin/stdout
+worker.py            servidor HTTP (stdlib): GET /health, POST /read
 litros/
   florence.py         Florence-2-base fine-tuneado (ONNX int8): vision+encoder+decoder
   crnn.py              CRNN-CTC + localizador de paneles (puro OpenCV) + EXIF explícito
@@ -34,35 +35,51 @@ tests/                pytest — solo lógica pura, no requieren los modelos
   `confidence` = la confianza propia de esa lectura.
 - **UNREADABLE**: ambos dan null -> `value: null`, `confidence: 0`.
 
-### Protocolo del worker (stdin/stdout, JSON-lines)
+### Protocolo del worker (HTTP)
 
-Request: `{"id": "<opaco>", "path": "<ruta absoluta a un archivo de imagen>"}`
+`GET /health`
+- **503** `{"ready": false}` mientras verifica el sha256 de los modelos y los
+  carga. El servidor HTTP arranca ANTES de eso, así que el healthcheck de
+  Docker recibe un 503 en vez de una conexión rechazada.
+- **200** `{"ready": true, "version": "litros-v1", "reads": N, "uptime_s": S}`
+  cuando está listo. `reads` cuenta las lecturas procesadas desde que
+  arrancó (el benchmark lo usa para saber si el worker está "fresco").
+- Nunca toma el lock de lectura: responde aunque haya una inferencia en curso.
 
-Response: `{"id", "value", "status", "confidence", "florence", "crnn", "ms"}`
-(`florence`/`crnn` son la lectura cruda de cada modelo — `{"liters",
-"confidence","raw"}` o `null` si la request falló — solo para logging del
-lado Node, no llegan al front).
+`POST /read` — el body son los **bytes crudos de la imagen** (sin multipart;
+tope de 8 MB, el mismo del controller). El worker los escribe a un temporal
+propio, llama a los lectores con esa ruta y borra el temporal en `finally`.
+- **200** `{"value", "status", "confidence", "florence", "crnn", "ms"}`
+  (`florence`/`crnn` son la lectura cruda de cada modelo — `{"liters",
+  "confidence","raw"}` o `null` si la lectura falló — solo para logging; el
+  backend usa `value`/`status`/`confidence`).
+- Un error de la lectura misma (imagen no decodificable, etc.) **no** es un
+  error HTTP: responde 200 con `{"value": null, "status": "UNREADABLE",
+  "confidence": 0, "florence": null, "crnn": null, ...}` y el proceso sigue.
+- **400** body ausente o vacío, **413** body sobre el tope, **503** si los
+  modelos todavía no cargaron.
 
-Al arrancar, después de cargar ambos modelos y verificar el sha256 de cada
-archivo contra `models.manifest.json`, imprime **una sola línea**
-`{"ready": true, "version": "litros-v1"}` antes de aceptar requests. Si la
-verificación falla (modelos faltantes/corruptos), el proceso loguea el
-error a stderr y termina con exit code 1 **sin imprimir esa línea** — el
-backend Node lo interpreta como "murió antes de estar listo" y degrada a
-`UNREADABLE` en vez de romper el endpoint (ver `ocr.service.ts`).
+Las lecturas se **serializan** con un `threading.Lock` (una inferencia a la
+vez sobre las sesiones ONNX compartidas); el backend además las encola en
+serie y degrada a `UNREADABLE` ante cualquier fallo (conexión rechazada, 503,
+timeout de 15 s contado desde que la request entra a la cola, cuerpo inválido).
 
-Errores de una request individual (imagen no decodificable, etc.) nunca
-tumban el proceso: se loguean a stderr y la respuesta para ese `id` es
-`{"value": null, "status": "UNREADABLE", "confidence": 0, "florence": null,
-"crnn": null, "ms": ...}`.
+**Vigilante interno.** Si UNA lectura pasa de `OCR_READ_WATCHDOG_SECONDS`
+(default 30), el proceso sale con código 70 (`os._exit`). Es lo que reemplaza
+al "matar y relanzar" que antes hacía Node: `restart: unless-stopped` de
+Docker lo relanza, y el compose sin swarm **no** reinicia un contenedor solo
+por estar `unhealthy`.
 
-Todo lo que no sea la línea de ready o una response va a **stderr** —
-stdout es sagrado, solo JSON-lines del protocolo.
+**Arranque fallido.** Modelos faltantes/corruptos (sha256 o tamaño distinto
+al de `models.manifest.json`) terminan el proceso con código 1 tras loguearlo
+a stderr; `/health` nunca llegó a decir `ready` y el backend degrada.
+
+Todo log/diagnóstico va a **stderr**.
 
 ## Setup local (Windows)
 
 **Python 3.12** (no 3.14 — a la fecha de este pipeline, `tokenizers` no
-tiene wheel para 3.14 en este entorno; ver ".env local" abajo):
+tiene wheel para 3.14 en este entorno):
 
 ```bash
 py -3.12 -m pip install -r requirements.txt
@@ -82,42 +99,34 @@ El worker verifica cada archivo contra `models.manifest.json` (sha256 +
 tamaño) al arrancar — si copiaste algo distinto, falla ahí con un mensaje
 claro en vez de silenciosamente dar lecturas raras.
 
-### `.env` local
-
-```
-PYTHON_BIN="C:/Users/<user>/AppData/Local/Programs/Python/Python312/python.exe"
-OCR_MODELS_DIR="C:/PROYECTOS/SMI-COMPLETO/smi-backend/ocr-python/models"   # opcional, default ya es este
-OCR_THREADS=2   # opcional, default 2
-```
-
-## Setup VPS (Debian/Ubuntu)
+### Correr el worker en local
 
 ```bash
-apt install -y python3 python3-pip   # tesseract-ocr YA NO hace falta
-python3 -m pip install -r requirements.txt   # considerar venv
+cd ocr-python
+OCR_MODELS_DIR="C:/ruta/a/ocr-python/models" python worker.py   # default: ./models
 ```
 
-**`cwd` del proceso Node — crítico.** `WORKER_SCRIPT_PATH`
-(`ocr.service.ts`) y el default de `OCR_MODELS_DIR` (`src/common/config/env.ts`)
-se arman con `join(process.cwd(), 'ocr-python', ...)` — dependen del
-directorio de trabajo del proceso Node, NO de dónde vive `ocr.service.ts` en
-disco. Si el backend se lanza con un `cwd` distinto a la raíz de
-`smi-backend`, el worker no se encuentra (o se buscan modelos en la carpeta
-equivocada) y el servicio queda degradado en silencio (nunca rompe el boot,
-ver el JSDoc de `OcrService`). Al configurar el proceso en el VPS:
+Escucha en `0.0.0.0:8010` (`OCR_HOST`/`OCR_PORT`). El backend lo encuentra
+solo en `http://localhost:8010` (default de `OCR_WORKER_URL`). Si falta Python,
+las dependencias o los modelos, el backend arranca igual y las lecturas
+degradan a `UNREADABLE`.
 
-- **systemd**: `WorkingDirectory=/ruta/a/smi-backend` explícito en la unit.
-- **pm2**: `cwd: '/ruta/a/smi-backend'` en el `ecosystem.config.js` (pm2 no
-  hereda el cwd de donde se corre `pm2 start`, sino el que se le declara ahí
-  — o el del script apuntado si no se declara, que tampoco es
-  necesariamente la raíz del repo).
+## Despliegue con Docker (VPS Linux ARM64)
 
-Si en duda, loguear `process.cwd()` una vez al boot y confirmar que apunta a
-la raíz de `smi-backend`, o pasar `OCR_MODELS_DIR` explícito por env para no
-depender del default.
+Las imágenes se construyen **en el VPS** (ARM nativo); ver "Stack y despliegue
+con Docker" en el README del backend para el stack completo. Este servicio:
 
-Copiar los 6 archivos de `models/` por scp (no van en el repo — ver arriba
-la lista de origen) y verificar contra `models.manifest.json`, por ejemplo:
+- `ocr-python/Dockerfile`: `python:3.12-slim-bookworm`, venv con
+  `requirements.txt` (todas las ruedas tienen variante `manylinux aarch64` para
+  cp312; **no Alpine**, onnxruntime no publica ruedas musl), usuario no root.
+  Targets `prod` (default) y `bench` (suma `psutil` y el benchmark).
+- Los **modelos no van en la imagen**: se copian al VPS por scp y se montan de
+  solo lectura en `/models` (`OCR_MODELS_HOST_DIR`, default
+  `./ocr-python/models`). El worker verifica su sha256 al arrancar.
+- Sin puertos publicados: solo la red interna del compose.
+
+Copiar los 6 archivos de `models/` (ver arriba la lista de origen) y verificar
+contra `models.manifest.json` antes de levantar, por ejemplo:
 
 ```bash
 python3 -c "
@@ -129,78 +138,114 @@ for e in m['files']:
 "
 ```
 
-(el worker hace exactamente esto mismo al arrancar, así que si falla ahí
-también fallará al lanzar el proceso — pero conviene verificar el scp antes
-de reiniciar el backend).
+(el worker hace exactamente esto al arrancar; verificarlo antes ahorra un ciclo
+de contenedor reiniciándose).
 
 ### RAM esperada del worker tibio
 
-Medido con `OCR_THREADS=2` sobre una foto real (`tasklist` de Windows desde
-afuera del proceso — no se agregó `psutil` a `requirements.txt` solo para
-esto):
+Medida desde afuera del proceso con `bench/ocr_ram_bench.py` (RSS vía psutil,
+`OCR_THREADS=2`, las 106 fotos de `_inbox/total_surtidor`):
 
-| Momento | RSS |
-|---|---|
-| Justo tras la línea `ready` (modelos cargados, 0 inferencias) | ~390 MB |
-| Tras la 1ra inferencia | ~570 MB |
-| Tibio, en régimen (tras ~3-6 inferencias — ONNX Runtime reserva buffers de arena adicionales las primeras veces, después queda estable) | **~720-725 MB** |
+| Momento | Windows nativo | Docker x86 (WSL2) | ARM64, 1.5 CPU | ARM64, 2.0 CPU |
+|---|---|---|---|---|
+| Modelos recién cargados (0 lecturas) | 390 MB | 479 MB | 426 MB | 472 MB |
+| Tras la 1ª foto | 574 MB | 677 MB | 607 MB | 653 MB |
+| Tras la 3ª | 726 MB | 838 MB | 735 MB | 782 MB |
+| Tras la 20ª / todas | 729 MB | 841 MB | 738 MB | 785 MB |
+| Pico (SO) | 747 MB | 841 MB | 738 MB | 785 MB |
 
-Es decir: contar con **~750 MB** por worker en régimen para dimensionar el
-VPS, no los ~390 MB del arranque — el salto de ~390→~720 MB (~1.9x) ocurre
-solo, apenas empieza a procesar fotos reales, no es un caso raro.
+Tiempo por foto (worker tibio, lecturas en serie):
 
-**Pico transitorio en un restart.** `killWorker()` llama a `child.kill()`
-(SIGTERM) y retorna sin esperar a que el proceso realmente termine; el
-nuevo worker se lanza por separado tras el backoff
-(`RESTART_BACKOFF_MS`, arranca en 1s). Si la baja del proceso viejo tarda
-(cleanup de ONNX/buffers grandes, o un SO más lento liberando memoria que
-en el benchmark de abajo), hay una ventana donde ambos procesos conviven en
-memoria. Medido en Windows local matando un worker tibio (~570 MB, tras 1
-sola inferencia) y lanzando el reemplazo casi en el mismo instante
-(muestreo cada 15ms): **no se observó solape** — el proceso viejo ya
-aparecía muerto en la primera muestra tras el `kill()`. Aun así, para
-dimensionar el VPS conviene dejar margen para el peor caso (~2x el RSS
-tibio en régimen, ~1.4-1.5 GB) en vez de asumir que la baja siempre es
-instantánea como en este benchmark puntual — no se puede garantizar el
-mismo comportamiento bajo carga o en un kernel Linux distinto.
+| | Windows nativo | Docker x86 (WSL2) | ARM64, 1.5 CPU | ARM64, 2.0 CPU |
+|---|---|---|---|---|
+| 1ª foto | 700 ms | 883 ms | 2058 ms | 1482 ms |
+| Mediana | 567 ms | 687 ms | 1997 ms | 1427 ms |
+| p95 | 632 ms | 997 ms | 2246 ms | 1608 ms |
+| Máximo | 700 ms | 1620 ms | 2317 ms | 1642 ms |
 
-## Variables de entorno consumidas por el backend Node
+ARM64 = Hetzner CAX21 (Ampere Neoverse-N1, 4 vCPU), Docker, `OCR_THREADS=2`.
+Con 1.5 CPU el cgroup frenaba el 93% de los periodos (2 hilos ONNX contra 1.5
+CPU de cuota); con 2.0 baja al 32% y la mediana cae ~28%, a cambio de ~50 MB.
+El compose de producción usa 2.0.
 
-- `PYTHON_BIN`: binario de python usado para lanzar `worker.py` (default
-  `python3`; en Windows local, apuntar al `python.exe` de 3.12 con las
-  deps — ver arriba).
+ONNX Runtime reserva buffers de arena adicionales las primeras 3-6 lecturas y
+después queda estable: dimensionar con el valor **en régimen**, no con el de
+recién cargado. El salto es ~1.9x y ocurre solo.
+
+**Lecturas iguales entre plataformas.** Las 4 corridas dan 96 `CONFIRMED`, 10
+`REVIEW` y 0 `UNREADABLE`. Foto por foto, 105 de 106 son idénticas (valor,
+estado y confianza); el CRNN es idéntico en todas. La única diferencia es una
+lectura de Florence (int8) en una foto que en todas las plataformas queda en
+`REVIEW` porque el CRNN no coincide: ONNX Runtime usa kernels int8 distintos en
+x86 y en ARM, y eso puede cambiar un dígito dudoso. Ninguna lectura confirmada
+cambia.
+
+**Reinicios.** Antes, Node mataba y relanzaba el worker, con un posible
+solape de dos procesos de ~720 MB. Ahora un reinicio es el MISMO contenedor
+que sale (vigilante o crash) y Docker lo relanza: no conviven dos workers. El
+límite del contenedor es 1.5G.
+
+## Benchmark
+
+`bench/ocr_ram_bench.py` mide RAM física (RSS, muestreo cada 50 ms más el pico
+del SO: `peak_wset` en Windows, `VmHWM` en Linux) y tiempo por foto
+(primera, mediana, p95, máximo). Requiere `psutil` (la imagen `bench` ya lo
+trae; en local: `pip install psutil==7.2.2`).
+
+```bash
+# Local: lanza el worker en un puerto libre y lo mide
+python bench/ocr_ram_bench.py --spawn --photos <carpeta> --out <salida>
+
+# Contra un worker ya corriendo (modo del contenedor ocr-bench)
+python bench/ocr_ram_bench.py --pid <PID> --url http://ocr-worker:8010 --photos <carpeta> --out <salida>
+
+# En el VPS: reinicia el worker, espera healthy, corre el bench
+bash scripts/bench-ocr.sh        # salida en ./bench-results/<timestamp>/
+```
+
+En modo `--pid` verifica que el worker esté **fresco** (`reads` = 0 en
+`/health`); si no, `summary.json` trae `worker_fresh: false` y el momento
+"modelos recién cargados" no es válido. Salida: `summary.json`,
+`per_photo.csv` y `per_photo.json`. `bench/compare_runs.py <a> <b>` compara
+dos corridas por foto (estados y fotos con `value`/`status` distintos), útil
+para validar ARM contra x86.
+
+## Variables de entorno
+
+Del **worker** (las fija `docker-compose.prod.yml`; en local, el entorno del
+proceso):
+
 - `OCR_MODELS_DIR`: carpeta con los 6 archivos de modelo (default
-  `<cwd>/ocr-python/models` — ver la nota de `cwd` en "Setup VPS" arriba).
-- `OCR_THREADS`: hilos para las sesiones ONNX de Florence + el pool global
-  de cv2 (default 2). El CRNN queda fijo en 1 hilo (su config validada más
-  rápida, ~41ms en tibio — no configurable a propósito, ver comentario en
-  `worker.py`).
-  - Como el worker procesa **una request a la vez** (cola serial, ver
-    `queueTail` en `ocr.service.ts`), `OCR_THREADS` controla el paralelismo
-    DENTRO de una sola inferencia, no cuántas inferencias corren a la vez
-    — no hay beneficio en subirlo más allá de los vCPU disponibles.
-  - VPS de 2 vCPU: `OCR_THREADS=1` — dejar el otro vCPU libre para el
-    event loop de Node (y el resto del backend) durante la ventana de
-    ~0.5-0.9s que dura cada inferencia; con `=2` se compite por ambos
-    núcleos justo en ese momento.
-  - VPS de 4+ vCPU: el default `2` (el valor validado en el benchmark de
-    latencia, ver "Paridad" abajo) ya deja margen de sobra para Node y el
-    resto de los servicios.
-  - No pasarlo por encima del total de vCPU del VPS — sobresuscribir
-    hilos más allá de los núcleos físicos solo agrega overhead de
-    scheduling, no acelera la inferencia.
+  `<ocr-python>/models`; en Docker, `/models`).
+- `OCR_THREADS`: hilos para las sesiones ONNX de Florence + el pool global de
+  cv2 (default 2). El CRNN queda fijo en 1 hilo (su config validada más
+  rápida, ~41ms en tibio — no configurable a propósito).
+  - Como las lecturas van en serie, `OCR_THREADS` controla el paralelismo
+    DENTRO de una inferencia, no cuántas corren a la vez; no tiene sentido
+    pasarlo del total de vCPU.
+  - VPS de 2 vCPU: `OCR_THREADS=1` para dejar un núcleo libre al backend. Con
+    4+ vCPU (el CAX21 tiene 4), el default 2 deja margen de sobra.
+- `OCR_HOST` / `OCR_PORT`: dónde escucha (default `0.0.0.0` / `8010`).
+- `OCR_READ_WATCHDOG_SECONDS`: tope de una lectura antes de que el proceso
+  salga para que Docker lo reinicie (default 30).
+
+Del **backend**: solo `OCR_WORKER_URL` (default `http://localhost:8010`; en
+Docker, `http://ocr-worker:8010`).
 
 ## Tests
 
 ```bash
 cd ocr-python
-py -3.12 -m pytest
+python -m pip install -r requirements-dev.txt   # pytest (versión fijada)
+python -m pytest
 ```
 
 Son puramente lógicos (regex, `parse_output`, la regla de ensemble, el CTC
 greedy-decode con logits sintéticos, el cross-check de $, la tabla de
-orientación EXIF) — no requieren los modelos ni onnxruntime cargado, así que
-corren en CI sin los archivos de `models/`.
+orientación EXIF) más el servidor HTTP del worker con lectores falsos
+(`tests/test_worker_http.py`: health antes/después de estar listo, lectura
+OK, error de lectura → UNREADABLE, 400/413, temporal borrado, vigilante) — no
+requieren los modelos, así que corren en CI sin los archivos de `models/`.
 
 ## Paridad (test congelado, 19 fotos)
 

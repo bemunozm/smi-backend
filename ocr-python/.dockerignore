@@ -1,0 +1,13 @@
+# Contexto de build del worker OCR (ocr-python/).
+
+# Modelos: ~300MB, se montan de solo lectura, no se hornean en la imagen.
+models
+
+tests
+__pycache__
+.pytest_cache
+*.pyc
+pytest.ini
+requirements-dev.txt
+README.md
+*.log

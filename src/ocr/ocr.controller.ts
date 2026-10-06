@@ -46,9 +46,9 @@ export class OcrController {
    *   - REVIEW: difieren, o solo uno pudo leer — `value` trae la lectura
    *     sugerida (Florence primero) para autollenar con aviso de verificar.
    *   - UNREADABLE: ninguno pudo leer.
-   * Nunca falla con 500: en degradación (worker python caído, timeout, etc.)
+   * Nunca falla con 500: en degradación (worker OCR caído o cargando, timeout, etc.)
    * devuelve `value: null, status: 'UNREADABLE', confidence: 0` (ver
-   * `OcrService.readFuelValueFrom`).
+   * `OcrService.readFuelValue`).
    */
   @Post('fuel-reading')
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
@@ -72,10 +72,7 @@ export class OcrController {
   async fuelReading(@UploadedFile() file?: Express.Multer.File) {
     if (!file) throw new BadRequestException('No se recibió archivo');
 
-    const result = await this.ocrService.readFuelValueFrom(
-      file.buffer,
-      file.originalname,
-    );
+    const result = await this.ocrService.readFuelValue(file.buffer);
 
     return {
       data: result,

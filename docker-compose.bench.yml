@@ -1,0 +1,44 @@
+# Override del benchmark de RAM/tiempo del worker OCR. Se SUPERPONE al compose
+# de produccion; no se levanta solo:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.bench.yml -p smi \
+#     run --rm ocr-bench
+#
+# `scripts/bench-ocr.sh` hace todo el recorrido (reinicia el worker para que
+# este fresco, espera a que este healthy, corre el bench y recoge la salida).
+#
+# Variables:
+#   OCR_BENCH_PHOTOS_DIR  carpeta con las fotos (default ./_inbox/total_surtidor)
+#   OCR_BENCH_OUT_DIR     carpeta de salida en el host (default ./bench-results)
+services:
+  ocr-bench:
+    build:
+      context: ./ocr-python
+      target: bench
+    # No arranca con `up`: solo con `run`.
+    profiles:
+      - bench
+    # Comparte el espacio de PIDs del worker: asi psutil ve su proceso (el
+    # worker es el PID 1 de su contenedor) y mide su RSS real desde afuera.
+    pid: "service:ocr-worker"
+    environment:
+      OCR_THREADS: ${OCR_THREADS:-2}
+    volumes:
+      - ${OCR_BENCH_PHOTOS_DIR:-./_inbox/total_surtidor}:/photos:ro
+      - ${OCR_BENCH_OUT_DIR:-./bench-results}:/out
+    depends_on:
+      ocr-worker:
+        condition: service_healthy
+    networks:
+      - internal
+    command:
+      - python
+      - bench/ocr_ram_bench.py
+      - --pid
+      - "1"
+      - --url
+      - http://ocr-worker:8010
+      - --photos
+      - /photos
+      - --out
+      - /out

@@ -1,0 +1,27 @@
+# Contexto de build del backend (Dockerfile de la raiz). El worker OCR tiene su
+# propio contexto (ocr-python/) y su propio .dockerignore.
+
+node_modules
+dist
+coverage
+.git
+.codegraph
+
+# Secretos: nunca entran a una imagen. El ejemplo si, es documentacion.
+.env
+.env.*
+!.env.example
+
+# Fotos de prueba, subidas y salidas de benchmark
+_inbox
+uploads
+bench-results
+
+# El backend ya no ejecuta Python: el worker OCR es otra imagen. (Incluye
+# ocr-python/models, ~300MB que van montados, no horneados.)
+ocr-python
+
+*.log
+*.tsbuildinfo
+__pycache__
+.pytest_cache

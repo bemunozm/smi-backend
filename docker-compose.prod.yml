@@ -1,0 +1,182 @@
+# Stack de PRODUCCION (VPS Linux ARM64, Hetzner CAX21 / Ubuntu 24.04).
+#
+# Por que hay DOS archivos compose y este NO reemplaza a `docker-compose.yml`:
+#   - `docker-compose.yml` es de DESARROLLO y el equipo lo usa asi: publica
+#     Postgres en el host (:5433) con credenciales fijas y trae MinIO.
+#   - Este es de produccion: sin puertos de base de datos, credenciales desde
+#     `.env`, limites de recursos, sin MinIO (el storage es Cloudflare R2) y con
+#     el backend + el worker OCR como imagenes propias.
+#
+# Uso (siempre con `-p`, para no chocar con otros proyectos de la maquina):
+#   docker compose -f docker-compose.prod.yml -p smi up -d --build
+#
+# Las imagenes se construyen EN el VPS (ARM nativo); no hay cross-compile.
+# Variables: ver `.env.example` (seccion "Docker de produccion").
+
+# Entorno compartido por el backend y por el contenedor `migrate` (que tambien
+# carga `src/auth` para `npm run user:create-admin`, asi que valida el mismo env).
+x-backend-env: &backend-env
+  NODE_ENV: production
+  PORT: "3000"
+  DATABASE_URL: postgresql://${POSTGRES_USER:-smi_user}:${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env}@postgres:5432/${POSTGRES_DB:-smi_db}?schema=public
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?define BETTER_AUTH_SECRET en .env (openssl rand -base64 32)}
+  BETTER_AUTH_URL: ${BETTER_AUTH_URL:?define BETTER_AUTH_URL en .env}
+  FRONTEND_URL: ${FRONTEND_URL:?define FRONTEND_URL en .env}
+  AUTH_RATE_LIMIT_ENABLED: ${AUTH_RATE_LIMIT_ENABLED:-}
+  # Con NODE_ENV=production las 5 vars STORAGE_* son obligatorias (R2). Si el
+  # bucket aun no existe, el backend arranca con un aviso y solo fallan las
+  # funciones de archivos.
+  STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:?define STORAGE_ENDPOINT en .env}
+  STORAGE_BUCKET: ${STORAGE_BUCKET:?define STORAGE_BUCKET en .env}
+  STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:?define STORAGE_ACCESS_KEY_ID en .env}
+  STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:?define STORAGE_SECRET_ACCESS_KEY en .env}
+  STORAGE_REGION: ${STORAGE_REGION:?define STORAGE_REGION en .env (R2 usa "auto")}
+  STORAGE_PUBLIC_ENDPOINT: ${STORAGE_PUBLIC_ENDPOINT:-}
+  STORAGE_SIGNED_URL_TTL_SECONDS: ${STORAGE_SIGNED_URL_TTL_SECONDS:-}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+  SMTP_FROM: ${SMTP_FROM:-}
+  SMTP_SECURE: ${SMTP_SECURE:-}
+  SHIFT_REPORT_EXTRA_RECIPIENTS: ${SHIFT_REPORT_EXTRA_RECIPIENTS:-}
+  OCR_WORKER_URL: http://ocr-worker:8010
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smi_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-smi_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # Sin `ports:` a proposito: solo el backend, por la red interna, llega a la DB.
+    networks:
+      - internal
+
+  # Aplica las migraciones y termina. Tambien es el contenedor desde donde se
+  # corren scripts de mantenimiento (ver README, "Primer admin").
+  migrate:
+    build:
+      context: .
+      target: migrate
+    restart: "no"
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+
+  ocr-worker:
+    build:
+      context: ./ocr-python
+      target: prod
+    restart: unless-stopped
+    environment:
+      OCR_MODELS_DIR: /models
+      OCR_THREADS: ${OCR_THREADS:-2}
+      OCR_PORT: "8010"
+      OCR_READ_WATCHDOG_SECONDS: ${OCR_READ_WATCHDOG_SECONDS:-30}
+    volumes:
+      # Los ~300MB de modelos no van en la imagen ni en git: se copian al VPS
+      # (scp) y el worker verifica su sha256 contra models.manifest.json.
+      - ${OCR_MODELS_HOST_DIR:-./ocr-python/models}:/models:ro
+    healthcheck:
+      # 503 mientras carga/verifica los modelos -> urlopen lanza -> exit != 0.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # La verificacion sha256 de ~300MB + carga de modelos, con margen para
+      # un disco frio.
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          # RSS en regimen ~790MB en ARM64 con 2 CPU (ver ocr-python/README.md);
+          # 1.5G cubre el pico y las arenas de ONNX Runtime sin dejar que un
+          # fallo del worker se coma la RAM del VPS.
+          memory: 1.5G
+          # 2.0 = un CPU por hilo ONNX (OCR_THREADS=2). Con 1.5 el cgroup frenaba
+          # el 93% de los periodos y la mediana en ARM era 2.0s por foto; con
+          # 2.0 baja a ~1.44s a cambio de ~50MB mas.
+          cpus: "2.0"
+      # `update_config` solo aplica en swarm; en compose sin swarm se ignora.
+      # La garantia de que no convivan dos workers (~720MB c/u) es otra:
+      # `docker compose up` recrea un servicio deteniendo el contenedor viejo
+      # antes de iniciar el nuevo, y `restart: unless-stopped` relanza el MISMO
+      # contenedor (un solo proceso). Se deja declarado por si se migra a swarm.
+      update_config:
+        order: stop-first
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+      # Tope del heap de V8 explicito: Node lo deriva del limite del cgroup y
+      # con 768M queda ~200MB, justo para un API con generacion de PDF.
+      NODE_OPTIONS: --max-old-space-size=384
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      # Solo `service_started`: si el OCR no esta listo el backend degrada las
+      # lecturas a UNREADABLE (el usuario tipea a mano), no debe quedar caido.
+      ocr-worker:
+        condition: service_started
+    ports:
+      # Solo loopback: el acceso es por tunel SSH (`ssh -L`). Abrirlo a
+      # internet exige un reverse proxy con TLS delante. En el host se usa el
+      # 3100 porque el 3000 queda reservado para el panel de administracion de
+      # Dokploy; el contenedor sigue escuchando en el 3000.
+      - "127.0.0.1:${BACKEND_HOST_PORT:-3100}:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          # Nest + Prisma en regimen ronda 250-350MB; 768M deja margen para el
+          # heap de 384MB, buffers de uploads (hasta 8MB c/u) y la generacion
+          # de PDF, y corta una fuga antes de afectar a Postgres y al OCR.
+          memory: 768M
+    networks:
+      - internal
+      - edge
+
+networks:
+  # Sin salida a internet: Postgres y el worker OCR no la necesitan.
+  internal:
+    internal: true
+  # Solo el backend: publica el puerto en loopback y sale a R2/SMTP.
+  edge: {}
+
+volumes:
+  postgres_data: {}

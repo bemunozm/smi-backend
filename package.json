@@ -22,7 +22,8 @@
     "prisma:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
     "auth:schema": "npx @better-auth/cli generate -y",
-    "user:set-password": "ts-node --transpile-only scripts/set-password.ts"
+    "user:set-password": "ts-node --transpile-only scripts/set-password.ts",
+    "user:create-admin": "ts-node --transpile-only scripts/create-admin.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1139.0",

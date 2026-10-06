@@ -70,3 +70,7 @@ ocr-python/models/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Fotos de prueba locales (surtidor) y salidas del benchmark del worker OCR
+_inbox/
+bench-results/
