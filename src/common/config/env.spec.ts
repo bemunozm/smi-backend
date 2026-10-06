@@ -2,6 +2,7 @@ import {
   MAX_STORAGE_SIGNED_URL_TTL_SECONDS,
   MIN_STORAGE_SIGNED_URL_TTL_SECONDS,
   parseAuthRateLimitEnabled,
+  parseOcrWorkerUrl,
   parseStorageSignedUrlTtlSeconds,
 } from './env';
 
@@ -81,5 +82,41 @@ describe('parseAuthRateLimitEnabled', () => {
 
   it('string vacío se trata como "sin valor" (usa el default)', () => {
     expect(parseAuthRateLimitEnabled('  ', true)).toBe(true);
+  });
+});
+
+/**
+ * `OCR_WORKER_URL` ubica al worker OCR (servicio aparte). Un valor mal
+ * escrito debe fallar al arrancar, no degradar en silencio cada lectura.
+ */
+describe('parseOcrWorkerUrl', () => {
+  it('sin valor, cae al worker local de desarrollo', () => {
+    expect(parseOcrWorkerUrl(undefined)).toBe('http://localhost:8010');
+    expect(parseOcrWorkerUrl('  ')).toBe('http://localhost:8010');
+  });
+
+  it('acepta el nombre de servicio de Docker', () => {
+    expect(parseOcrWorkerUrl('http://ocr-worker:8010')).toBe(
+      'http://ocr-worker:8010',
+    );
+  });
+
+  it('quita la barra final para poder concatenar rutas', () => {
+    expect(parseOcrWorkerUrl('http://ocr-worker:8010/')).toBe(
+      'http://ocr-worker:8010',
+    );
+  });
+
+  it('rechaza algo que no es una URL', () => {
+    expect(() => parseOcrWorkerUrl('ocr-worker:8010')).toThrow(
+      /OCR_WORKER_URL/,
+    );
+    expect(() => parseOcrWorkerUrl('no es una url')).toThrow(/OCR_WORKER_URL/);
+  });
+
+  it('rechaza protocolos que no son http(s)', () => {
+    expect(() => parseOcrWorkerUrl('ftp://ocr-worker:8010')).toThrow(
+      /OCR_WORKER_URL/,
+    );
   });
 });

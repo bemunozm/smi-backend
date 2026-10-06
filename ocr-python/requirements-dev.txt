@@ -1,0 +1,2 @@
+# Solo para correr los tests del worker (no va en la imagen de produccion).
+pytest==9.1.1

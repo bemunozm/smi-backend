@@ -14,7 +14,6 @@
  * el único punto que garantiza que `.env` ya está cargado.
  */
 import 'dotenv/config';
-import { join } from 'node:path';
 
 export interface AppEnv {
   databaseUrl: string;
@@ -28,9 +27,7 @@ export interface AppEnv {
   smtpPass: string | undefined;
   smtpFrom: string | undefined;
   smtpSecure: boolean;
-  pythonBin: string;
-  ocrModelsDir: string;
-  ocrThreads: number;
+  ocrWorkerUrl: string;
   storageEndpoint: string;
   storagePublicEndpoint: string | undefined;
   storageBucket: string;
@@ -46,7 +43,9 @@ export interface AppEnv {
 const MIN_SECRET_LENGTH = 32;
 const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 const DEFAULT_PORT = 3000;
-const DEFAULT_OCR_THREADS = 2;
+// Desarrollo local: el worker de `ocr-python/` corre en el host (`python worker.py`).
+// En Docker se sobreescribe con el nombre del servicio (`http://ocr-worker:8010`).
+const DEFAULT_OCR_WORKER_URL = 'http://localhost:8010';
 
 // `NODE_ENV` es la única señal para decidir si las vars de STORAGE_* son obligatorias
 // (producción, Cloudflare R2) o si se puede caer al MinIO local del docker-compose
@@ -140,16 +139,28 @@ export function parseAuthRateLimitEnabled(
   return parseBoolean(rawValue);
 }
 
-/** Igual que `parsePort` pero sin tope de 65535 (es un contador de hilos, no un puerto). */
-function parseOcrThreads(rawValue: string | undefined): number {
+/**
+ * URL base del worker OCR (`ocr-python/worker.py`). Se valida como URL
+ * http(s) al arrancar para fallar rápido ante un typo, en vez de degradar
+ * en silencio cada lectura a UNREADABLE. Se normaliza sin "/" final.
+ */
+export function parseOcrWorkerUrl(rawValue: string | undefined): string {
   if (rawValue === undefined || rawValue.trim().length === 0) {
-    return DEFAULT_OCR_THREADS;
+    return DEFAULT_OCR_WORKER_URL;
   }
-  const parsed = Number(rawValue);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`Invalid OCR_THREADS env var: "${rawValue}"`);
+  const trimmed = rawValue.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`Invalid OCR_WORKER_URL env var: "${rawValue}"`);
   }
-  return parsed;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `Invalid OCR_WORKER_URL env var: "${rawValue}" (debe ser http o https)`,
+    );
+  }
+  return trimmed.replace(/\/+$/, '');
 }
 
 /**
@@ -245,21 +256,9 @@ export const env: AppEnv = {
   smtpPass: optional('SMTP_PASS'),
   smtpFrom: optional('SMTP_FROM'),
   smtpSecure: parseBoolean(process.env.SMTP_SECURE),
-  // Binario de python usado por OcrService para lanzar el worker persistente
-  // (ver ocr-python/worker.py). Default 'python3' (así queda en el VPS tras
-  // `apt install python3`); en Windows local hace falta apuntarlo al
-  // python 3.12 que tiene las deps de ocr-python/requirements.txt
-  // instaladas (ver ocr-python/README.md), ej.
-  // "C:/Users/<user>/AppData/Local/Programs/Python/Python312/python.exe".
-  pythonBin: optional('PYTHON_BIN') ?? 'python3',
-  // Carpeta con los 6 archivos de modelo (fuera de git, ver
-  // ocr-python/README.md y ocr-python/models.manifest.json). Default:
-  // ocr-python/models relativo al cwd del proceso Nest.
-  ocrModelsDir:
-    optional('OCR_MODELS_DIR') ?? join(process.cwd(), 'ocr-python', 'models'),
-  // Hilos para las sesiones ONNX de Florence + el pool global de cv2 dentro
-  // del worker (el CRNN queda fijo en 1 hilo, ver ocr-python/worker.py).
-  ocrThreads: parseOcrThreads(process.env.OCR_THREADS),
+  // Worker OCR (servicio aparte, ver ocr-python/worker.py). El backend solo
+  // lo consulta por HTTP; modelos, hilos y puerto se configuran en el worker.
+  ocrWorkerUrl: parseOcrWorkerUrl(process.env.OCR_WORKER_URL),
   // Almacenamiento de archivos de Flota (StorageService) — bucket S3-compatible
   // privado, MinIO en local / Cloudflare R2 en producción (ver docker-compose.yml
   // y .env.example). Fuera de producción, defaults calzan con el MinIO del
