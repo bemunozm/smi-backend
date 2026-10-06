@@ -939,6 +939,10 @@ model OrdenTrabajo {
   id             String         @id @default(cuid())
   equipoId       String // soft ref → Equipo (Flota)
   asignadoAId    String? // soft ref → user.id
+  /// Hallazgo de Terreno que originó la operación (soft ref, mismo criterio
+  /// que `equipoId`). Al crear la OT el hallazgo pasa a EN_PROCESO; al
+  /// completarla, a CERRADO; al cancelarla vuelve a ABIERTO.
+  hallazgoId     String?        @map("hallazgo_id")
   titulo         String
   estado         EstadoOT       @default(PENDIENTE)
   prioridad      PrioridadOT    @default(MEDIA)
@@ -957,6 +961,7 @@ model OrdenTrabajo {
 
   @@index([estado])
   @@index([equipoId])
+  @@index([hallazgoId])
   @@map("orden_trabajo")
 }
 
@@ -981,6 +986,9 @@ model Intervencion {
   horasHombre    Float                @default(0)
   horometro      Float?
   realizadaPorId String? // soft ref → user.id
+  /// Key en el bucket (R2/MinIO) de la foto del cierre — qué se hizo/ocupó.
+  /// Mismo patrón que `Hallazgo.fotoKey`: la API expone solo la URL firmada.
+  fotoKey        String?
   soloLectura    Boolean              @default(false)
   insumos        IntervencionInsumo[]
   fecha          DateTime             @default(now())

@@ -12,6 +12,8 @@ export interface OrdenResponseDto {
   tipo: TipoOT;
   origen: OrigenOT;
   origenDetalle: string | null;
+  /** Hallazgo de Terreno que originó la operación, si aplica. */
+  hallazgoId: string | null;
   asignadoA: AsignadoResponseDto | null;
   tareas: TareaResponseDto[];
   createdAt: string;

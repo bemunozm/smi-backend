@@ -23,6 +23,13 @@ export class CreateOrdenDto {
   @IsNotEmpty()
   equipoId!: string;
 
+  /** Hallazgo de Terreno que origina la operación: al crearla, el hallazgo
+   * pasa a EN_PROCESO en la misma transacción. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  hallazgoId?: string;
+
   @IsString()
   @IsNotEmpty()
   titulo!: string;

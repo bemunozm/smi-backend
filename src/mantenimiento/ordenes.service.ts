@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EstadoOT } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
@@ -29,6 +34,7 @@ const ORDEN_SELECT = {
   id: true,
   equipoId: true,
   asignadoAId: true,
+  hallazgoId: true,
   titulo: true,
   estado: true,
   prioridad: true,
@@ -116,28 +122,64 @@ export class OrdenesService {
     dto: CreateOrdenDto,
     userId: string,
   ): Promise<OrdenResponseDto> {
-    const orden = await this.prisma.ordenTrabajo.create({
-      data: {
-        ...(dto.id ? { id: dto.id } : {}),
-        createdById: userId,
-        equipoId: dto.equipoId,
-        titulo: dto.titulo,
-        prioridad: dto.prioridad,
-        tipo: dto.tipo,
-        origen: dto.origen,
-        origenDetalle: dto.origenDetalle,
-        asignadoAId: dto.asignadoAId,
-        tareas: dto.tareas
-          ? {
-              create: dto.tareas.map((tarea, index) => ({
-                texto: tarea.texto,
-                posicion: index,
-              })),
-            }
-          : undefined,
-      },
-      select: ORDEN_SELECT,
-    });
+    const data = {
+      ...(dto.id ? { id: dto.id } : {}),
+      createdById: userId,
+      equipoId: dto.equipoId,
+      hallazgoId: dto.hallazgoId,
+      titulo: dto.titulo,
+      prioridad: dto.prioridad,
+      tipo: dto.tipo,
+      origen: dto.origen,
+      origenDetalle: dto.origenDetalle,
+      asignadoAId: dto.asignadoAId,
+      tareas: dto.tareas
+        ? {
+            create: dto.tareas.map((tarea, index) => ({
+              texto: tarea.texto,
+              posicion: index,
+            })),
+          }
+        : undefined,
+    } satisfies Prisma.OrdenTrabajoUncheckedCreateInput;
+
+    let orden: SelectedOrden;
+    if (dto.hallazgoId) {
+      // Orden nacida de un hallazgo: tomarlo y marcarlo EN_PROCESO son UNA
+      // sola cosa — si el hallazgo ya lo tomó otro (no está ABIERTO), no se
+      // crea una segunda orden en silencio.
+      const hallazgoId = dto.hallazgoId;
+      orden = await this.prisma.$transaction(async (tx) => {
+        const hallazgo = await tx.hallazgo.findUnique({
+          where: { id: hallazgoId },
+          select: { id: true, estado: true },
+        });
+        if (!hallazgo) {
+          throw new NotFoundException(
+            `Hallazgo con id "${hallazgoId}" no encontrado`,
+          );
+        }
+        if (hallazgo.estado !== 'ABIERTO') {
+          throw new ConflictException(
+            'El hallazgo ya está en proceso o cerrado',
+          );
+        }
+        const creada = await tx.ordenTrabajo.create({
+          data,
+          select: ORDEN_SELECT,
+        });
+        await tx.hallazgo.update({
+          where: { id: hallazgoId },
+          data: { estado: 'EN_PROCESO' },
+        });
+        return creada;
+      });
+    } else {
+      orden = await this.prisma.ordenTrabajo.create({
+        data,
+        select: ORDEN_SELECT,
+      });
+    }
 
     this.logger.log(`Orden de trabajo creada: ${orden.id}`);
 
@@ -169,7 +211,13 @@ export class OrdenesService {
     let orden: SelectedOrden;
     let estadoAnterior = ordenAnterior.estado;
     if (!expected) {
-      orden = await write(this.prisma);
+      // La escritura y la transición del hallazgo ligado van juntas: una
+      // orden completada cuyo hallazgo quedó ABIERTO contaría dos historias.
+      orden = await this.prisma.$transaction(async (tx) => {
+        const actualizada = await write(tx);
+        await this.syncHallazgoEstado(tx, actualizada, estadoAnterior);
+        return actualizada;
+      });
     } else {
       // El estado previo se toma bajo el bloqueo: es el que decide si hubo
       // transición (y por lo tanto aviso), no el de la lectura de arriba.
@@ -194,7 +242,9 @@ export class OrdenesService {
             labels: CAMPO_LABEL,
             notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
           });
-          return { orden: await write(tx), estadoAnterior: vigente.estado };
+          const actualizada = await write(tx);
+          await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
+          return { orden: actualizada, estadoAnterior: vigente.estado };
         },
       ));
     }
@@ -209,6 +259,32 @@ export class OrdenesService {
       orden.asignadoAId,
     ]);
     return this.toResponseDto(orden, asignados);
+  }
+
+  /**
+   * Mantiene el hallazgo ligado contando la misma historia que su orden:
+   * COMPLETADA → CERRADO · CANCELADA → ABIERTO (vuelve a la bandeja del
+   * taller). Solo en el CRUCE de estado — editar el título no lo toca.
+   */
+  private async syncHallazgoEstado(
+    tx: Prisma.TransactionClient,
+    orden: SelectedOrden,
+    estadoAnterior: EstadoOT,
+  ): Promise<void> {
+    if (!orden.hallazgoId || orden.estado === estadoAnterior) return;
+
+    const estadoHallazgo =
+      orden.estado === EstadoOT.COMPLETADA
+        ? 'CERRADO'
+        : orden.estado === EstadoOT.CANCELADA
+          ? 'ABIERTO'
+          : null;
+    if (!estadoHallazgo) return;
+
+    await tx.hallazgo.update({
+      where: { id: orden.hallazgoId },
+      data: { estado: estadoHallazgo },
+    });
   }
 
   /**
@@ -290,6 +366,7 @@ export class OrdenesService {
     return {
       id: orden.id,
       equipoId: orden.equipoId,
+      hallazgoId: orden.hallazgoId,
       titulo: orden.titulo,
       estado: orden.estado,
       prioridad: orden.prioridad,
