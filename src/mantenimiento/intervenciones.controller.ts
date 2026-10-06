@@ -33,8 +33,10 @@ export class IntervencionesController {
     return { data, message: 'ok' };
   }
 
+  // ADMIN incluido: puede cerrar una tarea del taller (registrar el cierre
+  // con insumos/foto), además del MANTENEDOR que la trabaja.
   @Post()
-  @Roles([ROLES.MANTENEDOR])
+  @Roles([ROLES.ADMIN, ROLES.MANTENEDOR])
   async create(
     @Param('ordenId') ordenId: string,
     @Body() dto: CreateIntervencionDto,
