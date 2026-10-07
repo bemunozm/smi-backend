@@ -13,6 +13,8 @@ export interface IntervencionResponseDto {
   detalle: string;
   horasHombre: number;
   horometro: number | null;
+  /** URL firmada de la foto del cierre, o null. Nunca se expone la key. */
+  fotoUrl: string | null;
   soloLectura: boolean;
   insumos: IntervencionInsumoResponseDto[];
   fecha: string;

@@ -47,6 +47,11 @@ export const FILE_KINDS = {
     prefix: 'hallazgo-photos/',
     allowedExtensions: IMAGE_EXTENSIONS,
   },
+  /** Foto del cierre de una intervención del taller (qué se hizo/ocupó). */
+  'intervencion-photo': {
+    prefix: 'intervencion-photos/',
+    allowedExtensions: IMAGE_EXTENSIONS,
+  },
 } satisfies Record<string, FileKindConfig>;
 
 export type FileKind = keyof typeof FILE_KINDS;
