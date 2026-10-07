@@ -59,8 +59,10 @@ export class OrdenesController {
     return { data, message: 'ok' };
   }
 
+  // MANTENEDOR incluido: el taller inicia operaciones desde los hallazgos de
+  // su bandeja (la orden nace ligada al hallazgo y lo pasa a EN_PROCESO).
   @Post()
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR])
   async create(
     @Body() dto: CreateOrdenDto,
     @Session() session: UserSession,

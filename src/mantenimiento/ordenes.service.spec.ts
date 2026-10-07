@@ -39,6 +39,9 @@ describe('OrdenesService', () => {
   const ordenTrabajoUpdate = jest.fn();
   const tareaOTFindUnique = jest.fn();
   const tareaOTUpdate = jest.fn();
+  const hallazgoFindUnique = jest.fn();
+  const hallazgoUpdate = jest.fn();
+  const hallazgoUpdateMany = jest.fn();
   const userFindMany = jest.fn();
   const emit = jest.fn();
   const queryRaw = jest.fn();
@@ -50,6 +53,12 @@ describe('OrdenesService', () => {
     ordenTrabajoUpdate.mockReset();
     tareaOTFindUnique.mockReset();
     tareaOTUpdate.mockReset();
+    hallazgoFindUnique.mockReset();
+    hallazgoUpdate.mockReset();
+    hallazgoUpdateMany.mockReset();
+    // El claim condicional "encuentra y toma" por defecto; cada test de
+    // carrera lo pisa con `count: 0`.
+    hallazgoUpdateMany.mockResolvedValue({ count: 1 });
     userFindMany.mockReset();
     emit.mockReset();
     queryRaw.mockReset();
@@ -70,6 +79,11 @@ describe('OrdenesService', () => {
               findUnique: tareaOTFindUnique,
               update: tareaOTUpdate,
             },
+            hallazgo: {
+              findUnique: hallazgoFindUnique,
+              update: hallazgoUpdate,
+              updateMany: hallazgoUpdateMany,
+            },
             user: { findMany: userFindMany },
             // Con `X-Expected` la escritura va en una transacción que bloquea
             // la fila: el mock ejecuta el callback con el mismo cliente.
@@ -78,7 +92,13 @@ describe('OrdenesService', () => {
               fn({
                 ordenTrabajo: {
                   findUnique: ordenTrabajoFindUnique,
+                  create: ordenTrabajoCreate,
                   update: ordenTrabajoUpdate,
+                },
+                hallazgo: {
+                  findUnique: hallazgoFindUnique,
+                  update: hallazgoUpdate,
+                  updateMany: hallazgoUpdateMany,
                 },
                 $queryRaw: queryRaw,
               }),
@@ -390,6 +410,103 @@ describe('OrdenesService', () => {
         ),
       ).rejects.toThrow('boom');
       expect(emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('orden ligada a un hallazgo (taller)', () => {
+    const CREATE_DTO = {
+      equipoId: 'CM-003',
+      titulo: 'Reparación de frenos',
+      prioridad: 'CRITICA' as const,
+      tipo: 'CORRECTIVA' as const,
+      origen: 'HALLAZGO' as const,
+      hallazgoId: 'hallazgo_1',
+    };
+
+    it('create con hallazgoId toma el hallazgo con un claim CONDICIONAL atómico', async () => {
+      hallazgoFindUnique.mockResolvedValue({ id: 'hallazgo_1', estado: 'ABIERTO' });
+      ordenTrabajoCreate.mockResolvedValue({ ...MOCK_ORDEN, hallazgoId: 'hallazgo_1' });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      const result = await service.create(CREATE_DTO, 'user_1');
+
+      expect(result.hallazgoId).toBe('hallazgo_1');
+      // updateMany con la condición de estado: dos claims concurrentes no
+      // pueden ganar los dos (el segundo ve count: 0).
+      expect(hallazgoUpdateMany).toHaveBeenCalledWith({
+        where: { id: 'hallazgo_1', estado: 'ABIERTO' },
+        data: { estado: 'EN_PROCESO' },
+      });
+    });
+
+    it('create con hallazgo que no está ABIERTO: 409 y no crea la orden', async () => {
+      hallazgoFindUnique.mockResolvedValue({ id: 'hallazgo_1', estado: 'EN_PROCESO' });
+      hallazgoUpdateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.create(CREATE_DTO, 'user_1')).rejects.toThrow(
+        'El hallazgo ya está en proceso o cerrado',
+      );
+      expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+    });
+
+    it('carrera: el hallazgo se veía ABIERTO pero otro lo tomó primero → 409, sin OT duplicada', async () => {
+      // El findUnique del 404 lo vio ABIERTO, pero entre medio otro create ganó
+      // el claim: updateMany devuelve count 0 y este create pierde limpio.
+      hallazgoFindUnique.mockResolvedValue({ id: 'hallazgo_1', estado: 'ABIERTO' });
+      hallazgoUpdateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.create(CREATE_DTO, 'user_1')).rejects.toThrow(
+        'El hallazgo ya está en proceso o cerrado',
+      );
+      expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+    });
+
+    it('create con hallazgo inexistente: 404', async () => {
+      hallazgoFindUnique.mockResolvedValue(null);
+
+      await expect(service.create(CREATE_DTO, 'user_1')).rejects.toThrow(NotFoundException);
+      expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+    });
+
+    it('update a COMPLETADA cierra el hallazgo ligado', async () => {
+      const enProceso = { ...MOCK_ORDEN, estado: 'EN_PROCESO', hallazgoId: 'hallazgo_1' };
+      ordenTrabajoFindUnique.mockResolvedValue(enProceso);
+      ordenTrabajoUpdate.mockResolvedValue({ ...enProceso, estado: 'COMPLETADA' });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      await service.update('orden_1', { estado: 'COMPLETADA' });
+
+      // Condicionado a EN_PROCESO: no pisa un cierre manual del supervisor.
+      expect(hallazgoUpdateMany).toHaveBeenCalledWith({
+        where: { id: 'hallazgo_1', estado: 'EN_PROCESO' },
+        data: { estado: 'CERRADO' },
+      });
+    });
+
+    it('update a CANCELADA devuelve el hallazgo a ABIERTO (vuelve a la bandeja)', async () => {
+      const enProceso = { ...MOCK_ORDEN, estado: 'EN_PROCESO', hallazgoId: 'hallazgo_1' };
+      ordenTrabajoFindUnique.mockResolvedValue(enProceso);
+      ordenTrabajoUpdate.mockResolvedValue({ ...enProceso, estado: 'CANCELADA' });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      await service.update('orden_1', { estado: 'CANCELADA' });
+
+      expect(hallazgoUpdateMany).toHaveBeenCalledWith({
+        where: { id: 'hallazgo_1', estado: 'EN_PROCESO' },
+        data: { estado: 'ABIERTO' },
+      });
+    });
+
+    it('update sin cruce de estado no toca el hallazgo', async () => {
+      const enProceso = { ...MOCK_ORDEN, estado: 'EN_PROCESO', hallazgoId: 'hallazgo_1' };
+      ordenTrabajoFindUnique.mockResolvedValue(enProceso);
+      ordenTrabajoUpdate.mockResolvedValue({ ...enProceso, titulo: 'Otro título' });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      await service.update('orden_1', { titulo: 'Otro título' });
+
+      expect(hallazgoUpdate).not.toHaveBeenCalled();
+      expect(hallazgoUpdateMany).not.toHaveBeenCalled();
     });
   });
 });

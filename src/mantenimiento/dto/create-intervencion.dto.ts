@@ -37,6 +37,21 @@ export class CreateIntervencionDto {
   @IsNumber()
   horometro?: number;
 
+  /** Key temporal (`tmp/<userId>/…`) de la foto del cierre subida por
+   * `POST /api/files`. El servicio la reclama a su key definitiva. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  fotoKey?: string;
+
+  /** Bodega de la que salen los insumos. Obligatoria cuando `insumos` viene
+   * con filas (el servicio lo exige): cada consumo descuenta stock REAL de
+   * esa bodega vía `StockService.issue`. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  branchId?: string;
+
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
