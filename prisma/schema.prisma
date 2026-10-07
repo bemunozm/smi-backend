@@ -296,6 +296,10 @@ enum EquipmentDocumentType {
   INSURANCE
   CIRCULATION_PERMIT
   CERTIFICATION
+  /// Pauta o manual de mantención del fabricante (PDF, planilla). Se adjunta
+  /// desde «Asignar mantenciones» y el mantenedor lo consulta o descarga al
+  /// hacer la mantención. Sin vencimiento: no entra en las alertas.
+  MAINTENANCE_MANUAL
   OTHER
 }
 
@@ -1025,6 +1029,54 @@ model UmbralMantenimiento {
   createdById String? @map("created_by_id")
 
   @@map("umbral_mantenimiento")
+}
+
+/// Pauta de mantención preventiva de UN equipo: la matriz de las planillas
+/// del cliente (operaciones × hitos de horas o km, con una marca en cada hito
+/// donde se hace la operación).
+///
+/// Los hitos son el contador del equipo (horómetro o km según su
+/// `controlUnit`). El más alto es el largo del ciclo: al llegar a él el
+/// contador vuelve a cero — con un ciclo de 2.000 h, un equipo con 2.250 h está
+/// en las 250. `initialMilestone` es el servicio que se hace una sola vez al
+/// comenzar (el «1ras 50H» de las pautas de fábrica) y no se repite.
+///
+/// `equipmentId` es soft ref, como el resto de Mantenimiento (`OrdenTrabajo`),
+/// para no tocar el modelo `Equipment` de Flota.
+model MaintenancePlan {
+  id               String                @id @default(cuid())
+  equipmentId      String                @unique @map("equipment_id")
+  /// Hitos del ciclo, de menor a mayor, sin repetir.
+  milestones       Int[]
+  initialMilestone Int?                  @map("initial_milestone")
+  items            MaintenancePlanItem[]
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+
+  @@map("maintenance_plan")
+}
+
+/// Una fila de la pauta: una operación o un material, con su cantidad, y los
+/// hitos en que se hace. Cada hito tiene su propia lista — no se acumulan.
+model MaintenancePlanItem {
+  id              String          @id @default(cuid())
+  planId          String          @map("plan_id")
+  plan            MaintenancePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  position        Int
+  /// FILTRO | ACEITE | CORREA | OPERACION
+  kind            String
+  description     String
+  quantity        Float?
+  unit            String?
+  /// Código del fabricante o del proveedor (SANY 60034226, FLEETGUARD LF9009).
+  partNumber      String?         @map("part_number")
+  /// Repuesto del inventario, si corresponde (soft ref → `Item`).
+  inventoryItemId String?         @map("inventory_item_id")
+  /// Hitos en que se hace; puede incluir `initialMilestone`.
+  milestones      Int[]
+
+  @@index([planId])
+  @@map("maintenance_plan_item")
 }
 
 model Actividad {
