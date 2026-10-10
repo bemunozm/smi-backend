@@ -1049,6 +1049,15 @@ model MaintenancePlan {
   /// Hitos del ciclo, de menor a mayor, sin repetir.
   milestones       Int[]
   initialMilestone Int?                  @map("initial_milestone")
+  /// Contador del equipo (horómetro o km) cuando se le asignó la pauta: desde
+  /// ahí se lleva en el sistema. Los hitos que vencían antes se dan por hechos
+  /// —«previos al sistema»—: un equipo que entra con 2.100 h ya pasó todas
+  /// las mantenciones del primer ciclo de 2.000 h. Null = sin lectura.
+  baselineCounter  Float?                @map("baseline_counter")
+  /// Cuánto antes (horas o km) de la próxima mantención se le avisa al
+  /// mantenedor: al entrar en ese margen se crea una orden preventiva con las
+  /// operaciones del hito, que aparece como tarjeta en su tablero. Null = sin aviso.
+  alertBefore      Int?                  @map("alert_before")
   items            MaintenancePlanItem[]
   createdAt        DateTime              @default(now()) @map("created_at")
   updatedAt        DateTime              @updatedAt @map("updated_at")
@@ -1059,9 +1068,9 @@ model MaintenancePlan {
 /// Una fila de la pauta: una operación o un material, con su cantidad, y los
 /// hitos en que se hace. Cada hito tiene su propia lista — no se acumulan.
 model MaintenancePlanItem {
-  id              String          @id @default(cuid())
-  planId          String          @map("plan_id")
-  plan            MaintenancePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  id              String              @id @default(cuid())
+  planId          String              @map("plan_id")
+  plan            MaintenancePlan     @relation(fields: [planId], references: [id], onDelete: Cascade)
   position        Int
   /// FILTRO | ACEITE | CORREA | OPERACION
   kind            String
@@ -1069,14 +1078,47 @@ model MaintenancePlanItem {
   quantity        Float?
   unit            String?
   /// Código del fabricante o del proveedor (SANY 60034226, FLEETGUARD LF9009).
-  partNumber      String?         @map("part_number")
+  partNumber      String?             @map("part_number")
   /// Repuesto del inventario, si corresponde (soft ref → `Item`).
-  inventoryItemId String?         @map("inventory_item_id")
+  inventoryItemId String?             @map("inventory_item_id")
   /// Hitos en que se hace; puede incluir `initialMilestone`.
   milestones      Int[]
+  records         MaintenanceRecord[]
 
   @@index([planId])
   @@map("maintenance_plan_item")
+}
+
+/// Registro de una operación de la pauta YA HECHA en un hito de un ciclo
+/// («ciclo de mantenciones» de la ficha del equipo). Una fila por operación ×
+/// ciclo × hito: existe = hecha, no existe = pendiente.
+///
+/// `cycle` cuenta las vueltas del ciclo desde 1: con un ciclo de 2.000 h, el
+/// ciclo 1 va de 0 a 2.000 h y el 2 de 2.000 a 4.000. Cada vuelta tiene su
+/// propia grilla, así queda el historial de lo hecho en las anteriores.
+///
+/// `description`/`kind` se copian al marcar: si después la operación se borra
+/// de la pauta (`planItemId` queda null), el registro sigue diciendo qué se
+/// hizo. Quién, cuándo y con qué contador quedan como respaldo para el
+/// administrador.
+model MaintenanceRecord {
+  id          String               @id @default(cuid())
+  equipmentId String               @map("equipment_id")
+  planItemId  String?              @map("plan_item_id")
+  planItem    MaintenancePlanItem? @relation(fields: [planItemId], references: [id], onDelete: SetNull)
+  cycle       Int
+  milestone   Int
+  description String
+  kind        String
+  /// Horómetro o km del equipo al marcarla.
+  counterAt   Float?               @map("counter_at")
+  doneById    String               @map("done_by_id")
+  doneByName  String               @map("done_by_name")
+  doneAt      DateTime             @default(now()) @map("done_at")
+
+  @@unique([planItemId, cycle, milestone])
+  @@index([equipmentId, cycle])
+  @@map("maintenance_record")
 }
 
 model Actividad {
