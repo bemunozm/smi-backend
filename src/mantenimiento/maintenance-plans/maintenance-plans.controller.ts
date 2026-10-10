@@ -1,9 +1,18 @@
-import { Body, Controller, Get, Param, Put } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Put,
+  Query,
+} from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
 import { SaveMaintenancePlanDto } from './dto/save-maintenance-plan.dto';
+import { SetMaintenanceRecordDto } from './dto/set-maintenance-record.dto';
 import { MaintenancePlansService } from './maintenance-plans.service';
 
 /** Quién mira las pautas: también el supervisor, que ve los equipos en faena. */
@@ -42,6 +51,45 @@ export class MaintenancePlansController {
     return {
       data: await this.service.nextForEquipment(equipmentId),
       message: 'ok',
+    };
+  }
+
+  /**
+   * Una vuelta del ciclo de mantenciones (`?cycle=2`); sin `cycle`, la que
+   * está en curso. Es lo que muestra «Ciclo de mantenciones» en la ficha.
+   */
+  @Get(':equipmentId/cycle')
+  @Roles(LECTORES)
+  async cycle(
+    @Param('equipmentId') equipmentId: string,
+    @Query('cycle', new ParseIntPipe({ optional: true })) cycle?: number,
+  ) {
+    return {
+      data: await this.service.getCycle(equipmentId, cycle),
+      message: 'ok',
+    };
+  }
+
+  /**
+   * Marca o desmarca una operación como hecha en un hito de una vuelta del
+   * ciclo. Solo el mantenedor, que es quien la hace; el resto la ve en solo
+   * lectura. Quién la marca sale de la sesión. Base para que las órdenes
+   * preventivas del mantenedor la registren solas al cerrarse.
+   */
+  @Put(':equipmentId/records')
+  @Roles([ROLES.MANTENEDOR])
+  async setRecord(
+    @Param('equipmentId') equipmentId: string,
+    @Body() dto: SetMaintenanceRecordDto,
+    @Session() session: UserSession,
+  ) {
+    const editor = {
+      id: session.user.id,
+      name: session.user.name?.trim() || session.user.email,
+    };
+    return {
+      data: await this.service.setRecord(equipmentId, dto, editor),
+      message: dto.done ? 'Mantención registrada' : 'Registro quitado',
     };
   }
 

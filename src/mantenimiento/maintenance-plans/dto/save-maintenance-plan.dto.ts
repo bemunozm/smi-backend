@@ -26,6 +26,14 @@ export const PLAN_ITEM_KINDS = [
 const MAX_CONTADOR = 1_000_000;
 
 export class MaintenancePlanItemDto {
+  /**
+   * Id de una fila que ya existe en la pauta: se actualiza en su lugar y
+   * conserva el registro de mantenciones hechas. Sin id, es una fila nueva.
+   */
+  @IsOptional()
+  @IsString()
+  id?: string;
+
   @IsIn(PLAN_ITEM_KINDS)
   kind!: string;
 
@@ -82,6 +90,16 @@ export class SaveMaintenancePlanDto {
   @Min(1)
   @Max(MAX_CONTADOR)
   initialMilestone?: number | null;
+
+  /**
+   * Cuánto antes (horas o km) de la próxima mantención se le avisa al
+   * mantenedor con una orden preventiva. Vacío/null = sin aviso.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(MAX_CONTADOR)
+  alertBefore?: number | null;
 
   @IsArray()
   @ArrayMaxSize(200)
