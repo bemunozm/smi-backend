@@ -278,9 +278,14 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
           conservadas.add(i.id);
           await tx.maintenancePlanItem.update({ where: { id: i.id }, data });
         } else {
-          await tx.maintenancePlanItem.create({
+          // La fila nueva también se CONSERVA: el barrido de abajo borra lo
+          // que ya no está en la pauta, y sin su id acá se llevaba puesto lo
+          // recién creado — la pauta se guardaba sin operaciones.
+          const creada = await tx.maintenancePlanItem.create({
             data: { ...data, planId: plan.id },
+            select: { id: true },
           });
+          conservadas.add(creada.id);
         }
       }
       await tx.maintenancePlanItem.deleteMany({
