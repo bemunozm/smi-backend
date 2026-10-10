@@ -410,6 +410,10 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
           tipo: 'PREVENTIVA',
           origen: 'PREVENTIVO',
           origenDetalle,
+          // El hito y la vuelta quedan como datos: el checklist de la tarjeta
+          // escribe el registro del ciclo sin parsear `origenDetalle`.
+          pautaMilestone: next.milestone,
+          pautaCycle: cycle,
           // Si ya toca (o se pasó), sube de prioridad.
           prioridad: next.remaining === 0 ? 'ALTA' : 'MEDIA',
           tareas: {
@@ -424,6 +428,8 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
                 .filter(Boolean)
                 .join(' · '),
               posicion,
+              // Ata la tarea a su operación de la pauta (ver `TareaOT.planItemId`).
+              planItemId: i.id,
             })),
           },
         },

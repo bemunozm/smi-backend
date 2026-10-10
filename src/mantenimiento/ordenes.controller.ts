@@ -89,14 +89,14 @@ export class OrdenesController {
     @Param('ordenId') ordenId: string,
     @Param('tareaId') tareaId: string,
     @Body() dto: ToggleTareaDto,
+    @Session() session: UserSession,
   ): Promise<TareaDetailResponse> {
     assertNonEmptyId(ordenId, 'ordenId');
     assertNonEmptyId(tareaId, 'tareaId');
-    const data = await this.ordenesService.toggleTarea(
-      ordenId,
-      tareaId,
-      dto.hecha,
-    );
+    const data = await this.ordenesService.updateTarea(ordenId, tareaId, dto, {
+      id: session.user.id,
+      name: session.user.name,
+    });
     return { data, message: 'Tarea actualizada' };
   }
 }

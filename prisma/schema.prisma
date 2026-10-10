@@ -953,6 +953,11 @@ model OrdenTrabajo {
   tipo           TipoOT         @default(CORRECTIVA)
   origen         OrigenOT       @default(MANUAL)
   origenDetalle  String?
+  /// Hito y vuelta de la pauta que originó esta orden (solo las PREVENTIVAS
+  /// que crea `checkAlert`): completar su checklist escribe el registro del
+  /// ciclo (`MaintenanceRecord`) sin tener que parsear `origenDetalle`.
+  pautaMilestone Int?           @map("pauta_milestone")
+  pautaCycle     Int?           @map("pauta_cycle")
   tareas         TareaOT[]
   intervenciones Intervencion[]
   createdAt      DateTime       @default(now())
@@ -976,6 +981,12 @@ model TareaOT {
   texto    String
   hecha    Boolean      @default(false)
   posicion Int          @default(0)
+  /// Operación de la pauta que respalda esta tarea (soft ref → la tarjeta
+  /// preventiva del taller marca también el `MaintenanceRecord` del ciclo).
+  planItemId String? @map("plan_item_id")
+  /// Checklist del taller: qué se hizo y la foto de respaldo, por tarea.
+  notas      String?
+  fotoKey    String? @map("foto_key")
 
   @@index([ordenId])
   @@map("tarea_ot")

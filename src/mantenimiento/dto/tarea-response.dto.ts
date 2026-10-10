@@ -3,4 +3,8 @@ export interface TareaResponseDto {
   texto: string;
   hecha: boolean;
   posicion: number;
+  /** Qué se hizo (checklist del taller); null si aún no se completa. */
+  notas: string | null;
+  /** URL firmada de la foto de respaldo — nunca la key cruda. */
+  fotoUrl: string | null;
 }
