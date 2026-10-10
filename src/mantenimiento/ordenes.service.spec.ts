@@ -4,6 +4,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { ERROR_CODES } from '../common/errors/error-codes';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { StockService } from '../inventory/stock.service';
 import { StorageService } from '../storage/storage.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import { OrdenesService } from './ordenes.service';
@@ -31,6 +32,8 @@ const MOCK_ORDEN = {
       planItemId: null,
       notas: null,
       fotoKey: null,
+      hechaPorNombre: null,
+      hechaAt: null,
     },
   ],
 };
@@ -53,6 +56,8 @@ const MOCK_PREVENTIVA = {
       planItemId: 'item_a',
       notas: null,
       fotoKey: null,
+      hechaPorNombre: null,
+      hechaAt: null,
     },
     {
       id: 'tarea_b',
@@ -62,6 +67,8 @@ const MOCK_PREVENTIVA = {
       planItemId: 'item_b',
       notas: null,
       fotoKey: null,
+      hechaPorNombre: null,
+      hechaAt: null,
     },
   ],
 };
@@ -84,6 +91,8 @@ describe('OrdenesService', () => {
   const claimTmp = jest.fn();
   const sign = jest.fn();
   const discard = jest.fn();
+  const stockIssue = jest.fn();
+  const emitPending = jest.fn();
   const hallazgoFindUnique = jest.fn();
   const hallazgoUpdate = jest.fn();
   const hallazgoUpdateMany = jest.fn();
@@ -108,10 +117,13 @@ describe('OrdenesService', () => {
     });
     equipmentFindUnique.mockReset();
     equipmentFindUnique.mockResolvedValue({
+      id: 'eq_flota_1',
       controlUnit: 'HOURS',
       currentHourmeter: 245,
       currentMileage: null,
     });
+    stockIssue.mockReset();
+    emitPending.mockReset();
     claimTmp.mockReset();
     claimTmp.mockImplementation((key: string) => Promise.resolve(`claimed/${key}`));
     sign.mockReset();
@@ -149,6 +161,8 @@ describe('OrdenesService', () => {
               updateMany: hallazgoUpdateMany,
             },
             user: { findMany: userFindMany },
+            // `resolveEquipmentId` corre fuera de la transacción.
+            equipment: { findUnique: equipmentFindUnique },
             // Con `X-Expected` la escritura va en una transacción que bloquea
             // la fila: el mock ejecuta el callback con el mismo cliente.
             $queryRaw: queryRaw,
@@ -179,6 +193,7 @@ describe('OrdenesService', () => {
           },
         },
         { provide: StorageService, useValue: { claimTmp, sign, discard } },
+        { provide: StockService, useValue: { issue: stockIssue, emitPending } },
         { provide: EventEmitter2, useValue: { emit } },
       ],
     }).compile();
@@ -213,6 +228,8 @@ describe('OrdenesService', () => {
             posicion: 0,
             notas: null,
             fotoUrl: null,
+            hechaPorNombre: null,
+            hechaAt: null,
           },
         ],
         createdAt: '2026-01-01T00:00:00.000Z',
@@ -318,7 +335,13 @@ describe('OrdenesService', () => {
       expect(claimTmp).toHaveBeenCalledWith('tmp/foto.jpg', EDITOR.id, 'tarea-photo');
       expect(tareaOTUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: { hecha: true, notas: 'Aceite 15W-40 nuevo', fotoKey: 'claimed/tmp/foto.jpg' },
+          data: expect.objectContaining({
+            hecha: true,
+            notas: 'Aceite 15W-40 nuevo',
+            fotoKey: 'claimed/tmp/foto.jpg',
+            // El "ver detalle": quién y cuándo quedan en la tarea.
+            hechaPorNombre: EDITOR.name,
+          }),
         }),
       );
       expect(recordUpsert).toHaveBeenCalledWith(
@@ -382,6 +405,68 @@ describe('OrdenesService', () => {
       });
       expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
       expect(emit).not.toHaveBeenCalled();
+    });
+
+    it('los insumos de la tarea se descuentan del stock en la MISMA transacción', async () => {
+      tareaOTFindUnique.mockResolvedValue({
+        id: 'tarea_a',
+        ordenId: 'orden_prev',
+        planItemId: 'item_a',
+        texto: 'Cambio de aceite',
+      });
+      ordenTrabajoFindUnique.mockResolvedValue(MOCK_PREVENTIVA);
+      tareaOTUpdate.mockResolvedValue(TAREA_HECHA);
+      tareaOTFindMany.mockResolvedValue([{ hecha: true }, { hecha: false }]);
+      ordenTrabajoUpdate.mockResolvedValue({ ...MOCK_PREVENTIVA, estado: 'EN_PROCESO' });
+
+      await service.updateTarea(
+        'orden_prev',
+        'tarea_a',
+        {
+          hecha: true,
+          notas: 'ok',
+          branchId: 'br_faena',
+          insumos: [{ insumoId: 'item_aceite', cantidad: 2 }],
+        },
+        EDITOR,
+      );
+
+      expect(stockIssue).toHaveBeenCalledWith(
+        {
+          itemId: 'item_aceite',
+          branchId: 'br_faena',
+          quantity: 2,
+          reason: 'INTERVENTION',
+          performedById: EDITOR.id,
+          // `equipoId` de la OT resuelto contra Flota.
+          equipmentId: 'eq_flota_1',
+          reference: 'orden_prev',
+        },
+        expect.objectContaining({ events: expect.any(Array) }),
+      );
+      // Los avisos de stock bajo salen SOLO tras confirmar la transacción.
+      expect(emitPending).toHaveBeenCalledTimes(1);
+    });
+
+    it('insumos sin bodega: rechaza antes de tocar nada', async () => {
+      tareaOTFindUnique.mockResolvedValue({
+        id: 'tarea_a',
+        ordenId: 'orden_prev',
+        planItemId: 'item_a',
+        texto: 'Cambio de aceite',
+      });
+      ordenTrabajoFindUnique.mockResolvedValue(MOCK_PREVENTIVA);
+
+      await expect(
+        service.updateTarea(
+          'orden_prev',
+          'tarea_a',
+          { hecha: true, insumos: [{ insumoId: 'item_aceite', cantidad: 2 }] },
+          EDITOR,
+        ),
+      ).rejects.toThrow('Indica la bodega');
+      expect(tareaOTUpdate).not.toHaveBeenCalled();
+      expect(stockIssue).not.toHaveBeenCalled();
     });
 
     it('si la transacción falla, la foto reclamada se descarta', async () => {

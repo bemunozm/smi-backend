@@ -7,4 +7,7 @@ export interface TareaResponseDto {
   notas: string | null;
   /** URL firmada de la foto de respaldo — nunca la key cruda. */
   fotoUrl: string | null;
+  /** Quién y cuándo la completó — el "ver detalle" de la tarjeta. */
+  hechaPorNombre: string | null;
+  hechaAt: string | null;
 }

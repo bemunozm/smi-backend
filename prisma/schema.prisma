@@ -987,6 +987,9 @@ model TareaOT {
   /// Checklist del taller: qué se hizo y la foto de respaldo, por tarea.
   notas      String?
   fotoKey    String? @map("foto_key")
+  /// Quién y cuándo la completó — el "ver detalle" de la tarjeta.
+  hechaPorNombre String?   @map("hecha_por_nombre")
+  hechaAt        DateTime? @map("hecha_at")
 
   @@index([ordenId])
   @@map("tarea_ot")

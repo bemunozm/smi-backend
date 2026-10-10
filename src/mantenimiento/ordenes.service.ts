@@ -1,11 +1,12 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { EstadoOT } from '@prisma/client';
+import { EstadoOT, MovementReason } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 
 import {
@@ -15,6 +16,7 @@ import {
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { createOrReturn } from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { StockService, type PendingStockEvents } from '../inventory/stock.service';
 import { StorageService } from '../storage/storage.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type {
@@ -55,6 +57,8 @@ const ORDEN_SELECT = {
       planItemId: true,
       notas: true,
       fotoKey: true,
+      hechaPorNombre: true,
+      hechaAt: true,
     },
     orderBy: { posicion: 'asc' },
   },
@@ -71,6 +75,8 @@ const TAREA_SELECT = {
   posicion: true,
   notas: true,
   fotoKey: true,
+  hechaPorNombre: true,
+  hechaAt: true,
 } satisfies Prisma.TareaOTSelect;
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
@@ -89,6 +95,7 @@ export class OrdenesService {
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
     private readonly storage: StorageService,
+    private readonly stock: StockService,
   ) {}
 
   async findAll(estado?: EstadoOT): Promise<OrdenResponseDto[]> {
@@ -351,7 +358,13 @@ export class OrdenesService {
   async updateTarea(
     ordenId: string,
     tareaId: string,
-    dto: { hecha: boolean; notas?: string; fotoKey?: string },
+    dto: {
+      hecha: boolean;
+      notas?: string;
+      fotoKey?: string;
+      insumos?: { insumoId: string; cantidad: number }[];
+      branchId?: string;
+    },
     editor: { id: string; name: string },
   ): Promise<TareaResponseDto> {
     const tarea = await this.prisma.tareaOT.findUnique({
@@ -366,12 +379,26 @@ export class OrdenesService {
     }
     const ordenAnterior = await this.findOrdenOrThrow(ordenId);
 
+    const insumos = dto.insumos ?? [];
+    if (insumos.length > 0 && !dto.branchId) {
+      throw new BadRequestException(
+        'Indica la bodega de la que salen los insumos.',
+      );
+    }
+    // Igual que en las intervenciones: `equipoId` de la OT es texto libre; si
+    // se resuelve, el movimiento queda imputado a la unidad.
+    const equipmentId =
+      insumos.length > 0
+        ? await this.resolveEquipmentId(ordenAnterior.equipoId)
+        : null;
+
     // La foto se reclama ANTES de la transacción (mismo criterio que
     // `IntervencionesService`): si la escritura falla, se descarta.
     const finalKey = dto.fotoKey
       ? await this.storage.claimTmp(dto.fotoKey, editor.id, 'tarea-photo')
       : undefined;
 
+    const events: PendingStockEvents = [];
     let updated: Prisma.TareaOTGetPayload<{ select: typeof TAREA_SELECT }>;
     let orden: SelectedOrden = ordenAnterior;
     try {
@@ -382,9 +409,30 @@ export class OrdenesService {
             hecha: dto.hecha,
             ...(dto.notas !== undefined ? { notas: dto.notas } : {}),
             ...(finalKey !== undefined ? { fotoKey: finalKey } : {}),
+            // El "ver detalle" de la tarjeta: quién y cuándo la completó.
+            ...(dto.hecha
+              ? { hechaPorNombre: editor.name, hechaAt: new Date() }
+              : { hechaPorNombre: null, hechaAt: null }),
           },
           select: TAREA_SELECT,
         });
+
+        // Los insumos de ESTA tarea salen del stock en la misma transacción
+        // (contrato de `StockService.issue`): si algo falla, no se descuenta.
+        for (const insumo of insumos) {
+          await this.stock.issue(
+            {
+              itemId: insumo.insumoId,
+              branchId: dto.branchId as string,
+              quantity: insumo.cantidad,
+              reason: MovementReason.INTERVENTION,
+              performedById: editor.id,
+              equipmentId,
+              reference: ordenId,
+            },
+            { tx, events },
+          );
+        }
 
         await this.syncRegistroCiclo(tx, ordenAnterior, tarea, dto.hecha, editor);
 
@@ -420,6 +468,9 @@ export class OrdenesService {
       throw error;
     }
 
+    // Los avisos de stock bajo se emiten SOLO tras confirmar la transacción.
+    this.stock.emitPending(events);
+
     this.logger.log(
       `Tarea ${tareaId} de la orden ${ordenId} marcada hecha=${dto.hecha}`,
     );
@@ -433,7 +484,23 @@ export class OrdenesService {
       posicion: updated.posicion,
       notas: updated.notas,
       fotoUrl: updated.fotoKey ? await this.storage.sign(updated.fotoKey) : null,
+      hechaPorNombre: updated.hechaPorNombre,
+      hechaAt: updated.hechaAt ? updated.hechaAt.toISOString() : null,
     };
+  }
+
+  private async resolveEquipmentId(equipoId: string): Promise<string | null> {
+    const byId = await this.prisma.equipment.findUnique({
+      where: { id: equipoId },
+      select: { id: true },
+    });
+    if (byId) return byId.id;
+
+    const byCode = await this.prisma.equipment.findUnique({
+      where: { internalCode: equipoId },
+      select: { id: true },
+    });
+    return byCode?.id ?? null;
   }
 
   /**
@@ -550,6 +617,8 @@ export class OrdenesService {
           fotoUrl: tarea.fotoKey
             ? await this.storage.sign(tarea.fotoKey)
             : null,
+          hechaPorNombre: tarea.hechaPorNombre,
+          hechaAt: tarea.hechaAt ? tarea.hechaAt.toISOString() : null,
         })),
       ),
       createdAt: orden.createdAt.toISOString(),

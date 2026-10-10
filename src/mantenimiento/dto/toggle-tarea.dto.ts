@@ -1,4 +1,14 @@
-import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsArray,
+  IsBoolean,
+  IsOptional,
+  IsString,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
+
+import { CreateIntervencionInsumoDto } from './create-intervencion-insumo.dto';
 
 export class ToggleTareaDto {
   @IsBoolean()
@@ -15,4 +25,17 @@ export class ToggleTareaDto {
   @IsString()
   @MaxLength(512)
   fotoKey?: string;
+
+  /** Insumos usados en ESTA tarea: se descuentan del stock al guardarla,
+   * igual que el cierre de una intervención. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateIntervencionInsumoDto)
+  insumos?: CreateIntervencionInsumoDto[];
+
+  /** Bodega de la que salen los insumos (el taller usa SIEMPRE la de faena). */
+  @IsOptional()
+  @IsString()
+  branchId?: string;
 }
