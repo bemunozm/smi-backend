@@ -35,7 +35,9 @@ export type ReporteDiarioResponse = Omit<
 >;
 
 const esP2002 = (e: unknown) =>
-  typeof e === 'object' && e !== null && (e as { code?: string }).code === 'P2002';
+  typeof e === 'object' &&
+  e !== null &&
+  (e as { code?: string }).code === 'P2002';
 
 @Injectable()
 export class ReporteDiarioService {
@@ -103,7 +105,9 @@ export class ReporteDiarioService {
           tolvas: { create: dto.tolvas },
           plantas: { create: dto.plantas },
           traspasos: { create: dto.traspasos },
-          empresas: { create: dto.empresaIds.map((empresaId) => ({ empresaId })) },
+          empresas: {
+            create: dto.empresaIds.map((empresaId) => ({ empresaId })),
+          },
           personal: {
             create: dto.personal.map((p, orden) => ({ ...p, orden })),
           },

@@ -86,7 +86,11 @@ describe('ReporteDiarioService.create', () => {
 
   it('rechaza secciones repetidas aunque sean 3', async () => {
     const dto = base();
-    dto.produccion[1] = { seccion: 'INTERNOS', camiones: 1, vueltasPorCamion: 1 };
+    dto.produccion[1] = {
+      seccion: 'INTERNOS',
+      camiones: 1,
+      vueltasPorCamion: 1,
+    };
     await expect(service.create(dto, USER.id, USER.name)).rejects.toThrow(
       BadRequestException,
     );
@@ -167,7 +171,7 @@ describe('ReporteDiarioService.create', () => {
     );
   });
 
-it('la respuesta no contiene createdById', async () => {
+  it('la respuesta no contiene createdById', async () => {
     const res = await service.create(base(), USER.id, USER.name);
     expect(res).not.toHaveProperty('createdById');
   });
