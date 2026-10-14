@@ -8,11 +8,19 @@ import { Prisma } from '@prisma/client';
 
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { ChangeLogService } from '../../change-log/change-log.service';
+import {
+  ChangeLogService,
+  diffFields,
+  type ComparableField,
+  type Editor,
+} from '../../change-log/change-log.service';
 import {
   CreateReporteDiarioDto,
   SECCIONES,
+  SECCION_LABEL,
+  TRASPASO_LABEL,
 } from './dto/create-reporte-diario.dto';
+import { UpdateReporteDiarioDto } from './dto/update-reporte-diario.dto';
 import { FindReportesQueryDto } from './dto/find-reportes-query.dto';
 
 /**
@@ -39,6 +47,63 @@ const esP2002 = (e: unknown) =>
   typeof e === 'object' &&
   e !== null &&
   (e as { code?: string }).code === 'P2002';
+
+/** Cada bloque comparado como UNA línea legible: así el historial de cambios
+ * dice «Camiones: … → …» en vez de un JSON. */
+type ResumenReporte = {
+  produccion: string;
+  tolvas: string;
+  plantas: string;
+  traspasos: string;
+  empresas: string;
+  personal: string;
+  observaciones: string;
+};
+
+const VACIO = '—';
+
+function resumir(r: {
+  produccion: { seccion: string; camiones: number; vueltasPorCamion: number }[];
+  tolvas: { tolva: number; cargas: number }[];
+  plantas: { producto: string; planta: { nombre: string } }[];
+  traspasos: { tipo: string; cantidad: number }[];
+  empresas: { empresa: { nombre: string } }[];
+  personal: { rol: string; nombre: string }[];
+  observaciones: string | null;
+}): ResumenReporte {
+  const porSeccion = new Map(r.produccion.map((p) => [p.seccion, p]));
+  return {
+    produccion: SECCIONES.map((s) => {
+      const p = porSeccion.get(s);
+      return p
+        ? `${SECCION_LABEL[s]} ${p.camiones}×${p.vueltasPorCamion}`
+        : `${SECCION_LABEL[s]} ${VACIO}`;
+    }).join(' · '),
+    tolvas:
+      r.tolvas.map((t) => `Tolva ${t.tolva}: ${t.cargas}`).join(' · ') || VACIO,
+    plantas:
+      r.plantas.map((p) => `${p.planta.nombre}: ${p.producto}`).join(' · ') ||
+      VACIO,
+    traspasos:
+      r.traspasos
+        .map((t) => `${TRASPASO_LABEL[t.tipo]}: ${t.cantidad}`)
+        .join(' · ') || VACIO,
+    empresas: r.empresas.map((e) => e.empresa.nombre).join(', ') || VACIO,
+    personal:
+      r.personal.map((p) => `${p.rol}: ${p.nombre}`).join(' · ') || VACIO,
+    observaciones: r.observaciones ?? VACIO,
+  };
+}
+
+const CAMPOS_REPORTE: readonly ComparableField<ResumenReporte>[] = [
+  { field: 'produccion', label: 'Camiones' },
+  { field: 'tolvas', label: 'Alimentación PPE' },
+  { field: 'plantas', label: 'Plantas' },
+  { field: 'traspasos', label: 'Traspasos' },
+  { field: 'empresas', label: 'Empresas externas' },
+  { field: 'personal', label: 'Personal del turno' },
+  { field: 'observaciones', label: 'Observaciones' },
+];
 
 @Injectable()
 export class ReporteDiarioService {
@@ -153,6 +218,105 @@ export class ReporteDiarioService {
       include: REPORTE_INCLUDE,
     });
     return filas.map((reporte) => this.sinCreatedById(reporte));
+  }
+
+  async update(
+    id: string,
+    dto: UpdateReporteDiarioDto,
+    editor: Editor,
+  ): Promise<ReporteDiarioResponse> {
+    this.validarBloques({
+      produccion: dto.produccion ?? SECCIONES.map((seccion) => ({ seccion })),
+      tolvas: dto.tolvas ?? [],
+      plantas: dto.plantas ?? [],
+      traspasos: dto.traspasos ?? [],
+      empresaIds: dto.empresaIds ?? [],
+    });
+    await this.validarCatalogos({
+      plantas: dto.plantas ?? [],
+      empresaIds: dto.empresaIds ?? [],
+    });
+
+    return this.prisma.$transaction(async (tx) => {
+      const antes = await tx.reporteDiario.findUnique({
+        where: { id },
+        include: REPORTE_INCLUDE,
+      });
+      if (!antes) throw new NotFoundException('Reporte no encontrado');
+
+      if (dto.produccion) {
+        await tx.produccionTurno.deleteMany({ where: { reporteId: id } });
+        await tx.produccionTurno.createMany({
+          data: dto.produccion.map((p) => ({ ...p, reporteId: id })),
+        });
+      }
+      if (dto.tolvas) {
+        await tx.reporteTolva.deleteMany({ where: { reporteId: id } });
+        await tx.reporteTolva.createMany({
+          data: dto.tolvas.map((t) => ({ ...t, reporteId: id })),
+        });
+      }
+      if (dto.plantas) {
+        await tx.reportePlanta.deleteMany({ where: { reporteId: id } });
+        await tx.reportePlanta.createMany({
+          data: dto.plantas.map((p) => ({ ...p, reporteId: id })),
+        });
+      }
+      if (dto.traspasos) {
+        await tx.reporteTraspaso.deleteMany({ where: { reporteId: id } });
+        await tx.reporteTraspaso.createMany({
+          data: dto.traspasos.map((t) => ({ ...t, reporteId: id })),
+        });
+      }
+      if (dto.empresaIds) {
+        await tx.reporteEmpresa.deleteMany({ where: { reporteId: id } });
+        await tx.reporteEmpresa.createMany({
+          data: dto.empresaIds.map((empresaId) => ({
+            empresaId,
+            reporteId: id,
+          })),
+        });
+      }
+      if (dto.personal) {
+        await tx.reporteDiarioPersonal.deleteMany({
+          where: { reporteId: id },
+        });
+        await tx.reporteDiarioPersonal.createMany({
+          data: dto.personal.map((p, orden) => ({
+            ...p,
+            orden,
+            reporteId: id,
+          })),
+        });
+      }
+      if (dto.observaciones !== undefined) {
+        await tx.reporteDiario.update({
+          where: { id },
+          data: { observaciones: dto.observaciones.trim() || null },
+        });
+      }
+
+      const despues = await tx.reporteDiario.findUnique({
+        where: { id },
+        include: REPORTE_INCLUDE,
+      });
+      if (!despues) throw new NotFoundException('Reporte no encontrado');
+
+      const diff = diffFields<ResumenReporte>(
+        resumir(antes),
+        resumir(despues),
+        CAMPOS_REPORTE,
+      );
+      if (diff.length > 0) {
+        await this.changeLog.record(tx, 'reporte_diario', id, editor, diff);
+      }
+      return this.sinCreatedById(despues);
+    });
+  }
+
+  /** Los cambios de un reporte, del más reciente al más viejo. */
+  findChanges(id: string) {
+    return this.changeLog.findFor('reporte_diario', id);
   }
 
   /** El tipo ya lo omite, pero Prisma devuelve la columna: se quita en runtime. */

@@ -262,3 +262,106 @@ describe('ReporteDiarioService.findAll', () => {
     expect(res).toEqual([]);
   });
 });
+
+describe('ReporteDiarioService.update', () => {
+  const EDITOR = { id: 'u1', name: 'Supervisor SMI' };
+  const guardado = () => ({
+    id: 'r1',
+    fecha: new Date('2026-10-14'),
+    turno: 'DIURNO',
+    observaciones: null,
+    produccion: [
+      { seccion: 'INTERNOS', camiones: 5, vueltasPorCamion: 4 },
+      { seccion: 'MINA_CALETA', camiones: 16, vueltasPorCamion: 3 },
+      { seccion: 'MINERAS', camiones: 34, vueltasPorCamion: 1 },
+    ],
+    tolvas: [],
+    plantas: [],
+    traspasos: [],
+    empresas: [],
+    personal: [],
+  });
+
+  beforeEach(() => {
+    prisma.$transaction.mockImplementation(async (fn: any) => fn(prisma));
+    (prisma as any).produccionTurno = {
+      deleteMany: jest.fn(),
+      createMany: jest.fn(),
+    };
+    (prisma as any).reporteTolva = {
+      deleteMany: jest.fn(),
+      createMany: jest.fn(),
+    };
+    (prisma as any).reportePlanta = {
+      deleteMany: jest.fn(),
+      createMany: jest.fn(),
+    };
+    (prisma as any).reporteTraspaso = {
+      deleteMany: jest.fn(),
+      createMany: jest.fn(),
+    };
+    (prisma as any).reporteEmpresa = {
+      deleteMany: jest.fn(),
+      createMany: jest.fn(),
+    };
+    (prisma as any).reporteDiarioPersonal = {
+      deleteMany: jest.fn(),
+      createMany: jest.fn(),
+    };
+  });
+
+  it('reemplaza el bloque enviado y registra el diff en ChangeLog', async () => {
+    const despues = {
+      ...guardado(),
+      produccion: [
+        { seccion: 'INTERNOS', camiones: 6, vueltasPorCamion: 4 },
+        { seccion: 'MINA_CALETA', camiones: 16, vueltasPorCamion: 3 },
+        { seccion: 'MINERAS', camiones: 34, vueltasPorCamion: 1 },
+      ],
+    };
+    prisma.reporteDiario.findUnique
+      .mockResolvedValueOnce(guardado())
+      .mockResolvedValueOnce(despues);
+    await service.update('r1', { produccion: despues.produccion }, EDITOR);
+    expect((prisma as any).produccionTurno.deleteMany).toHaveBeenCalledWith({
+      where: { reporteId: 'r1' },
+    });
+    expect(changeLog.record).toHaveBeenCalledWith(
+      prisma,
+      'reporte_diario',
+      'r1',
+      EDITOR,
+      expect.arrayContaining([expect.objectContaining({ label: 'Camiones' })]),
+    );
+  });
+
+  it('una edición sin cambios reales no escribe ChangeLog', async () => {
+    prisma.reporteDiario.findUnique
+      .mockResolvedValueOnce(guardado())
+      .mockResolvedValueOnce(guardado());
+    await service.update('r1', { produccion: guardado().produccion }, EDITOR);
+    expect(changeLog.record).not.toHaveBeenCalled();
+  });
+
+  it('un bloque vacío queda como «—» en el diff, no como texto roto', async () => {
+    const con = {
+      ...guardado(),
+      plantas: [
+        { plantaId: 'p1', producto: 'Sal', planta: { nombre: 'P.P.1' } },
+      ],
+    };
+    prisma.reporteDiario.findUnique
+      .mockResolvedValueOnce(con)
+      .mockResolvedValueOnce(guardado());
+    prisma.planta.findMany.mockResolvedValue([]);
+    await service.update('r1', { plantas: [] }, EDITOR);
+    const diff = changeLog.record.mock.calls[0][4];
+    const plantas = diff.find((d: any) => d.label === 'Plantas');
+    expect(plantas.after).toBe('—');
+  });
+
+  it('findChanges delega en ChangeLogService.findFor', () => {
+    service.findChanges('r1');
+    expect(changeLog.findFor).toHaveBeenCalledWith('reporte_diario', 'r1');
+  });
+});
