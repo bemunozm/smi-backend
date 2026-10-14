@@ -224,3 +224,41 @@ describe('ReporteDiarioService.create', () => {
     expect((err as BadRequestException).message).toMatch(/empresa/i);
   });
 });
+
+describe('ReporteDiarioService.findAll', () => {
+  // `service` y `prisma` del describe raíz; findMany devuelve [] por defecto.
+
+  it('sin filtros lista todo, fecha desc', async () => {
+    prisma.reporteDiario.findMany.mockResolvedValue([]);
+    await service.findAll({});
+    expect(prisma.reporteDiario.findMany).toHaveBeenCalledWith({
+      where: {},
+      orderBy: [{ fecha: 'desc' }, { turno: 'asc' }],
+      include: expect.anything(),
+    });
+  });
+
+  it('desde/hasta acotan la fecha y turno filtra exacto', async () => {
+    prisma.reporteDiario.findMany.mockResolvedValue([]);
+    await service.findAll({
+      desde: '2026-10-01',
+      hasta: '2026-10-14',
+      turno: 'DIURNO',
+    });
+    const where = prisma.reporteDiario.findMany.mock.calls[0][0].where;
+    expect(where.turno).toBe('DIURNO');
+    expect(where.fecha).toEqual({
+      gte: new Date('2026-10-01'),
+      lte: new Date('2026-10-14'),
+    });
+  });
+
+  it('un rango invertido o sin reportes devuelve [], no error', async () => {
+    prisma.reporteDiario.findMany.mockResolvedValue([]);
+    const res = await service.findAll({
+      desde: '2026-12-01',
+      hasta: '2026-01-01',
+    });
+    expect(res).toEqual([]);
+  });
+});

@@ -13,6 +13,7 @@ import {
   CreateReporteDiarioDto,
   SECCIONES,
 } from './dto/create-reporte-diario.dto';
+import { FindReportesQueryDto } from './dto/find-reportes-query.dto';
 
 /**
  * Relación que toda lectura/escritura devuelve — una sola forma para que el
@@ -133,6 +134,25 @@ export class ReporteDiarioService {
     });
     if (!reporte) throw new NotFoundException('Reporte no encontrado');
     return this.sinCreatedById(reporte);
+  }
+
+  async findAll(query: FindReportesQueryDto): Promise<ReporteDiarioResponse[]> {
+    const fecha =
+      query.desde || query.hasta
+        ? {
+            ...(query.desde ? { gte: new Date(query.desde) } : {}),
+            ...(query.hasta ? { lte: new Date(query.hasta) } : {}),
+          }
+        : undefined;
+    const filas = await this.prisma.reporteDiario.findMany({
+      where: {
+        ...(fecha ? { fecha } : {}),
+        ...(query.turno ? { turno: query.turno } : {}),
+      },
+      orderBy: [{ fecha: 'desc' }, { turno: 'asc' }],
+      include: REPORTE_INCLUDE,
+    });
+    return filas.map((reporte) => this.sinCreatedById(reporte));
   }
 
   /** El tipo ya lo omite, pero Prisma devuelve la columna: se quita en runtime. */
