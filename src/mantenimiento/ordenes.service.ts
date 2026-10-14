@@ -1,11 +1,12 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { EstadoOT } from '@prisma/client';
+import { EstadoOT, MovementReason } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 
 import {
@@ -15,6 +16,8 @@ import {
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { createOrReturn } from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { StockService, type PendingStockEvents } from '../inventory/stock.service';
+import { StorageService } from '../storage/storage.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type {
   OrdenAssignedEvent,
@@ -41,10 +44,22 @@ const ORDEN_SELECT = {
   tipo: true,
   origen: true,
   origenDetalle: true,
+  pautaMilestone: true,
+  pautaCycle: true,
   createdAt: true,
   updatedAt: true,
   tareas: {
-    select: { id: true, texto: true, hecha: true, posicion: true },
+    select: {
+      id: true,
+      texto: true,
+      hecha: true,
+      posicion: true,
+      planItemId: true,
+      notas: true,
+      fotoKey: true,
+      hechaPorNombre: true,
+      hechaAt: true,
+    },
     orderBy: { posicion: 'asc' },
   },
 } satisfies Prisma.OrdenTrabajoSelect;
@@ -58,6 +73,10 @@ const TAREA_SELECT = {
   texto: true,
   hecha: true,
   posicion: true,
+  notas: true,
+  fotoKey: true,
+  hechaPorNombre: true,
+  hechaAt: true,
 } satisfies Prisma.TareaOTSelect;
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
@@ -75,6 +94,8 @@ export class OrdenesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly storage: StorageService,
+    private readonly stock: StockService,
   ) {}
 
   async findAll(estado?: EstadoOT): Promise<OrdenResponseDto[]> {
@@ -89,7 +110,9 @@ export class OrdenesService {
       ordenes.map((orden) => orden.asignadoAId),
     );
 
-    return ordenes.map((orden) => this.toResponseDto(orden, asignados));
+    return Promise.all(
+      ordenes.map((orden) => this.toResponseDto(orden, asignados)),
+    );
   }
 
   async findOne(id: string): Promise<OrdenResponseDto> {
@@ -320,14 +343,33 @@ export class OrdenesService {
     }
   }
 
-  async toggleTarea(
+  /**
+   * Marca/desmarca una tarea del checklist de la orden, con las notas de qué
+   * se hizo y su foto de respaldo (taller). En las órdenes PREVENTIVAS que
+   * nacen de la pauta (`pautaCycle`/`pautaMilestone`) hace dos cosas más, en
+   * la MISMA transacción:
+   *
+   * 1. Escribe (o borra) el registro del ciclo (`MaintenanceRecord`): la
+   *    grilla de la ficha del equipo y la tarjeta del tablero cuentan la
+   *    misma historia, sin estados paralelos.
+   * 2. Mueve la orden sola: con la primera tarea hecha pasa a EN_PROCESO, y
+   *    con TODAS hechas a COMPLETADA — el mantenedor no cierra a mano.
+   */
+  async updateTarea(
     ordenId: string,
     tareaId: string,
-    hecha: boolean,
+    dto: {
+      hecha: boolean;
+      notas?: string;
+      fotoKey?: string;
+      insumos?: { insumoId: string; cantidad: number }[];
+      branchId?: string;
+    },
+    editor: { id: string; name: string },
   ): Promise<TareaResponseDto> {
     const tarea = await this.prisma.tareaOT.findUnique({
       where: { id: tareaId },
-      select: { id: true, ordenId: true },
+      select: { id: true, ordenId: true, planItemId: true, texto: true },
     });
 
     if (!tarea || tarea.ordenId !== ordenId) {
@@ -335,18 +377,198 @@ export class OrdenesService {
         `Tarea con id "${tareaId}" no encontrada en la orden "${ordenId}"`,
       );
     }
+    const ordenAnterior = await this.findOrdenOrThrow(ordenId);
 
-    const updated = await this.prisma.tareaOT.update({
-      where: { id: tareaId },
-      data: { hecha },
-      select: TAREA_SELECT,
-    });
+    const insumos = dto.insumos ?? [];
+    if (insumos.length > 0 && !dto.branchId) {
+      throw new BadRequestException(
+        'Indica la bodega de la que salen los insumos.',
+      );
+    }
+    // Igual que en las intervenciones: `equipoId` de la OT es texto libre; si
+    // se resuelve, el movimiento queda imputado a la unidad.
+    const equipmentId =
+      insumos.length > 0
+        ? await this.resolveEquipmentId(ordenAnterior.equipoId)
+        : null;
+
+    // La foto se reclama ANTES de la transacción (mismo criterio que
+    // `IntervencionesService`): si la escritura falla, se descarta.
+    const finalKey = dto.fotoKey
+      ? await this.storage.claimTmp(dto.fotoKey, editor.id, 'tarea-photo')
+      : undefined;
+
+    const events: PendingStockEvents = [];
+    let updated: Prisma.TareaOTGetPayload<{ select: typeof TAREA_SELECT }>;
+    let orden: SelectedOrden = ordenAnterior;
+    try {
+      ({ updated, orden } = await this.prisma.$transaction(async (tx) => {
+        const tareaActualizada = await tx.tareaOT.update({
+          where: { id: tareaId },
+          data: {
+            hecha: dto.hecha,
+            ...(dto.notas !== undefined ? { notas: dto.notas } : {}),
+            ...(finalKey !== undefined ? { fotoKey: finalKey } : {}),
+            // El "ver detalle" de la tarjeta: quién y cuándo la completó.
+            ...(dto.hecha
+              ? { hechaPorNombre: editor.name, hechaAt: new Date() }
+              : { hechaPorNombre: null, hechaAt: null }),
+          },
+          select: TAREA_SELECT,
+        });
+
+        // Los insumos de ESTA tarea salen del stock en la misma transacción
+        // (contrato de `StockService.issue`): si algo falla, no se descuenta.
+        for (const insumo of insumos) {
+          await this.stock.issue(
+            {
+              itemId: insumo.insumoId,
+              branchId: dto.branchId as string,
+              quantity: insumo.cantidad,
+              reason: MovementReason.INTERVENTION,
+              performedById: editor.id,
+              equipmentId,
+              reference: ordenId,
+            },
+            { tx, events },
+          );
+        }
+
+        await this.syncRegistroCiclo(tx, ordenAnterior, tarea, dto.hecha, editor);
+
+        // Transición automática SOLO en las órdenes de la pauta: en las
+        // demás, el estado lo maneja quien trabaja la orden.
+        let actualizada: SelectedOrden = ordenAnterior;
+        if (ordenAnterior.pautaCycle != null) {
+          const tareas = await tx.tareaOT.findMany({
+            where: { ordenId },
+            select: { hecha: true },
+          });
+          const hechas = tareas.filter((t) => t.hecha).length;
+          const nuevoEstado =
+            tareas.length > 0 && hechas === tareas.length
+              ? EstadoOT.COMPLETADA
+              : hechas > 0 &&
+                  (ordenAnterior.estado === EstadoOT.PENDIENTE ||
+                    ordenAnterior.estado === EstadoOT.ASIGNADA)
+                ? EstadoOT.EN_PROCESO
+                : null;
+          if (nuevoEstado && nuevoEstado !== ordenAnterior.estado) {
+            actualizada = await tx.ordenTrabajo.update({
+              where: { id: ordenId },
+              data: { estado: nuevoEstado },
+              select: ORDEN_SELECT,
+            });
+          }
+        }
+        return { updated: tareaActualizada, orden: actualizada };
+      }));
+    } catch (error) {
+      if (finalKey) await this.storage.discard(finalKey);
+      throw error;
+    }
+
+    // Los avisos de stock bajo se emiten SOLO tras confirmar la transacción.
+    this.stock.emitPending(events);
 
     this.logger.log(
-      `Tarea ${tareaId} de la orden ${ordenId} marcada hecha=${hecha}`,
+      `Tarea ${tareaId} de la orden ${ordenId} marcada hecha=${dto.hecha}`,
     );
+    // Después del commit, igual que `update`: la orden pudo cruzar de estado.
+    this.emitTransicionEstado(ordenAnterior.estado, orden);
 
-    return updated;
+    return {
+      id: updated.id,
+      texto: updated.texto,
+      hecha: updated.hecha,
+      posicion: updated.posicion,
+      notas: updated.notas,
+      fotoUrl: updated.fotoKey ? await this.storage.sign(updated.fotoKey) : null,
+      hechaPorNombre: updated.hechaPorNombre,
+      hechaAt: updated.hechaAt ? updated.hechaAt.toISOString() : null,
+    };
+  }
+
+  private async resolveEquipmentId(equipoId: string): Promise<string | null> {
+    const byId = await this.prisma.equipment.findUnique({
+      where: { id: equipoId },
+      select: { id: true },
+    });
+    if (byId) return byId.id;
+
+    const byCode = await this.prisma.equipment.findUnique({
+      where: { internalCode: equipoId },
+      select: { id: true },
+    });
+    return byCode?.id ?? null;
+  }
+
+  /**
+   * El registro del ciclo que respalda la tarea (solo órdenes nacidas de la
+   * pauta, con `planItemId`): marcarla lo escribe, desmarcarla lo borra. El
+   * upsert no pisa quién/cuándo si ya estaba registrada desde la grilla.
+   */
+  private async syncRegistroCiclo(
+    tx: Prisma.TransactionClient,
+    orden: SelectedOrden,
+    tarea: { planItemId: string | null; texto: string },
+    hecha: boolean,
+    editor: { id: string; name: string },
+  ): Promise<void> {
+    if (
+      orden.pautaCycle == null ||
+      orden.pautaMilestone == null ||
+      !tarea.planItemId
+    ) {
+      return;
+    }
+
+    if (!hecha) {
+      await tx.maintenanceRecord.deleteMany({
+        where: {
+          planItemId: tarea.planItemId,
+          cycle: orden.pautaCycle,
+          milestone: orden.pautaMilestone,
+        },
+      });
+      return;
+    }
+
+    const planItem = await tx.maintenancePlanItem.findUnique({
+      where: { id: tarea.planItemId },
+      select: { description: true, kind: true },
+    });
+    const equipo = await tx.equipment.findUnique({
+      where: { id: orden.equipoId },
+      select: { controlUnit: true, currentHourmeter: true, currentMileage: true },
+    });
+    const counterAt =
+      equipo?.controlUnit === 'KM'
+        ? (equipo?.currentMileage ?? null)
+        : (equipo?.currentHourmeter ?? null);
+
+    await tx.maintenanceRecord.upsert({
+      where: {
+        planItemId_cycle_milestone: {
+          planItemId: tarea.planItemId,
+          cycle: orden.pautaCycle,
+          milestone: orden.pautaMilestone,
+        },
+      },
+      create: {
+        equipmentId: orden.equipoId,
+        planItemId: tarea.planItemId,
+        cycle: orden.pautaCycle,
+        milestone: orden.pautaMilestone,
+        description: planItem?.description ?? tarea.texto,
+        kind: planItem?.kind ?? 'OTRO',
+        counterAt,
+        doneById: editor.id,
+        doneByName: editor.name,
+      },
+      // Ya estaba hecha (p. ej. desde la grilla del ciclo): no se pisa.
+      update: {},
+    });
   }
 
   private async findOrdenOrThrow(id: string): Promise<SelectedOrden> {
@@ -364,10 +586,12 @@ export class OrdenesService {
     return orden;
   }
 
-  private toResponseDto(
+  // Async por la foto del checklist: la URL firmada se arma al responder y
+  // nunca se expone la key cruda (mismo criterio que `IntervencionesService`).
+  private async toResponseDto(
     orden: SelectedOrden,
     asignados: Map<string, AsignadoResponseDto>,
-  ): OrdenResponseDto {
+  ): Promise<OrdenResponseDto> {
     return {
       id: orden.id,
       equipoId: orden.equipoId,
@@ -378,15 +602,25 @@ export class OrdenesService {
       tipo: orden.tipo,
       origen: orden.origen,
       origenDetalle: orden.origenDetalle,
+      pautaMilestone: orden.pautaMilestone,
+      pautaCycle: orden.pautaCycle,
       asignadoA: orden.asignadoAId
         ? (asignados.get(orden.asignadoAId) ?? null)
         : null,
-      tareas: orden.tareas.map((tarea) => ({
-        id: tarea.id,
-        texto: tarea.texto,
-        hecha: tarea.hecha,
-        posicion: tarea.posicion,
-      })),
+      tareas: await Promise.all(
+        orden.tareas.map(async (tarea) => ({
+          id: tarea.id,
+          texto: tarea.texto,
+          hecha: tarea.hecha,
+          posicion: tarea.posicion,
+          notas: tarea.notas,
+          fotoUrl: tarea.fotoKey
+            ? await this.storage.sign(tarea.fotoKey)
+            : null,
+          hechaPorNombre: tarea.hechaPorNombre,
+          hechaAt: tarea.hechaAt ? tarea.hechaAt.toISOString() : null,
+        })),
+      ),
       createdAt: orden.createdAt.toISOString(),
       updatedAt: orden.updatedAt.toISOString(),
     };

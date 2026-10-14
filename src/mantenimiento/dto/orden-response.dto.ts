@@ -14,6 +14,9 @@ export interface OrdenResponseDto {
   origenDetalle: string | null;
   /** Hallazgo de Terreno que originó la operación, si aplica. */
   hallazgoId: string | null;
+  /** Hito y vuelta de la pauta que la originó (solo PREVENTIVAS de `checkAlert`). */
+  pautaMilestone: number | null;
+  pautaCycle: number | null;
   asignadoA: AsignadoResponseDto | null;
   tareas: TareaResponseDto[];
   createdAt: string;

@@ -93,6 +93,12 @@ describe('MaintenancePlansService', () => {
     }).compile();
     service = mod.get(MaintenancePlansService);
     jest.clearAllMocks();
+    // El `save` real lee el id de cada fila creada (para conservarla en el
+    // barrido final): el mock devuelve uno derivado de la descripción.
+    prisma.maintenancePlanItem.create.mockImplementation(
+      ({ data }: { data: { description: string } }) =>
+        Promise.resolve({ id: `creada:${data.description}` }),
+    );
     prisma.equipment.findUnique.mockResolvedValue(D6);
     prisma.maintenancePlan.findUnique.mockResolvedValue(null);
     prisma.maintenancePlan.upsert.mockResolvedValue({ id: 'p1' });
@@ -217,6 +223,25 @@ describe('MaintenancePlansService', () => {
    * Guardar la pauta no puede recrear las filas: su id ata el registro de
    * mantenciones hechas. Las que ya existían se actualizan en su lugar.
    */
+  it('las filas RECIÉN creadas sobreviven al barrido final (regresión: pauta nueva quedaba vacía)', async () => {
+    // Pauta nueva: nada existente, las dos filas se CREAN. El barrido
+    // (`deleteMany id notIn conservadas`) debe excluirlas — antes las
+    // borraba recién creadas y la pauta se guardaba sin operaciones.
+    prisma.maintenancePlan.findUnique.mockResolvedValue(null);
+    prisma.maintenancePlanItem.create
+      .mockResolvedValueOnce({ id: 'nuevo_0' })
+      .mockResolvedValueOnce({ id: 'nuevo_1' });
+
+    await service.save('e1', pauta, editor);
+
+    const [del] = prisma.maintenancePlanItem.deleteMany.mock.calls[0] as [
+      { where: { id: { notIn: string[] } } },
+    ];
+    expect(del.where.id.notIn).toEqual(
+      expect.arrayContaining(['nuevo_0', 'nuevo_1']),
+    );
+  });
+
   it('actualiza las filas existentes por id y solo borra las que se quitaron', async () => {
     const actual = guardada(pauta);
     prisma.maintenancePlan.findUnique.mockResolvedValue(actual);
@@ -241,7 +266,9 @@ describe('MaintenancePlansService', () => {
     const [del] = prisma.maintenancePlanItem.deleteMany.mock.calls[0] as [
       { where: { id: { notIn: string[] } } },
     ];
-    expect(del.where.id.notIn).toEqual(['i0']);
+    // Se conservan la actualizada Y la recién creada: el barrido solo borra
+    // lo que ya no está en la pauta (acá, 'i1', que no vino).
+    expect(del.where.id.notIn).toEqual(['i0', 'creada:Correa nueva']);
   });
 
   describe('ciclo de mantenciones', () => {

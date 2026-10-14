@@ -52,6 +52,11 @@ export const FILE_KINDS = {
     prefix: 'intervencion-photos/',
     allowedExtensions: IMAGE_EXTENSIONS,
   },
+  /** Foto de respaldo de una tarea del checklist preventivo del taller. */
+  'tarea-photo': {
+    prefix: 'tarea-photos/',
+    allowedExtensions: IMAGE_EXTENSIONS,
+  },
 } satisfies Record<string, FileKindConfig>;
 
 export type FileKind = keyof typeof FILE_KINDS;

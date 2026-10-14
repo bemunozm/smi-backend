@@ -278,9 +278,14 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
           conservadas.add(i.id);
           await tx.maintenancePlanItem.update({ where: { id: i.id }, data });
         } else {
-          await tx.maintenancePlanItem.create({
+          // La fila nueva también se CONSERVA: el barrido de abajo borra lo
+          // que ya no está en la pauta, y sin su id acá se llevaba puesto lo
+          // recién creado — la pauta se guardaba sin operaciones.
+          const creada = await tx.maintenancePlanItem.create({
             data: { ...data, planId: plan.id },
+            select: { id: true },
           });
+          conservadas.add(creada.id);
         }
       }
       await tx.maintenancePlanItem.deleteMany({
@@ -410,6 +415,10 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
           tipo: 'PREVENTIVA',
           origen: 'PREVENTIVO',
           origenDetalle,
+          // El hito y la vuelta quedan como datos: el checklist de la tarjeta
+          // escribe el registro del ciclo sin parsear `origenDetalle`.
+          pautaMilestone: next.milestone,
+          pautaCycle: cycle,
           // Si ya toca (o se pasó), sube de prioridad.
           prioridad: next.remaining === 0 ? 'ALTA' : 'MEDIA',
           tareas: {
@@ -424,6 +433,8 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
                 .filter(Boolean)
                 .join(' · '),
               posicion,
+              // Ata la tarea a su operación de la pauta (ver `TareaOT.planItemId`).
+              planItemId: i.id,
             })),
           },
         },
