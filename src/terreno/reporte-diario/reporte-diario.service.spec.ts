@@ -36,6 +36,9 @@ const base = (): CreateReporteDiarioDto => ({
 // Mocks y setup a nivel de archivo: los `describe` hermanos (update, etc.) los
 // reutilizan.
 let service: ReporteDiarioService;
+
+/** Delegado de tabla de bloque hijo (produccionTurno, reporteTolva, ...). */
+const bloque = () => ({ deleteMany: jest.fn(), createMany: jest.fn() });
 const prisma = {
   reporteDiario: {
     create: jest.fn(),
@@ -45,9 +48,19 @@ const prisma = {
   },
   planta: { findMany: jest.fn() },
   empresaExterna: { findMany: jest.fn() },
+  produccionTurno: bloque(),
+  reporteTolva: bloque(),
+  reportePlanta: bloque(),
+  reporteTraspaso: bloque(),
+  reporteEmpresa: bloque(),
+  reporteDiarioPersonal: bloque(),
   $transaction: jest.fn(),
 };
 const changeLog = { record: jest.fn(), findFor: jest.fn() };
+
+/** Argumento `i` de la llamada `n` de un mock. `jest.fn()` sin genérico tipa las llamadas como `any`. */
+const argDe = <T>(fn: jest.Mock, n: number, i: number): T =>
+  (fn.mock.calls[n] as unknown[])[i] as T;
 
 beforeEach(async () => {
   const mod = await Test.createTestingModule({
@@ -60,15 +73,29 @@ beforeEach(async () => {
   service = mod.get(ReporteDiarioService);
   jest.clearAllMocks();
   prisma.reporteDiario.findUnique.mockResolvedValue(null);
-  prisma.reporteDiario.create.mockImplementation(({ data }) => data);
+  prisma.reporteDiario.create.mockImplementation(
+    ({ data }: { data: unknown }) => data,
+  );
   prisma.planta.findMany.mockResolvedValue([{ id: 'p1' }]);
   prisma.empresaExterna.findMany.mockResolvedValue([{ id: 'e1' }]);
 });
 
+interface CreateData {
+  supervisorId: string;
+  supervisorNombre: string;
+  createdById: string;
+  produccion: { create: unknown[] };
+  plantas: { create: unknown[] };
+}
+
 describe('ReporteDiarioService.create', () => {
   it('crea el reporte con sus bloques anidados y el snapshot del supervisor', async () => {
     await service.create(base(), USER.id, USER.name);
-    const data = prisma.reporteDiario.create.mock.calls[0][0].data;
+    const { data } = argDe<{ data: CreateData }>(
+      prisma.reporteDiario.create,
+      0,
+      0,
+    );
     expect(data.supervisorId).toBe('u1');
     expect(data.supervisorNombre).toBe('Supervisor SMI');
     expect(data.createdById).toBe('u1');
@@ -231,10 +258,11 @@ describe('ReporteDiarioService.findAll', () => {
   it('sin filtros lista todo, fecha desc', async () => {
     prisma.reporteDiario.findMany.mockResolvedValue([]);
     await service.findAll({});
+    const cualquiera: unknown = expect.anything();
     expect(prisma.reporteDiario.findMany).toHaveBeenCalledWith({
       where: {},
       orderBy: [{ fecha: 'desc' }, { turno: 'asc' }],
-      include: expect.anything(),
+      include: cualquiera,
     });
   });
 
@@ -245,7 +273,9 @@ describe('ReporteDiarioService.findAll', () => {
       hasta: '2026-10-14',
       turno: 'DIURNO',
     });
-    const where = prisma.reporteDiario.findMany.mock.calls[0][0].where;
+    const { where } = argDe<{
+      where: { turno?: string; fecha?: unknown };
+    }>(prisma.reporteDiario.findMany, 0, 0);
     expect(where.turno).toBe('DIURNO');
     expect(where.fecha).toEqual({
       gte: new Date('2026-10-01'),
@@ -283,31 +313,9 @@ describe('ReporteDiarioService.update', () => {
   });
 
   beforeEach(() => {
-    prisma.$transaction.mockImplementation(async (fn: any) => fn(prisma));
-    (prisma as any).produccionTurno = {
-      deleteMany: jest.fn(),
-      createMany: jest.fn(),
-    };
-    (prisma as any).reporteTolva = {
-      deleteMany: jest.fn(),
-      createMany: jest.fn(),
-    };
-    (prisma as any).reportePlanta = {
-      deleteMany: jest.fn(),
-      createMany: jest.fn(),
-    };
-    (prisma as any).reporteTraspaso = {
-      deleteMany: jest.fn(),
-      createMany: jest.fn(),
-    };
-    (prisma as any).reporteEmpresa = {
-      deleteMany: jest.fn(),
-      createMany: jest.fn(),
-    };
-    (prisma as any).reporteDiarioPersonal = {
-      deleteMany: jest.fn(),
-      createMany: jest.fn(),
-    };
+    prisma.$transaction.mockImplementation(
+      (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    );
   });
 
   it('reemplaza el bloque enviado y registra el diff en ChangeLog', async () => {
@@ -323,7 +331,7 @@ describe('ReporteDiarioService.update', () => {
       .mockResolvedValueOnce(guardado())
       .mockResolvedValueOnce(despues);
     await service.update('r1', { produccion: despues.produccion }, EDITOR);
-    expect((prisma as any).produccionTurno.deleteMany).toHaveBeenCalledWith({
+    expect(prisma.produccionTurno.deleteMany).toHaveBeenCalledWith({
       where: { reporteId: 'r1' },
     });
     expect(changeLog.record).toHaveBeenCalledWith(
@@ -355,13 +363,17 @@ describe('ReporteDiarioService.update', () => {
       .mockResolvedValueOnce(guardado());
     prisma.planta.findMany.mockResolvedValue([]);
     await service.update('r1', { plantas: [] }, EDITOR);
-    const diff = changeLog.record.mock.calls[0][4];
-    const plantas = diff.find((d: any) => d.label === 'Plantas');
-    expect(plantas.after).toBe('—');
+    const diff = argDe<{ label: string; after: unknown }[]>(
+      changeLog.record,
+      0,
+      4,
+    );
+    const plantas = diff.find((d) => d.label === 'Plantas');
+    expect(plantas?.after).toBe('—');
   });
 
-  it('findChanges delega en ChangeLogService.findFor', () => {
-    service.findChanges('r1');
+  it('findChanges delega en ChangeLogService.findFor', async () => {
+    await service.findChanges('r1');
     expect(changeLog.findFor).toHaveBeenCalledWith('reporte_diario', 'r1');
   });
 });
