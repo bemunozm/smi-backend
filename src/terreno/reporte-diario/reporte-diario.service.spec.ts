@@ -116,8 +116,12 @@ describe('ReporteDiarioService.create', () => {
     prisma.reporteDiario.findUnique
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ id: 'otro', createdById: 'u2' });
-    await expect(service.create(base(), USER.id, USER.name)).rejects.toThrow(
-      ConflictException,
+    const err = await service
+      .create(base(), USER.id, USER.name)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect((err as ConflictException).message).toBe(
+      'Ya existe el reporte del turno DIURNO del 2026-10-14.',
     );
   });
 
@@ -129,6 +133,7 @@ describe('ReporteDiarioService.create', () => {
     // findOne vuelve a leer con include:
     prisma.reporteDiario.findUnique.mockResolvedValueOnce({
       id: base().id,
+      createdById: USER.id,
       produccion: [],
       tolvas: [],
       plantas: [],
@@ -136,8 +141,10 @@ describe('ReporteDiarioService.create', () => {
       empresas: [],
       personal: [],
     });
-    await service.create(base(), USER.id, USER.name);
+    const res = await service.create(base(), USER.id, USER.name);
     expect(prisma.reporteDiario.create).not.toHaveBeenCalled();
+    expect(res.id).toBe(base().id);
+    expect(res).not.toHaveProperty('createdById');
   });
 
   it('mismo id de OTRO usuario → conflicto, no devuelve el reporte ajeno', async () => {
@@ -158,5 +165,58 @@ describe('ReporteDiarioService.create', () => {
     await expect(service.create(base(), USER.id, USER.name)).rejects.toThrow(
       ConflictException,
     );
+  });
+
+it('la respuesta no contiene createdById', async () => {
+    const res = await service.create(base(), USER.id, USER.name);
+    expect(res).not.toHaveProperty('createdById');
+  });
+
+  it('el chequeo previo usa el unique compuesto fecha_turno', async () => {
+    await service.create(base(), USER.id, USER.name);
+    expect(prisma.reporteDiario.findUnique).toHaveBeenCalledWith({
+      where: {
+        fecha_turno: { fecha: new Date('2026-10-14'), turno: 'DIURNO' },
+      },
+      select: { id: true },
+    });
+  });
+
+  it('rechaza tolvas repetidas', async () => {
+    const dto = base();
+    dto.tolvas = [
+      { tolva: 1, cargas: 1 },
+      { tolva: 1, cargas: 2 },
+    ];
+    await expect(service.create(dto, USER.id, USER.name)).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('rechaza traspasos repetidos', async () => {
+    const dto = base();
+    dto.traspasos = [
+      { tipo: 'INTERNOS', cantidad: 1 },
+      { tipo: 'INTERNOS', cantidad: 2 },
+    ];
+    await expect(service.create(dto, USER.id, USER.name)).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('rechaza empresaIds repetidos', async () => {
+    const dto = { ...base(), empresaIds: ['e1', 'e1'] };
+    await expect(service.create(dto, USER.id, USER.name)).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('rechaza una empresa inexistente o inactiva con mensaje claro', async () => {
+    prisma.empresaExterna.findMany.mockResolvedValue([]);
+    const err = await service
+      .create(base(), USER.id, USER.name)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect((err as BadRequestException).message).toMatch(/empresa/i);
   });
 });

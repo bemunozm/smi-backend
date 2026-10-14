@@ -44,7 +44,11 @@ export class ReporteDiarioService {
     private changeLog: ChangeLogService,
   ) {}
 
-  async create(dto: CreateReporteDiarioDto, userId: string, userName: string) {
+  async create(
+    dto: CreateReporteDiarioDto,
+    userId: string,
+    userName: string,
+  ): Promise<ReporteDiarioResponse> {
     // La búsqueda por id va PRIMERO: un reintento offline devuelve la fila ya
     // creada aunque el estado del mundo haya cambiado desde entonces.
     return createOrReturn({
@@ -70,7 +74,7 @@ export class ReporteDiarioService {
     dto: CreateReporteDiarioDto,
     userId: string,
     userName: string,
-  ) {
+  ): Promise<ReporteDiarioResponse> {
     this.validarBloques(dto);
     await this.validarCatalogos(dto);
 
@@ -86,7 +90,7 @@ export class ReporteDiarioService {
     }
 
     try {
-      return await this.prisma.reporteDiario.create({
+      const creado = await this.prisma.reporteDiario.create({
         data: {
           ...(dto.id ? { id: dto.id } : {}),
           fecha,
@@ -106,6 +110,7 @@ export class ReporteDiarioService {
         },
         include: REPORTE_INCLUDE,
       });
+      return this.sinCreatedById(creado);
     } catch (e) {
       // Carrera: dos envíos del mismo turno pasaron el chequeo previo a la vez.
       if (esP2002(e)) {
@@ -123,7 +128,16 @@ export class ReporteDiarioService {
       include: REPORTE_INCLUDE,
     });
     if (!reporte) throw new NotFoundException('Reporte no encontrado');
-    return reporte;
+    return this.sinCreatedById(reporte);
+  }
+
+  /** El tipo ya lo omite, pero Prisma devuelve la columna: se quita en runtime. */
+  private sinCreatedById<T extends { createdById: string }>(
+    reporte: T,
+  ): Omit<T, 'createdById'> {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { createdById: _omitido, ...resto } = reporte;
+    return resto;
   }
 
   /** Reglas internas de los bloques; lo que el DTO no puede expresar. */
