@@ -19,4 +19,14 @@ export class DashboardController {
   async equipos(@Query() q: DashboardRangeDto) {
     return { data: await this.service.equipos(q), message: 'ok' };
   }
+
+  @Get('supervisores')
+  async supervisores(@Query() q: DashboardRangeDto) {
+    return { data: await this.service.supervisores(q), message: 'ok' };
+  }
+
+  @Get('mantenedores')
+  async mantenedores(@Query() q: DashboardRangeDto) {
+    return { data: await this.service.mantenedores(q), message: 'ok' };
+  }
 }

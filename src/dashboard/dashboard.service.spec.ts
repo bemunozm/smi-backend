@@ -212,3 +212,51 @@ describe('DashboardService.equipos', () => {
     expect(res[0].horas).toBe(0);
   });
 });
+
+describe('DashboardService.supervisores', () => {
+  it('agrupa horas y equipos distintos por tipo de turno y por supervisor', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      { equipoId: 'e1', turno: 'DIURNO', supervisorId: 'u1', valorInicial: 0, valorFinal: 6, fecha: new Date('2026-10-02T13:00:00.000Z') },
+      { equipoId: 'e2', turno: 'DIURNO', supervisorId: 'u1', valorInicial: 0, valorFinal: 4, fecha: new Date('2026-10-02T13:00:00.000Z') },
+      { equipoId: 'e1', turno: 'NOCTURNO', supervisorId: 'u2', valorInicial: 6, valorFinal: 9, fecha: new Date('2026-10-03T01:00:00.000Z') },
+    ]);
+    prisma.shift.findMany.mockResolvedValue([
+      { supervisorId: 'u1' }, { supervisorId: 'u1' }, { supervisorId: 'u2' },
+    ]);
+    prisma.user.findMany.mockResolvedValue([
+      { id: 'u1', name: 'Limbert' }, { id: 'u2', name: 'José' },
+    ]);
+    const res = await service.supervisores({ desde: '2026-10-01', hasta: '2026-10-05' });
+    expect(res.porTurno.DIURNO).toEqual({ horas: 10, equipos: 2 });
+    expect(res.porTurno.NOCTURNO).toEqual({ horas: 3, equipos: 1 });
+    const u1 = res.porSupervisor.find((s) => s.supervisorId === 'u1')!;
+    expect(u1).toMatchObject({ nombre: 'Limbert', horas: 10, equipos: 2, turnos: 2 });
+  });
+
+  it('supervisor sin usuario sale como (sin asignar)', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      { equipoId: 'e1', turno: 'DIURNO', supervisorId: 'u-x', valorInicial: 0, valorFinal: 1, fecha: new Date('2026-10-02T13:00:00.000Z') },
+    ]);
+    prisma.shift.findMany.mockResolvedValue([]);
+    prisma.user.findMany.mockResolvedValue([]);
+    const res = await service.supervisores({ desde: '2026-10-01', hasta: '2026-10-05' });
+    expect(res.porSupervisor[0].nombre).toBe('(sin asignar)');
+  });
+});
+
+describe('DashboardService.mantenedores', () => {
+  it('suma trabajos extraordinarios por equipo y total', async () => {
+    const fecha = new Date('2026-10-02T13:00:00.000Z');
+    prisma.trabajoExtraordinario.findMany.mockResolvedValue([
+      { equipoId: 'e1', totalHoras: 3, fecha, equipo: { internalCode: 'CG-002' } },
+      { equipoId: 'e1', totalHoras: 2, fecha, equipo: { internalCode: 'CG-002' } },
+      { equipoId: 'e2', totalHoras: 5, fecha, equipo: { internalCode: 'EX-001' } },
+    ]);
+    const res = await service.mantenedores({ desde: '2026-10-01', hasta: '2026-10-31' });
+    expect(res.total).toEqual({ horas: 10, trabajos: 3 });
+    expect(res.porEquipo).toEqual([
+      { equipmentId: 'e1', internalCode: 'CG-002', horas: 5, trabajos: 2 },
+      { equipmentId: 'e2', internalCode: 'EX-001', horas: 5, trabajos: 1 },
+    ]);
+  });
+});

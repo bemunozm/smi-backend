@@ -28,6 +28,22 @@ export type MetricasEquipo = {
   serieDiaria: { fecha: string; horas: number; opero: boolean }[];
 };
 
+export type MetricasSupervisores = {
+  porTurno: Record<'DIURNO' | 'NOCTURNO', { horas: number; equipos: number }>;
+  porSupervisor: {
+    supervisorId: string;
+    nombre: string;
+    horas: number;
+    equipos: number;
+    turnos: number;
+  }[];
+};
+
+export type MetricasMantenedores = {
+  total: { horas: number; trabajos: number };
+  porEquipo: { equipmentId: string; internalCode: string; horas: number; trabajos: number }[];
+};
+
 const SIN_ASIGNAR = '(sin asignar)';
 
 const round2 = (n: number) => Number(n.toFixed(2));
@@ -165,6 +181,125 @@ export class DashboardService {
         serieDiaria,
       };
     });
+  }
+
+  async supervisores(q: DashboardRangeDto): Promise<MetricasSupervisores> {
+    const { desde, hasta, desdeDia, hastaDia, dias } = this.resolverRango(q);
+    const diasSet = new Set(dias);
+
+    const [tarjetas, turnosRows] = await Promise.all([
+      dias.length === 0
+        ? Promise.resolve([])
+        : this.prisma.registroHorometro.findMany({
+            where: { valorFinal: { not: null }, fecha: { gte: desde, lte: hasta } },
+            select: {
+              equipoId: true,
+              turno: true,
+              supervisorId: true,
+              valorInicial: true,
+              valorFinal: true,
+              fecha: true,
+            },
+          }),
+      dias.length === 0
+        ? Promise.resolve([])
+        : this.prisma.shift.findMany({
+            where: { date: { gte: desdeDia, lte: hastaDia } },
+            select: { supervisorId: true },
+          }),
+    ]);
+
+    const turnoAcc = {
+      DIURNO: { horas: 0, equipos: new Set<string>() },
+      NOCTURNO: { horas: 0, equipos: new Set<string>() },
+    };
+    const supAcc = new Map<string, { horas: number; equipos: Set<string> }>();
+    for (const t of tarjetas) {
+      // Ventana SQL ampliada: recortar al día de negocio.
+      if (!diasSet.has(businessDayKey(t.fecha))) continue;
+      const delta = (t.valorFinal as number) - t.valorInicial;
+      const clave = t.turno === 'NOCTURNO' ? 'NOCTURNO' : 'DIURNO';
+      turnoAcc[clave].horas += delta;
+      turnoAcc[clave].equipos.add(t.equipoId);
+      const sid = t.supervisorId ?? '';
+      const acc = supAcc.get(sid) ?? { horas: 0, equipos: new Set<string>() };
+      acc.horas += delta;
+      acc.equipos.add(t.equipoId);
+      supAcc.set(sid, acc);
+    }
+
+    const turnosPorSup = new Map<string, number>();
+    for (const s of turnosRows) {
+      if (!s.supervisorId) continue;
+      turnosPorSup.set(s.supervisorId, (turnosPorSup.get(s.supervisorId) ?? 0) + 1);
+    }
+
+    const nombres = await this.nombresDe([...supAcc.keys()]);
+    const porSupervisor = [...supAcc.entries()]
+      .map(([supervisorId, a]) => ({
+        supervisorId,
+        nombre: nombres.get(supervisorId) ?? SIN_ASIGNAR,
+        horas: round2(a.horas),
+        equipos: a.equipos.size,
+        turnos: turnosPorSup.get(supervisorId) ?? 0,
+      }))
+      .sort((a, b) => b.horas - a.horas);
+
+    return {
+      porTurno: {
+        DIURNO: { horas: round2(turnoAcc.DIURNO.horas), equipos: turnoAcc.DIURNO.equipos.size },
+        NOCTURNO: { horas: round2(turnoAcc.NOCTURNO.horas), equipos: turnoAcc.NOCTURNO.equipos.size },
+      },
+      porSupervisor,
+    };
+  }
+
+  async mantenedores(q: DashboardRangeDto): Promise<MetricasMantenedores> {
+    const { desde, hasta, dias } = this.resolverRango(q);
+    const diasSet = new Set(dias);
+
+    const trabajos =
+      dias.length === 0
+        ? []
+        : await this.prisma.trabajoExtraordinario.findMany({
+            where: { fecha: { gte: desde, lte: hasta } },
+            select: {
+              equipoId: true,
+              totalHoras: true,
+              fecha: true,
+              equipo: { select: { internalCode: true } },
+            },
+          });
+
+    const porEquipo = new Map<string, { internalCode: string; horas: number; trabajos: number }>();
+    let horasTotal = 0;
+    let trabajosTotal = 0;
+    for (const t of trabajos) {
+      if (!diasSet.has(businessDayKey(t.fecha))) continue;
+      const horas = t.totalHoras ?? 0;
+      const acc = porEquipo.get(t.equipoId) ?? {
+        internalCode: t.equipo.internalCode,
+        horas: 0,
+        trabajos: 0,
+      };
+      acc.horas += horas;
+      acc.trabajos += 1;
+      porEquipo.set(t.equipoId, acc);
+      horasTotal += horas;
+      trabajosTotal += 1;
+    }
+
+    return {
+      total: { horas: round2(horasTotal), trabajos: trabajosTotal },
+      porEquipo: [...porEquipo.entries()]
+        .map(([equipmentId, a]) => ({
+          equipmentId,
+          internalCode: a.internalCode,
+          horas: round2(a.horas),
+          trabajos: a.trabajos,
+        }))
+        .sort((a, b) => b.horas - a.horas),
+    };
   }
 
   /** Rango resuelto: default mes actual; días como claves de negocio. */
