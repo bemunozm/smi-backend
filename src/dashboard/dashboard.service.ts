@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../common/prisma/prisma.service';
 import { businessDayKey } from '../common/dates/business-time';
+import { parseDateOnlyUtc } from '../shifts/date-only';
+import { DashboardRangeDto } from './dto/dashboard-range.dto';
 
 export type EstadoEquipoHoy = {
   equipmentId: string;
@@ -17,7 +19,18 @@ export type ResumenHoy = {
   equipos: EstadoEquipoHoy[];
 };
 
+export type MetricasEquipo = {
+  equipmentId: string;
+  internalCode: string;
+  horas: number;
+  litros: number;
+  rendimiento: number | null;
+  serieDiaria: { fecha: string; horas: number; opero: boolean }[];
+};
+
 const SIN_ASIGNAR = '(sin asignar)';
+
+const round2 = (n: number) => Number(n.toFixed(2));
 
 /** Primer instante UTC cuya clave de día de negocio es `clave` (medianoche local). */
 function inicioDeDia(clave: string): Date {
@@ -92,6 +105,93 @@ export class DashboardService {
         inoperativos: lista.filter((x) => x.estado === 'INOPERATIVO').length,
       },
       equipos: lista,
+    };
+  }
+
+  async equipos(q: DashboardRangeDto): Promise<MetricasEquipo[]> {
+    const { desde, hasta, dias } = this.resolverRango(q);
+    const diasSet = new Set(dias);
+
+    const [equipos, tarjetas, cargas] = await Promise.all([
+      this.prisma.equipment.findMany({
+        select: { id: true, internalCode: true },
+        orderBy: { internalCode: 'asc' },
+      }),
+      dias.length === 0
+        ? Promise.resolve([])
+        : this.prisma.registroHorometro.findMany({
+            where: { valorFinal: { not: null }, fecha: { gte: desde, lte: hasta } },
+            select: { equipoId: true, valorInicial: true, valorFinal: true, fecha: true },
+          }),
+      dias.length === 0
+        ? Promise.resolve([])
+        : this.prisma.registroCombustible.findMany({
+            where: { fecha: { gte: desde, lte: hasta } },
+            select: { equipoId: true, litros: true },
+          }),
+    ]);
+
+    // horas por equipo+día, solo días dentro del rango de negocio
+    const horasPorEquipoDia = new Map<string, Map<string, number>>();
+    for (const t of tarjetas) {
+      const dia = businessDayKey(t.fecha);
+      if (!diasSet.has(dia)) continue;
+      const delta = (t.valorFinal as number) - t.valorInicial;
+      const porDia = horasPorEquipoDia.get(t.equipoId) ?? new Map<string, number>();
+      porDia.set(dia, (porDia.get(dia) ?? 0) + delta);
+      horasPorEquipoDia.set(t.equipoId, porDia);
+    }
+    const litrosPorEquipo = new Map<string, number>();
+    for (const c of cargas) {
+      litrosPorEquipo.set(c.equipoId, (litrosPorEquipo.get(c.equipoId) ?? 0) + c.litros);
+    }
+
+    return equipos.map((e) => {
+      const porDia = horasPorEquipoDia.get(e.id) ?? new Map<string, number>();
+      const serieDiaria = dias.map((fecha) => {
+        const horas = round2(porDia.get(fecha) ?? 0);
+        return { fecha, horas, opero: porDia.has(fecha) };
+      });
+      const horas = round2([...porDia.values()].reduce((a, b) => a + b, 0));
+      const litros = round2(litrosPorEquipo.get(e.id) ?? 0);
+      return {
+        equipmentId: e.id,
+        internalCode: e.internalCode,
+        horas,
+        litros,
+        rendimiento: horas > 0 ? round2(litros / horas) : null,
+        serieDiaria,
+      };
+    });
+  }
+
+  /** Rango resuelto: default mes actual; días como claves de negocio. */
+  private resolverRango(q: { desde?: string; hasta?: string }): {
+    desde: Date; // ampliado −12h, para columnas timestamp
+    hasta: Date; // ampliado +36h, para columnas timestamp
+    desdeDia: Date; // sin ampliar, para columnas @db.Date
+    hastaDia: Date; // sin ampliar, para columnas @db.Date
+    dias: string[];
+  } {
+    const hoy = businessDayKey(new Date()); // 'YYYY-MM-DD'
+    const desdeStr = q.desde ?? `${hoy.slice(0, 7)}-01`;
+    const hastaStr = q.hasta ?? hoy;
+    const desde = parseDateOnlyUtc(desdeStr);
+    const hasta = parseDateOnlyUtc(hastaStr);
+    const dias: string[] = [];
+    for (let d = new Date(desde); d <= hasta; d = new Date(d.getTime() + 86_400_000)) {
+      dias.push(d.toISOString().slice(0, 10)); // claves date-only UTC == claves de negocio para dias enteros
+    }
+    // El filtro SQL va en UTC amplio y el ajuste fino lo hace businessDayKey al
+    // agrupar: ampliar medio día a cada lado evita perder bordes. Las columnas
+    // @db.Date (Shift.date, ReporteDiario.fecha) usan los límites SIN ampliar
+    // (`desdeDia`/`hastaDia`), porque ahí no hay hora que corregir.
+    return {
+      desde: new Date(desde.getTime() - 12 * 3_600_000),
+      hasta: new Date(hasta.getTime() + 36 * 3_600_000),
+      desdeDia: desde,
+      hastaDia: hasta,
+      dias,
     };
   }
 

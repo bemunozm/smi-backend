@@ -132,3 +132,72 @@ describe('DashboardService.hoy (duplicados)', () => {
     expect(res.equipos[0].operador).toBe('Nueva');
   });
 });
+
+describe('DashboardService.equipos', () => {
+  beforeEach(() => {
+    prisma.equipment.findMany.mockResolvedValue([
+      { id: 'e1', internalCode: 'CG-002' },
+      { id: 'e2', internalCode: 'EX-001' },
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([]);
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+  });
+
+  it('suma horas de tarjetas cerradas y litros; serie diaria por día de negocio', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      // 2026-10-02 10:00 Chile = 13:00Z
+      { equipoId: 'e1', valorInicial: 100, valorFinal: 106, fecha: new Date('2026-10-02T13:00:00.000Z') },
+      { equipoId: 'e1', valorInicial: 106, valorFinal: 110, fecha: new Date('2026-10-03T13:00:00.000Z') },
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      { equipoId: 'e1', litros: 50 },
+    ]);
+    const res = await service.equipos({ desde: '2026-10-01', hasta: '2026-10-03' });
+    const e1 = res.find((x) => x.equipmentId === 'e1')!;
+    expect(e1.horas).toBe(10);
+    expect(e1.litros).toBe(50);
+    expect(e1.rendimiento).toBe(5);
+    expect(e1.serieDiaria).toEqual([
+      { fecha: '2026-10-01', horas: 0, opero: false },
+      { fecha: '2026-10-02', horas: 6, opero: true },
+      { fecha: '2026-10-03', horas: 4, opero: true },
+    ]);
+  });
+
+  it('TODOS los equipos salen, con ceros cuando no hubo actividad', async () => {
+    const res = await service.equipos({ desde: '2026-10-01', hasta: '2026-10-01' });
+    expect(res).toHaveLength(2);
+    expect(res[1]).toMatchObject({ horas: 0, litros: 0, rendimiento: null });
+  });
+
+  it('rendimiento: litros>0 con horas=0 → null (nunca Infinity); litros 0 con horas>0 → 0', async () => {
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      { equipoId: 'e1', litros: 30 },
+    ]);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      { equipoId: 'e2', valorInicial: 10, valorFinal: 14, fecha: new Date('2026-10-01T13:00:00.000Z') },
+    ]);
+    const res = await service.equipos({ desde: '2026-10-01', hasta: '2026-10-01' });
+    expect(res.find((x) => x.equipmentId === 'e1')?.rendimiento).toBeNull();
+    expect(res.find((x) => x.equipmentId === 'e2')?.rendimiento).toBe(0);
+  });
+
+  it('una tarjeta que abre antes de medianoche local no se corre de día', async () => {
+    // 2026-10-02 23:30 Chile (UTC-3) = 2026-10-03T02:30Z
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      { equipoId: 'e1', valorInicial: 0, valorFinal: 2, fecha: new Date('2026-10-03T02:30:00.000Z') },
+    ]);
+    const res = await service.equipos({ desde: '2026-10-02', hasta: '2026-10-02' });
+    expect(res.find((x) => x.equipmentId === 'e1')?.serieDiaria[0]).toEqual({
+      fecha: '2026-10-02',
+      horas: 2,
+      opero: true,
+    });
+  });
+
+  it('desde > hasta devuelve equipos con serie vacía, no error', async () => {
+    const res = await service.equipos({ desde: '2026-12-01', hasta: '2026-01-01' });
+    expect(res[0].serieDiaria).toEqual([]);
+    expect(res[0].horas).toBe(0);
+  });
+});
