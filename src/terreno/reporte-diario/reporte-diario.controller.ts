@@ -54,7 +54,7 @@ export class ReporteDiarioController {
   ) {
     return {
       data: await this.service.update(id, dto, editor),
-      message: 'Reporte corregido',
+      message: 'Reporte corregido. Se avisó al administrador.',
     };
   }
 

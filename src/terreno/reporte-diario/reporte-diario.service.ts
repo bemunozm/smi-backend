@@ -4,10 +4,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { DOMAIN_EVENTS } from '../../common/events/domain-events';
+import type { RecordEditedEvent } from '../../common/events/domain-events';
+import { parseDateOnlyUtc } from '../../shifts/date-only';
 import {
   ChangeLogService,
   diffFields,
@@ -31,9 +35,15 @@ import { FindReportesQueryDto } from './dto/find-reportes-query.dto';
 export const REPORTE_INCLUDE = {
   produccion: true,
   tolvas: { orderBy: { tolva: 'asc' } },
-  plantas: { include: { planta: { select: { nombre: true } } } },
-  traspasos: true,
-  empresas: { include: { empresa: { select: { nombre: true } } } },
+  plantas: {
+    include: { planta: { select: { nombre: true } } },
+    orderBy: { planta: { nombre: 'asc' } },
+  },
+  traspasos: { orderBy: { tipo: 'asc' } },
+  empresas: {
+    include: { empresa: { select: { nombre: true } } },
+    orderBy: { empresa: { nombre: 'asc' } },
+  },
   personal: { orderBy: { orden: 'asc' } },
 } satisfies Prisma.ReporteDiarioInclude;
 
@@ -110,6 +120,7 @@ export class ReporteDiarioService {
   constructor(
     private prisma: PrismaService,
     private changeLog: ChangeLogService,
+    private eventEmitter: EventEmitter2,
   ) {}
 
   async create(
@@ -146,7 +157,7 @@ export class ReporteDiarioService {
     this.validarBloques(dto);
     await this.validarCatalogos(dto);
 
-    const fecha = new Date(dto.fecha);
+    const fecha = parseDateOnlyUtc(dto.fecha);
     const ocupado = await this.prisma.reporteDiario.findUnique({
       where: { fecha_turno: { fecha, turno: dto.turno } },
       select: { id: true },
@@ -205,8 +216,8 @@ export class ReporteDiarioService {
     const fecha =
       query.desde || query.hasta
         ? {
-            ...(query.desde ? { gte: new Date(query.desde) } : {}),
-            ...(query.hasta ? { lte: new Date(query.hasta) } : {}),
+            ...(query.desde ? { gte: parseDateOnlyUtc(query.desde) } : {}),
+            ...(query.hasta ? { lte: parseDateOnlyUtc(query.hasta) } : {}),
           }
         : undefined;
     const filas = await this.prisma.reporteDiario.findMany({
@@ -237,81 +248,112 @@ export class ReporteDiarioService {
       empresaIds: dto.empresaIds ?? [],
     });
 
-    return this.prisma.$transaction(async (tx) => {
-      const antes = await tx.reporteDiario.findUnique({
-        where: { id },
-        include: REPORTE_INCLUDE,
-      });
-      if (!antes) throw new NotFoundException('Reporte no encontrado');
-
-      if (dto.produccion) {
-        await tx.produccionTurno.deleteMany({ where: { reporteId: id } });
-        await tx.produccionTurno.createMany({
-          data: dto.produccion.map((p) => ({ ...p, reporteId: id })),
-        });
-      }
-      if (dto.tolvas) {
-        await tx.reporteTolva.deleteMany({ where: { reporteId: id } });
-        await tx.reporteTolva.createMany({
-          data: dto.tolvas.map((t) => ({ ...t, reporteId: id })),
-        });
-      }
-      if (dto.plantas) {
-        await tx.reportePlanta.deleteMany({ where: { reporteId: id } });
-        await tx.reportePlanta.createMany({
-          data: dto.plantas.map((p) => ({ ...p, reporteId: id })),
-        });
-      }
-      if (dto.traspasos) {
-        await tx.reporteTraspaso.deleteMany({ where: { reporteId: id } });
-        await tx.reporteTraspaso.createMany({
-          data: dto.traspasos.map((t) => ({ ...t, reporteId: id })),
-        });
-      }
-      if (dto.empresaIds) {
-        await tx.reporteEmpresa.deleteMany({ where: { reporteId: id } });
-        await tx.reporteEmpresa.createMany({
-          data: dto.empresaIds.map((empresaId) => ({
-            empresaId,
-            reporteId: id,
-          })),
-        });
-      }
-      if (dto.personal) {
-        await tx.reporteDiarioPersonal.deleteMany({
-          where: { reporteId: id },
-        });
-        await tx.reporteDiarioPersonal.createMany({
-          data: dto.personal.map((p, orden) => ({
-            ...p,
-            orden,
-            reporteId: id,
-          })),
-        });
-      }
-      if (dto.observaciones !== undefined) {
-        await tx.reporteDiario.update({
+    const { reporte, diff, fecha, turno } = await this.prisma.$transaction(
+      async (tx) => {
+        const antes = await tx.reporteDiario.findUnique({
           where: { id },
-          data: { observaciones: dto.observaciones.trim() || null },
+          include: REPORTE_INCLUDE,
         });
-      }
+        if (!antes) throw new NotFoundException('Reporte no encontrado');
 
-      const despues = await tx.reporteDiario.findUnique({
-        where: { id },
-        include: REPORTE_INCLUDE,
-      });
-      if (!despues) throw new NotFoundException('Reporte no encontrado');
+        if (dto.produccion) {
+          await tx.produccionTurno.deleteMany({ where: { reporteId: id } });
+          await tx.produccionTurno.createMany({
+            data: dto.produccion.map((p) => ({ ...p, reporteId: id })),
+          });
+        }
+        if (dto.tolvas) {
+          await tx.reporteTolva.deleteMany({ where: { reporteId: id } });
+          await tx.reporteTolva.createMany({
+            data: dto.tolvas.map((t) => ({ ...t, reporteId: id })),
+          });
+        }
+        if (dto.plantas) {
+          await tx.reportePlanta.deleteMany({ where: { reporteId: id } });
+          await tx.reportePlanta.createMany({
+            data: dto.plantas.map((p) => ({ ...p, reporteId: id })),
+          });
+        }
+        if (dto.traspasos) {
+          await tx.reporteTraspaso.deleteMany({ where: { reporteId: id } });
+          await tx.reporteTraspaso.createMany({
+            data: dto.traspasos.map((t) => ({ ...t, reporteId: id })),
+          });
+        }
+        if (dto.empresaIds) {
+          await tx.reporteEmpresa.deleteMany({ where: { reporteId: id } });
+          await tx.reporteEmpresa.createMany({
+            data: dto.empresaIds.map((empresaId) => ({
+              empresaId,
+              reporteId: id,
+            })),
+          });
+        }
+        if (dto.personal) {
+          await tx.reporteDiarioPersonal.deleteMany({
+            where: { reporteId: id },
+          });
+          await tx.reporteDiarioPersonal.createMany({
+            data: dto.personal.map((p, orden) => ({
+              ...p,
+              orden,
+              reporteId: id,
+            })),
+          });
+        }
+        if (dto.observaciones !== undefined) {
+          await tx.reporteDiario.update({
+            where: { id },
+            data: { observaciones: dto.observaciones.trim() || null },
+          });
+        }
 
-      const diff = diffFields<ResumenReporte>(
-        resumir(antes),
-        resumir(despues),
-        CAMPOS_REPORTE,
-      );
-      if (diff.length > 0) {
-        await this.changeLog.record(tx, 'reporte_diario', id, editor, diff);
-      }
-      return this.sinCreatedById(despues);
-    });
+        const despues = await tx.reporteDiario.findUnique({
+          where: { id },
+          include: REPORTE_INCLUDE,
+        });
+        if (!despues) throw new NotFoundException('Reporte no encontrado');
+
+        const diff = diffFields<ResumenReporte>(
+          resumir(antes),
+          resumir(despues),
+          CAMPOS_REPORTE,
+        );
+        if (diff.length > 0) {
+          // Un cambio solo de bloques no toca la fila padre: se marca para que
+          // `updatedAt` refleje la corrección.
+          await tx.reporteDiario.update({
+            where: { id },
+            data: { updatedAt: new Date() },
+          });
+          await this.changeLog.record(tx, 'reporte_diario', id, editor, diff);
+        }
+        return {
+          reporte: this.sinCreatedById(despues),
+          diff,
+          fecha: despues.fecha,
+          turno: despues.turno,
+        };
+      },
+    );
+
+    if (diff.length > 0) {
+      this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, {
+        entity: 'reporte_diario',
+        entityId: id,
+        entityArticle: 'el',
+        // `fecha` es @db.Date (UTC medianoche): se formatea en UTC para no
+        // retroceder un día al convertir a la zona de negocio.
+        entityLabel: `reporte diario del ${fecha.toLocaleDateString('es-CL', { timeZone: 'UTC' })} (${turno})`,
+        editedBy: editor.name,
+        changes: diff.map(({ label, before, after }) => ({
+          label,
+          before,
+          after,
+        })),
+      } satisfies RecordEditedEvent);
+    }
+    return reporte;
   }
 
   /** Los cambios de un reporte, del más reciente al más viejo. */

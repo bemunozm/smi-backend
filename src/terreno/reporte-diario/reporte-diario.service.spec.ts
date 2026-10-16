@@ -1,5 +1,8 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
+
+import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ChangeLogService } from '../../change-log/change-log.service';
@@ -57,6 +60,7 @@ const prisma = {
   $transaction: jest.fn(),
 };
 const changeLog = { record: jest.fn(), findFor: jest.fn() };
+const emitter = { emit: jest.fn() };
 
 /** Argumento `i` de la llamada `n` de un mock. `jest.fn()` sin genérico tipa las llamadas como `any`. */
 const argDe = <T>(fn: jest.Mock, n: number, i: number): T =>
@@ -68,6 +72,7 @@ beforeEach(async () => {
       ReporteDiarioService,
       { provide: PrismaService, useValue: prisma },
       { provide: ChangeLogService, useValue: changeLog },
+      { provide: EventEmitter2, useValue: emitter },
     ],
   }).compile();
   service = mod.get(ReporteDiarioService);
@@ -283,6 +288,15 @@ describe('ReporteDiarioService.findAll', () => {
     });
   });
 
+  it('las filas devueltas no llevan createdById', async () => {
+    prisma.reporteDiario.findMany.mockResolvedValue([
+      { id: 'r1', createdById: 'u1', turno: 'DIURNO' },
+    ]);
+    const res = await service.findAll({});
+    expect(res).toHaveLength(1);
+    expect(res[0]).not.toHaveProperty('createdById');
+  });
+
   it('un rango invertido o sin reportes devuelve [], no error', async () => {
     prisma.reporteDiario.findMany.mockResolvedValue([]);
     const res = await service.findAll({
@@ -341,6 +355,29 @@ describe('ReporteDiarioService.update', () => {
       EDITOR,
       expect.arrayContaining([expect.objectContaining({ label: 'Camiones' })]),
     );
+    // Cambio solo de bloques: la fila padre se toca igual (updatedAt).
+    expect(prisma.reporteDiario.update).toHaveBeenCalledWith({
+      where: { id: 'r1' },
+      data: { updatedAt: expect.any(Date) as unknown },
+    });
+    expect(emitter.emit).toHaveBeenCalledTimes(1);
+    const [evento, payload] = emitter.emit.mock.calls[0] as [
+      string,
+      {
+        entity: string;
+        entityId: string;
+        editedBy: string;
+        entityLabel: string;
+        changes: { label: string }[];
+      },
+    ];
+    expect(evento).toBe(DOMAIN_EVENTS.RECORD_EDITED);
+    expect(payload.entity).toBe('reporte_diario');
+    expect(payload.entityId).toBe('r1');
+    expect(payload.editedBy).toBe('Supervisor SMI');
+    expect(payload.entityLabel).toMatch(/14-10-2026|14\/10\/2026/);
+    expect(payload.entityLabel).toContain('DIURNO');
+    expect(payload.changes.map((c) => c.label)).toContain('Camiones');
   });
 
   it('una edición sin cambios reales no escribe ChangeLog', async () => {
@@ -349,6 +386,8 @@ describe('ReporteDiarioService.update', () => {
       .mockResolvedValueOnce(guardado());
     await service.update('r1', { produccion: guardado().produccion }, EDITOR);
     expect(changeLog.record).not.toHaveBeenCalled();
+    expect(emitter.emit).not.toHaveBeenCalled();
+    expect(prisma.reporteDiario.update).not.toHaveBeenCalled();
   });
 
   it('un bloque vacío queda como «—» en el diff, no como texto roto', async () => {
