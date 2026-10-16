@@ -17,6 +17,9 @@ const prisma = {
   user: { findMany: jest.fn() },
 };
 
+const argDe = <T>(fn: jest.Mock, n: number, i: number): T =>
+  (fn.mock.calls[n] as unknown[])[i] as T;
+
 beforeEach(async () => {
   const mod = await Test.createTestingModule({
     providers: [DashboardService, { provide: PrismaService, useValue: prisma }],
@@ -90,7 +93,9 @@ describe('DashboardService.hoy', () => {
     prisma.equipment.findMany.mockResolvedValue([]);
     prisma.registroHorometro.findMany.mockResolvedValue([]);
     await service.hoy();
-    const where = prisma.registroHorometro.findMany.mock.calls[0][0].where;
+    const { where } = argDe<{
+      where: { valorFinal: unknown; fecha: { gte: unknown; lt: unknown } };
+    }>(prisma.registroHorometro.findMany, 0, 0);
     expect(where.valorFinal).toBeNull();
     expect(where.fecha.gte).toBeInstanceOf(Date);
     expect(where.fecha.lt).toBeInstanceOf(Date);
@@ -172,9 +177,12 @@ describe('DashboardService.hoy (duplicados)', () => {
       },
     ]);
     const res = await service.hoy();
-    expect(prisma.registroHorometro.findMany.mock.calls[0][0].orderBy).toEqual({
-      fecha: 'asc',
-    });
+    const { orderBy } = argDe<{ orderBy: unknown }>(
+      prisma.registroHorometro.findMany,
+      0,
+      0,
+    );
+    expect(orderBy).toEqual({ fecha: 'asc' });
     expect(res.equipos[0].operador).toBe('Nueva');
   });
 });
