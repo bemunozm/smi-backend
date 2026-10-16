@@ -86,6 +86,7 @@ export type ResumenDia = {
     total: { hm: number; litros: number };
   }[];
   lecturas: {
+    id: string; // id de la tarjeta (clave estable: puede haber 2 del mismo equipo+turno)
     internalCode: string;
     turno: string;
     inicial: number;
@@ -509,7 +510,9 @@ export class DashboardService {
     const turnoDeTarjeta = new Map<string, string>();
     for (const t of tarjetas) {
       turnoDeTarjeta.set(t.id, t.turno);
-      if (t.valorFinal == null) continue; // abierta: sin avance todavía
+      // Operación refleja consumo consumado (tarjetas cerradas + diésel), como la
+      // lámina de fin de día del cliente; la tarjeta en curso se ve en Lecturas.
+      if (t.valorFinal == null) continue;
       const avance = t.valorFinal - t.valorInicial;
       const o = opDe(t.equipo.internalCode);
       const lado = t.turno === 'NOCTURNO' ? 'noche' : 'dia';
@@ -595,6 +598,7 @@ export class DashboardService {
         })),
       lecturas: tarjetas
         .map((t) => ({
+          id: t.id,
           internalCode: t.equipo.internalCode,
           turno: t.turno,
           inicial: t.valorInicial,

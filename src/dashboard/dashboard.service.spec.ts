@@ -552,6 +552,7 @@ describe('DashboardService.resumenDia', () => {
     expect(res.hm).toEqual({ total: 10.5, dia: 6, noche: 4.5 });
     expect(res.lecturas).toEqual([
       {
+        id: 't1',
         internalCode: 'CG-002',
         turno: 'DIURNO',
         inicial: 100,
@@ -559,6 +560,7 @@ describe('DashboardService.resumenDia', () => {
         avance: 6,
       },
       {
+        id: 't3',
         internalCode: 'CG-002',
         turno: 'NOCTURNO',
         inicial: 106,
@@ -566,6 +568,7 @@ describe('DashboardService.resumenDia', () => {
         avance: null,
       },
       {
+        id: 't2',
         internalCode: 'EX-001',
         turno: 'NOCTURNO',
         inicial: 50,
