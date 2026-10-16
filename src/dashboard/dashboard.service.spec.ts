@@ -1,0 +1,504 @@
+import { Test } from '@nestjs/testing';
+
+import { PrismaService } from '../common/prisma/prisma.service';
+import { businessDayKey } from '../common/dates/business-time';
+import { DashboardService, limitesDeHoy } from './dashboard.service';
+
+// Mocks compartidos a nivel de archivo: las Tasks 2-4 agregan describes
+// hermanos que reutilizan `prisma` y `service`.
+let service: DashboardService;
+const prisma = {
+  equipment: { findMany: jest.fn() },
+  registroHorometro: { findMany: jest.fn() },
+  registroCombustible: { findMany: jest.fn() },
+  trabajoExtraordinario: { findMany: jest.fn() },
+  shift: { findMany: jest.fn() },
+  produccionTurno: { findMany: jest.fn() },
+  user: { findMany: jest.fn() },
+};
+
+const argDe = <T>(fn: jest.Mock, n: number, i: number): T =>
+  (fn.mock.calls[n] as unknown[])[i] as T;
+
+beforeEach(async () => {
+  const mod = await Test.createTestingModule({
+    providers: [DashboardService, { provide: PrismaService, useValue: prisma }],
+  }).compile();
+  service = mod.get(DashboardService);
+  jest.clearAllMocks();
+  prisma.user.findMany.mockResolvedValue([{ id: 'u1', name: 'Limbert V.' }]);
+});
+
+describe('businessDayKey', () => {
+  it('un instante después de medianoche UTC sigue siendo el día local correcto', () => {
+    // 2026-10-16 23:30 en Chile continental (UTC-3) = 2026-10-17T02:30Z
+    expect(businessDayKey(new Date('2026-10-17T02:30:00.000Z'))).toBe(
+      '2026-10-16',
+    );
+  });
+});
+
+describe('DashboardService.hoy', () => {
+  const EQUIPOS = [
+    { id: 'e1', internalCode: 'CG-002', status: 'OPERATIONAL' },
+    { id: 'e2', internalCode: 'EX-001', status: 'OPERATIONAL' },
+    { id: 'e3', internalCode: 'CM-006', status: 'IN_WORKSHOP' },
+    { id: 'e4', internalCode: 'CN-007', status: 'OUT_OF_SERVICE' },
+  ];
+
+  it('clasifica en uso / disponible / inoperativo con totales', async () => {
+    prisma.equipment.findMany.mockResolvedValue(EQUIPOS);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        operador: 'Patricio Rojas',
+        turno: 'DIURNO',
+        supervisorId: 'u1',
+      },
+    ]);
+    const res = await service.hoy();
+    expect(res.totales).toEqual({ enUso: 1, disponibles: 1, inoperativos: 2 });
+    const e1 = res.equipos.find((e) => e.equipmentId === 'e1');
+    expect(e1).toMatchObject({
+      estado: 'EN_USO',
+      operador: 'Patricio Rojas',
+      turno: 'DIURNO',
+      supervisor: 'Limbert V.',
+    });
+    expect(res.equipos.find((e) => e.equipmentId === 'e2')?.estado).toBe(
+      'DISPONIBLE',
+    );
+    expect(res.equipos.find((e) => e.equipmentId === 'e4')?.estado).toBe(
+      'INOPERATIVO',
+    );
+  });
+
+  it('una tarjeta abierta HOY gana sobre IN_WORKSHOP (opera de facto)', async () => {
+    prisma.equipment.findMany.mockResolvedValue(EQUIPOS);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e3',
+        operador: 'Cristian Araya',
+        turno: 'DIURNO',
+        supervisorId: 'u1',
+      },
+    ]);
+    const res = await service.hoy();
+    expect(res.equipos.find((e) => e.equipmentId === 'e3')?.estado).toBe(
+      'EN_USO',
+    );
+  });
+
+  it('la consulta de tarjetas pide SOLO abiertas y de hoy', async () => {
+    prisma.equipment.findMany.mockResolvedValue([]);
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+    await service.hoy();
+    const { where } = argDe<{
+      where: { valorFinal: unknown; fecha: { gte: unknown; lt: unknown } };
+    }>(prisma.registroHorometro.findMany, 0, 0);
+    expect(where.valorFinal).toBeNull();
+    expect(where.fecha.gte).toBeInstanceOf(Date);
+    expect(where.fecha.lt).toBeInstanceOf(Date);
+  });
+
+  it('supervisorId null o sin match en user sale como (sin asignar), en una sola consulta batch', async () => {
+    prisma.equipment.findMany.mockResolvedValue([EQUIPOS[0], EQUIPOS[1]]);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      { equipoId: 'e1', operador: 'A', turno: 'DIURNO', supervisorId: null },
+      {
+        equipoId: 'e2',
+        operador: 'B',
+        turno: 'NOCTURNO',
+        supervisorId: 'u-borrado',
+      },
+    ]);
+    prisma.user.findMany.mockResolvedValue([]);
+    const res = await service.hoy();
+    expect(res.equipos.find((e) => e.equipmentId === 'e1')?.supervisor).toBe(
+      '(sin asignar)',
+    );
+    expect(res.equipos.find((e) => e.equipmentId === 'e2')?.supervisor).toBe(
+      '(sin asignar)',
+    );
+    expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('limitesDeHoy', () => {
+  it('día normal dura 24h', () => {
+    const { gte, lt } = limitesDeHoy(new Date('2026-10-16T15:00:00.000Z'));
+    expect(lt.getTime() - gte.getTime()).toBe(24 * 3_600_000);
+    expect(businessDayKey(gte)).toBe('2026-10-16');
+    expect(businessDayKey(new Date(lt.getTime() - 1))).toBe('2026-10-16');
+    expect(businessDayKey(lt)).toBe('2026-10-17');
+  });
+
+  it('días de cambio de hora (23h y 25h) cierran en la medianoche local', () => {
+    // Fechas reales de cambio de Chile 2026: se detectan por duración != 24h.
+    for (const dia of [
+      '2026-04-04',
+      '2026-04-05',
+      '2026-09-05',
+      '2026-09-06',
+    ]) {
+      const { gte, lt } = limitesDeHoy(new Date(`${dia}T18:00:00.000Z`));
+      expect(businessDayKey(gte)).toBe(dia);
+      expect(businessDayKey(new Date(gte.getTime() - 1))).not.toBe(dia);
+      expect(businessDayKey(new Date(lt.getTime() - 1))).toBe(dia);
+      expect(businessDayKey(lt)).not.toBe(dia);
+    }
+    const horas = ['2026-04-04', '2026-04-05', '2026-09-05', '2026-09-06'].map(
+      (d) => {
+        const { gte, lt } = limitesDeHoy(new Date(`${d}T18:00:00.000Z`));
+        return (lt.getTime() - gte.getTime()) / 3_600_000;
+      },
+    );
+    expect(horas.some((h) => h !== 24)).toBe(true);
+  });
+});
+
+describe('DashboardService.hoy (duplicados)', () => {
+  it('dos tarjetas abiertas del mismo equipo: gana la más reciente', async () => {
+    prisma.equipment.findMany.mockResolvedValue([
+      { id: 'e1', internalCode: 'CG-002', status: 'OPERATIONAL' },
+    ]);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        operador: 'Vieja',
+        turno: 'DIURNO',
+        supervisorId: null,
+      },
+      {
+        equipoId: 'e1',
+        operador: 'Nueva',
+        turno: 'NOCTURNO',
+        supervisorId: null,
+      },
+    ]);
+    const res = await service.hoy();
+    const { orderBy } = argDe<{ orderBy: unknown }>(
+      prisma.registroHorometro.findMany,
+      0,
+      0,
+    );
+    expect(orderBy).toEqual({ fecha: 'asc' });
+    expect(res.equipos[0].operador).toBe('Nueva');
+  });
+});
+
+describe('DashboardService.equipos', () => {
+  beforeEach(() => {
+    prisma.equipment.findMany.mockResolvedValue([
+      { id: 'e1', internalCode: 'CG-002' },
+      { id: 'e2', internalCode: 'EX-001' },
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([]);
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+  });
+
+  it('suma horas de tarjetas cerradas y litros; serie diaria por día de negocio', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      // 2026-10-02 10:00 Chile = 13:00Z
+      {
+        equipoId: 'e1',
+        valorInicial: 100,
+        valorFinal: 106,
+        fecha: new Date('2026-10-02T13:00:00.000Z'),
+      },
+      {
+        equipoId: 'e1',
+        valorInicial: 106,
+        valorFinal: 110,
+        fecha: new Date('2026-10-03T13:00:00.000Z'),
+      },
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        litros: 50,
+        fecha: new Date('2026-10-02T13:00:00.000Z'),
+      },
+    ]);
+    const res = await service.equipos({
+      desde: '2026-10-01',
+      hasta: '2026-10-03',
+    });
+    const e1 = res.find((x) => x.equipmentId === 'e1')!;
+    expect(e1.horas).toBe(10);
+    expect(e1.litros).toBe(50);
+    expect(e1.rendimiento).toBe(5);
+    expect(e1.serieDiaria).toEqual([
+      { fecha: '2026-10-01', horas: 0, opero: false },
+      { fecha: '2026-10-02', horas: 6, opero: true },
+      { fecha: '2026-10-03', horas: 4, opero: true },
+    ]);
+  });
+
+  it('TODOS los equipos salen, con ceros cuando no hubo actividad', async () => {
+    const res = await service.equipos({
+      desde: '2026-10-01',
+      hasta: '2026-10-01',
+    });
+    expect(res).toHaveLength(2);
+    expect(res[1]).toMatchObject({ horas: 0, litros: 0, rendimiento: null });
+  });
+
+  it('rendimiento: litros>0 con horas=0 → null (nunca Infinity); litros 0 con horas>0 → 0', async () => {
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        litros: 30,
+        fecha: new Date('2026-10-01T13:00:00.000Z'),
+      },
+    ]);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e2',
+        valorInicial: 10,
+        valorFinal: 14,
+        fecha: new Date('2026-10-01T13:00:00.000Z'),
+      },
+    ]);
+    const res = await service.equipos({
+      desde: '2026-10-01',
+      hasta: '2026-10-01',
+    });
+    expect(res.find((x) => x.equipmentId === 'e1')?.rendimiento).toBeNull();
+    expect(res.find((x) => x.equipmentId === 'e2')?.rendimiento).toBe(0);
+  });
+
+  it('una tarjeta que abre antes de medianoche local no se corre de día', async () => {
+    // 2026-10-02 23:30 Chile (UTC-3) = 2026-10-03T02:30Z
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        valorInicial: 0,
+        valorFinal: 2,
+        fecha: new Date('2026-10-03T02:30:00.000Z'),
+      },
+    ]);
+    const res = await service.equipos({
+      desde: '2026-10-02',
+      hasta: '2026-10-02',
+    });
+    expect(res.find((x) => x.equipmentId === 'e1')?.serieDiaria[0]).toEqual({
+      fecha: '2026-10-02',
+      horas: 2,
+      opero: true,
+    });
+  });
+
+  it('litros se recortan al día de negocio: carga fuera del rango no suma', async () => {
+    // 2026-10-01 01:00Z = 2026-09-30 22:00 Chile: fuera de un rango que empieza 10-01
+    // 2026-10-01 15:00Z = 2026-10-01 12:00 Chile: dentro
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        litros: 20,
+        fecha: new Date('2026-10-01T01:00:00.000Z'),
+      },
+      {
+        equipoId: 'e1',
+        litros: 15,
+        fecha: new Date('2026-10-01T15:00:00.000Z'),
+      },
+    ]);
+    const res = await service.equipos({
+      desde: '2026-10-01',
+      hasta: '2026-10-01',
+    });
+    expect(res.find((x) => x.equipmentId === 'e1')?.litros).toBe(15);
+  });
+
+  it('tarjeta cerrada dentro de la ventana SQL pero fuera del día de negocio se descarta', async () => {
+    // 2026-10-02T06:00Z = 2026-10-02 03:00 Chile: día siguiente al rango 10-01
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        valorInicial: 100,
+        valorFinal: 106,
+        fecha: new Date('2026-10-02T06:00:00.000Z'),
+      },
+    ]);
+    const res = await service.equipos({
+      desde: '2026-10-01',
+      hasta: '2026-10-01',
+    });
+    const e1 = res.find((x) => x.equipmentId === 'e1')!;
+    expect(e1.horas).toBe(0);
+    expect(e1.serieDiaria[0].opero).toBe(false);
+  });
+
+  it('desde > hasta devuelve equipos con serie vacía, no error', async () => {
+    const res = await service.equipos({
+      desde: '2026-12-01',
+      hasta: '2026-01-01',
+    });
+    expect(res[0].serieDiaria).toEqual([]);
+    expect(res[0].horas).toBe(0);
+  });
+});
+
+describe('DashboardService.supervisores', () => {
+  it('agrupa horas y equipos distintos por tipo de turno y por supervisor', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        turno: 'DIURNO',
+        supervisorId: 'u1',
+        valorInicial: 0,
+        valorFinal: 6,
+        fecha: new Date('2026-10-02T13:00:00.000Z'),
+      },
+      {
+        equipoId: 'e2',
+        turno: 'DIURNO',
+        supervisorId: 'u1',
+        valorInicial: 0,
+        valorFinal: 4,
+        fecha: new Date('2026-10-02T13:00:00.000Z'),
+      },
+      {
+        equipoId: 'e1',
+        turno: 'NOCTURNO',
+        supervisorId: 'u2',
+        valorInicial: 6,
+        valorFinal: 9,
+        fecha: new Date('2026-10-03T01:00:00.000Z'),
+      },
+    ]);
+    prisma.shift.findMany.mockResolvedValue([
+      { supervisorId: 'u1' },
+      { supervisorId: 'u1' },
+      { supervisorId: 'u2' },
+    ]);
+    prisma.user.findMany.mockResolvedValue([
+      { id: 'u1', name: 'Limbert' },
+      { id: 'u2', name: 'José' },
+    ]);
+    const res = await service.supervisores({
+      desde: '2026-10-01',
+      hasta: '2026-10-05',
+    });
+    expect(res.porTurno.DIURNO).toEqual({ horas: 10, equipos: 2 });
+    expect(res.porTurno.NOCTURNO).toEqual({ horas: 3, equipos: 1 });
+    const u1 = res.porSupervisor.find((s) => s.supervisorId === 'u1')!;
+    expect(u1).toMatchObject({
+      nombre: 'Limbert',
+      horas: 10,
+      equipos: 2,
+      turnos: 2,
+    });
+  });
+
+  it('rango sin tarjetas: ambas claves de porTurno existen en cero', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+    prisma.shift.findMany.mockResolvedValue([]);
+    prisma.user.findMany.mockResolvedValue([]);
+    const res = await service.supervisores({
+      desde: '2026-10-01',
+      hasta: '2026-10-05',
+    });
+    expect(res.porTurno.DIURNO).toEqual({ horas: 0, equipos: 0 });
+    expect(res.porTurno.NOCTURNO).toEqual({ horas: 0, equipos: 0 });
+  });
+
+  it('supervisor sin usuario sale como (sin asignar)', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        turno: 'DIURNO',
+        supervisorId: 'u-x',
+        valorInicial: 0,
+        valorFinal: 1,
+        fecha: new Date('2026-10-02T13:00:00.000Z'),
+      },
+    ]);
+    prisma.shift.findMany.mockResolvedValue([]);
+    prisma.user.findMany.mockResolvedValue([]);
+    const res = await service.supervisores({
+      desde: '2026-10-01',
+      hasta: '2026-10-05',
+    });
+    expect(res.porSupervisor[0].nombre).toBe('(sin asignar)');
+  });
+});
+
+describe('DashboardService.mantenedores', () => {
+  it('suma trabajos extraordinarios por equipo y total', async () => {
+    const fecha = new Date('2026-10-02T13:00:00.000Z');
+    prisma.trabajoExtraordinario.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        totalHoras: 3,
+        fecha,
+        equipo: { internalCode: 'CG-002' },
+      },
+      {
+        equipoId: 'e1',
+        totalHoras: 2,
+        fecha,
+        equipo: { internalCode: 'CG-002' },
+      },
+      {
+        equipoId: 'e2',
+        totalHoras: 5,
+        fecha,
+        equipo: { internalCode: 'EX-001' },
+      },
+    ]);
+    const res = await service.mantenedores({
+      desde: '2026-10-01',
+      hasta: '2026-10-31',
+    });
+    expect(res.total).toEqual({ horas: 10, trabajos: 3 });
+    expect(res.porEquipo).toEqual([
+      { equipmentId: 'e1', internalCode: 'CG-002', horas: 5, trabajos: 2 },
+      { equipmentId: 'e2', internalCode: 'EX-001', horas: 5, trabajos: 1 },
+    ]);
+  });
+});
+
+describe('DashboardService.vueltas', () => {
+  it('agrega camiones×vueltas POR SECCIÓN con serie diaria y sin total general', async () => {
+    prisma.produccionTurno.findMany.mockResolvedValue([
+      {
+        seccion: 'INTERNOS',
+        camiones: 5,
+        vueltasPorCamion: 4,
+        reporte: { fecha: new Date('2026-10-02T00:00:00.000Z') },
+      },
+      {
+        seccion: 'INTERNOS',
+        camiones: 6,
+        vueltasPorCamion: 5,
+        reporte: { fecha: new Date('2026-10-03T00:00:00.000Z') },
+      },
+      {
+        seccion: 'MINA_CALETA',
+        camiones: 16,
+        vueltasPorCamion: 3,
+        reporte: { fecha: new Date('2026-10-02T00:00:00.000Z') },
+      },
+    ]);
+    const res = await service.vueltas({
+      desde: '2026-10-02',
+      hasta: '2026-10-03',
+    });
+    expect(res).not.toHaveProperty('total');
+    const internos = res.porSeccion.find((s) => s.seccion === 'INTERNOS')!;
+    expect(internos.vueltasTotales).toBe(50); // 5×4 + 6×5
+    expect(internos.serieDiaria).toEqual([
+      { fecha: '2026-10-02', vueltas: 20 },
+      { fecha: '2026-10-03', vueltas: 30 },
+    ]);
+    // Las 3 secciones siempre presentes, aunque sin datos:
+    expect(res.porSeccion.map((s) => s.seccion)).toEqual([
+      'INTERNOS',
+      'MINA_CALETA',
+      'MINERAS',
+    ]);
+    expect(res.porSeccion[2].vueltasTotales).toBe(0);
+  });
+});

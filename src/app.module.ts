@@ -10,6 +10,7 @@ import { HealthModule } from './health/health.module';
 import { MantenimientoModule } from './mantenimiento/mantenimiento.module';
 import { UsersModule } from './users/users.module';
 import { BranchModule } from './branch/branch.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 import { EquipmentModule } from './equipment/equipment.module';
 import { FichaModule } from './ficha/ficha.module';
 import { FilesModule } from './files/files.module';
@@ -53,6 +54,8 @@ import { auth } from './auth/auth';
     // tabla, pero es un flujo propio (idempotencia por id de cliente),
     // aparte de Flota.
     ShiftsModule,
+    // Dashboard del administrador (lecturas agregadas).
+    DashboardModule,
     // Almacenamiento de archivos de Flota y Terreno: sube a `tmp/` vía
     // POST /api/files. No existe ruta pública `/uploads` — ver
     // SECURITY-NOTES.md.

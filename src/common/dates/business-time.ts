@@ -47,3 +47,13 @@ export function formatBusinessDateTime(date: Date): string {
     hour12: false,
   }).format(date);
 }
+
+/**
+ * Clave `YYYY-MM-DD` del día de negocio al que pertenece un instante (zona
+ * `BUSINESS_TIME_ZONE`, no la del servidor). Mismo cálculo que
+ * `todayInBusinessTimeZone`; nombre propio para el uso de agrupación por día
+ * del dashboard.
+ */
+export function businessDayKey(fecha: Date): string {
+  return todayInBusinessTimeZone(fecha);
+}
