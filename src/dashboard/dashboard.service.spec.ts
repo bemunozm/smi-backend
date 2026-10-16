@@ -15,6 +15,7 @@ const prisma = {
   shift: { findMany: jest.fn() },
   produccionTurno: { findMany: jest.fn() },
   user: { findMany: jest.fn() },
+  inventoryItem: { findFirst: jest.fn() },
 };
 
 const argDe = <T>(fn: jest.Mock, n: number, i: number): T =>
@@ -500,5 +501,233 @@ describe('DashboardService.vueltas', () => {
       'MINERAS',
     ]);
     expect(res.porSeccion[2].vueltasTotales).toBe(0);
+  });
+});
+
+describe('DashboardService.resumenDia', () => {
+  const HOY = new Date(); // el servicio usa "ahora"; los datos se mockean
+  const card = (
+    id: string,
+    equipoId: string,
+    code: string,
+    turno: string,
+    valorInicial: number,
+    valorFinal: number | null,
+  ) => ({
+    id,
+    equipoId,
+    turno,
+    valorInicial,
+    valorFinal,
+    equipo: { internalCode: code },
+  });
+  const carga = (
+    equipoId: string,
+    litros: number,
+    registroHorometroId: string | null,
+  ) => ({
+    equipoId,
+    litros,
+    registroHorometroId,
+    fecha: HOY,
+    equipo: { internalCode: { e0: 'AA-001', e1: 'CG-002' }[equipoId] },
+  });
+
+  beforeEach(() => {
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+    prisma.registroCombustible.findMany.mockResolvedValue([]);
+    prisma.trabajoExtraordinario.findMany.mockResolvedValue([]);
+    prisma.produccionTurno.findMany.mockResolvedValue([]);
+    prisma.inventoryItem.findFirst.mockResolvedValue(null);
+  });
+
+  it('hm día/noche de cerradas y lecturas con tarjeta abierta en curso', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      card('t2', 'e2', 'EX-001', 'NOCTURNO', 50, 54.5),
+      card('t1', 'e1', 'CG-002', 'DIURNO', 100, 106),
+      card('t3', 'e1', 'CG-002', 'NOCTURNO', 106, null),
+    ]);
+    const res = await service.resumenDia();
+    expect(res.fecha).toBe(businessDayKey(new Date()));
+    expect(res.hm).toEqual({ total: 10.5, dia: 6, noche: 4.5 });
+    expect(res.lecturas).toEqual([
+      {
+        internalCode: 'CG-002',
+        turno: 'DIURNO',
+        inicial: 100,
+        final: 106,
+        avance: 6,
+      },
+      {
+        internalCode: 'CG-002',
+        turno: 'NOCTURNO',
+        inicial: 106,
+        final: null,
+        avance: null,
+      },
+      {
+        internalCode: 'EX-001',
+        turno: 'NOCTURNO',
+        inicial: 50,
+        final: 54.5,
+        avance: 4.5,
+      },
+    ]);
+    const where = argDe<{ where: { fecha: unknown } }>(
+      prisma.registroHorometro.findMany,
+      0,
+      0,
+    ).where;
+    expect(where.fecha).toEqual(limitesDeHoy());
+  });
+
+  it('diésel: vinculada va al turno de su tarjeta, sin vínculo solo al total; porHm', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      card('t1', 'e1', 'CG-002', 'DIURNO', 100, 104),
+      card('t2', 'e1', 'CG-002', 'NOCTURNO', 104, 108),
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      carga('e1', 40, 't1'),
+      carga('e1', 60, 't2'),
+      carga('e1', 20, null),
+    ]);
+    const res = await service.resumenDia();
+    expect(res.diesel).toEqual({ total: 120, dia: 40, noche: 60, porHm: 15 });
+  });
+
+  it('descarta cargas fuera del día de negocio (ventana ampliada)', async () => {
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      carga('e1', 10, null),
+      {
+        equipoId: 'e1',
+        litros: 99,
+        registroHorometroId: null,
+        equipo: { internalCode: 'CG-002' },
+        fecha: new Date(Date.now() - 3 * 86_400_000),
+      },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.diesel.total).toBe(10);
+  });
+
+  it('porHm es null con 0 hm', async () => {
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      carga('e1', 30, null),
+    ]);
+    const res = await service.resumenDia();
+    expect(res.hm.total).toBe(0);
+    expect(res.diesel.porHm).toBeNull();
+  });
+
+  it('reports: horas por equipo de hoy, orden desc', async () => {
+    prisma.trabajoExtraordinario.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        totalHoras: 1.5,
+        fecha: HOY,
+        equipo: { internalCode: 'CG-002' },
+      },
+      {
+        equipoId: 'e2',
+        totalHoras: 4,
+        fecha: HOY,
+        equipo: { internalCode: 'EX-001' },
+      },
+      {
+        equipoId: 'e1',
+        totalHoras: 1,
+        fecha: HOY,
+        equipo: { internalCode: 'CG-002' },
+      },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.reports).toEqual({
+      totalHoras: 6.5,
+      porEquipo: [
+        { internalCode: 'EX-001', horas: 4 },
+        { internalCode: 'CG-002', horas: 2.5 },
+      ],
+    });
+  });
+
+  it('producción de hoy: vueltas por sección sin ampliar la fecha', async () => {
+    prisma.produccionTurno.findMany.mockResolvedValue([
+      { seccion: 'INTERNOS', camiones: 5, vueltasPorCamion: 4 },
+      { seccion: 'INTERNOS', camiones: 2, vueltasPorCamion: 3 },
+      { seccion: 'MINA_CALETA', camiones: 16, vueltasPorCamion: 3 },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.produccion).toEqual({
+      internos: 26,
+      minaCaleta: 48,
+      mineras: 0,
+    });
+    const w = argDe<{ where: { reporte: { fecha: Date } } }>(
+      prisma.produccionTurno.findMany,
+      0,
+      0,
+    ).where;
+    expect(w.reporte.fecha.toISOString()).toBe(
+      `${businessDayKey(new Date())}T00:00:00.000Z`,
+    );
+  });
+
+  it('adBlue: null sin ítem; con ítem suma stocks', async () => {
+    expect((await service.resumenDia()).adBlue).toBeNull();
+    prisma.inventoryItem.findFirst.mockReset();
+    prisma.inventoryItem.findFirst.mockResolvedValue({
+      id: 'i1',
+      name: 'AdBlue 20L',
+      unit: 'LITER',
+      stocks: [{ quantity: 100 }, { quantity: 50.5 }],
+    });
+    expect((await service.resumenDia()).adBlue).toEqual({
+      itemId: 'i1',
+      nombre: 'AdBlue 20L',
+      stock: 150.5,
+      unidad: 'LITER',
+    });
+  });
+
+  it('adBlue: reintenta con "ad blue" (con espacio) si "adblue" no existe', async () => {
+    prisma.inventoryItem.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: 'i2',
+        name: 'Ad Blue',
+        unit: 'LITER',
+        stocks: [],
+      });
+    const res = await service.resumenDia();
+    expect(res.adBlue).toMatchObject({ itemId: 'i2', stock: 0 });
+  });
+
+  it('operacionPorEquipo: total = día + noche + no vinculados; solo con actividad', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      card('t1', 'e1', 'CG-002', 'DIURNO', 100, 106),
+      card('t2', 'e1', 'CG-002', 'NOCTURNO', 106, 110),
+      card('t3', 'e3', 'ZZ-009', 'DIURNO', 5, null),
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      carga('e1', 40, 't1'),
+      carga('e1', 30, 't2'),
+      carga('e1', 10, null),
+      carga('e0', 7, null),
+    ]);
+    const res = await service.resumenDia();
+    expect(res.operacionPorEquipo).toEqual([
+      {
+        internalCode: 'AA-001',
+        dia: { hm: 0, litros: 0 },
+        noche: { hm: 0, litros: 0 },
+        total: { hm: 0, litros: 7 },
+      },
+      {
+        internalCode: 'CG-002',
+        dia: { hm: 6, litros: 40 },
+        noche: { hm: 4, litros: 30 },
+        total: { hm: 10, litros: 80 },
+      },
+    ]);
   });
 });

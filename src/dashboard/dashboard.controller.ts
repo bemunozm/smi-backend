@@ -15,6 +15,11 @@ export class DashboardController {
     return { data: await this.service.hoy(), message: 'ok' };
   }
 
+  @Get('resumen-dia')
+  async resumenDia() {
+    return { data: await this.service.resumenDia(), message: 'ok' };
+  }
+
   @Get('equipos')
   async equipos(@Query() q: DashboardRangeDto) {
     return { data: await this.service.equipos(q), message: 'ok' };

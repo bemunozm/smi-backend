@@ -59,6 +59,41 @@ export type MetricasVueltas = {
   }[];
 };
 
+export type ResumenDia = {
+  fecha: string;
+  hm: { total: number; dia: number; noche: number };
+  diesel: {
+    total: number;
+    dia: number;
+    noche: number;
+    porHm: number | null;
+  };
+  reports: {
+    totalHoras: number;
+    porEquipo: { internalCode: string; horas: number }[];
+  };
+  produccion: { internos: number; minaCaleta: number; mineras: number };
+  adBlue: {
+    itemId: string;
+    nombre: string;
+    stock: number;
+    unidad: string;
+  } | null;
+  operacionPorEquipo: {
+    internalCode: string;
+    dia: { hm: number; litros: number };
+    noche: { hm: number; litros: number };
+    total: { hm: number; litros: number };
+  }[];
+  lecturas: {
+    internalCode: string;
+    turno: string;
+    inicial: number;
+    final: number | null;
+    avance: number | null;
+  }[];
+};
+
 const SIN_ASIGNAR = '(sin asignar)';
 
 const round2 = (n: number) => Number(n.toFixed(2));
@@ -399,6 +434,210 @@ export class DashboardService {
         };
       }),
     };
+  }
+
+  /** Portada del admin: resumen del día de negocio actual (solo lectura). */
+  async resumenDia(): Promise<ResumenDia> {
+    const ahora = new Date();
+    const fecha = businessDayKey(ahora);
+    const limites = limitesDeHoy(ahora);
+    const ventana = {
+      gte: new Date(limites.gte.getTime() - 12 * 3_600_000),
+      lt: new Date(limites.lt.getTime() + 12 * 3_600_000),
+    };
+
+    const [tarjetas, cargas, trabajos, produccion, adBlue] = await Promise.all([
+      // Tarjetas de hoy UNA vez (cerradas y abiertas); de aquí salen hm,
+      // lecturas y operación por equipo.
+      this.prisma.registroHorometro.findMany({
+        where: { fecha: limites },
+        select: {
+          id: true,
+          equipoId: true,
+          turno: true,
+          valorInicial: true,
+          valorFinal: true,
+          equipo: { select: { internalCode: true } },
+        },
+      }),
+      this.prisma.registroCombustible.findMany({
+        where: { fecha: ventana },
+        select: {
+          equipoId: true,
+          litros: true,
+          registroHorometroId: true,
+          fecha: true,
+          equipo: { select: { internalCode: true } },
+        },
+      }),
+      this.prisma.trabajoExtraordinario.findMany({
+        where: { fecha: ventana },
+        select: {
+          totalHoras: true,
+          fecha: true,
+          equipo: { select: { internalCode: true } },
+        },
+      }),
+      // ReporteDiario.fecha es @db.Date: clave de hoy, sin ampliar.
+      this.prisma.produccionTurno.findMany({
+        where: { reporte: { fecha: parseDateOnlyUtc(fecha) } },
+        select: { seccion: true, camiones: true, vueltasPorCamion: true },
+      }),
+      this.adBlueStock(),
+    ]);
+
+    type Op = {
+      dia: { hm: number; litros: number };
+      noche: { hm: number; litros: number };
+      total: { hm: number; litros: number };
+    };
+    const ops = new Map<string, Op>();
+    const opDe = (code: string): Op => {
+      let o = ops.get(code);
+      if (!o) {
+        o = {
+          dia: { hm: 0, litros: 0 },
+          noche: { hm: 0, litros: 0 },
+          total: { hm: 0, litros: 0 },
+        };
+        ops.set(code, o);
+      }
+      return o;
+    };
+
+    const hm = { total: 0, dia: 0, noche: 0 };
+    const turnoDeTarjeta = new Map<string, string>();
+    for (const t of tarjetas) {
+      turnoDeTarjeta.set(t.id, t.turno);
+      if (t.valorFinal == null) continue; // abierta: sin avance todavía
+      const avance = t.valorFinal - t.valorInicial;
+      const o = opDe(t.equipo.internalCode);
+      const lado = t.turno === 'NOCTURNO' ? 'noche' : 'dia';
+      hm.total += avance;
+      hm[lado] += avance;
+      o[lado].hm += avance;
+      o.total.hm += avance;
+    }
+
+    const diesel = { total: 0, dia: 0, noche: 0 };
+    for (const c of cargas) {
+      // La ventana SQL va ampliada: recortar al día de negocio.
+      if (businessDayKey(c.fecha) !== fecha) continue;
+      const o = opDe(c.equipo.internalCode);
+      diesel.total += c.litros;
+      o.total.litros += c.litros;
+      // Sin vínculo (o tarjeta fuera de hoy): solo suma al total.
+      const turno = c.registroHorometroId
+        ? turnoDeTarjeta.get(c.registroHorometroId)
+        : undefined;
+      if (turno) {
+        const lado = turno === 'NOCTURNO' ? 'noche' : 'dia';
+        diesel[lado] += c.litros;
+        o[lado].litros += c.litros;
+      }
+    }
+
+    const horasPorEquipo = new Map<string, number>();
+    let totalHoras = 0;
+    for (const t of trabajos) {
+      if (businessDayKey(t.fecha) !== fecha) continue;
+      const h = t.totalHoras ?? 0;
+      totalHoras += h;
+      horasPorEquipo.set(
+        t.equipo.internalCode,
+        (horasPorEquipo.get(t.equipo.internalCode) ?? 0) + h,
+      );
+    }
+
+    const vueltas: Record<string, number> = {};
+    for (const p of produccion) {
+      vueltas[p.seccion] =
+        (vueltas[p.seccion] ?? 0) + p.camiones * p.vueltasPorCamion;
+    }
+
+    const par = (x: { hm: number; litros: number }) => ({
+      hm: round2(x.hm),
+      litros: round2(x.litros),
+    });
+
+    return {
+      fecha,
+      hm: {
+        total: round2(hm.total),
+        dia: round2(hm.dia),
+        noche: round2(hm.noche),
+      },
+      diesel: {
+        total: round2(diesel.total),
+        dia: round2(diesel.dia),
+        noche: round2(diesel.noche),
+        porHm: hm.total > 0 ? round2(diesel.total / hm.total) : null,
+      },
+      reports: {
+        totalHoras: round2(totalHoras),
+        porEquipo: [...horasPorEquipo.entries()]
+          .map(([internalCode, h]) => ({ internalCode, horas: round2(h) }))
+          .sort((a, b) => b.horas - a.horas),
+      },
+      produccion: {
+        internos: vueltas['INTERNOS'] ?? 0,
+        minaCaleta: vueltas['MINA_CALETA'] ?? 0,
+        mineras: vueltas['MINERAS'] ?? 0,
+      },
+      adBlue,
+      operacionPorEquipo: [...ops.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([internalCode, o]) => ({
+          internalCode,
+          dia: par(o.dia),
+          noche: par(o.noche),
+          total: par(o.total),
+        })),
+      lecturas: tarjetas
+        .map((t) => ({
+          internalCode: t.equipo.internalCode,
+          turno: t.turno,
+          inicial: t.valorInicial,
+          final: t.valorFinal,
+          avance:
+            t.valorFinal == null ? null : round2(t.valorFinal - t.valorInicial),
+        }))
+        .sort(
+          (a, b) =>
+            a.internalCode.localeCompare(b.internalCode) ||
+            a.turno.localeCompare(b.turno),
+        ),
+    };
+  }
+
+  /** Stock total del ítem AdBlue activo, o null si no existe en el catálogo. */
+  private async adBlueStock(): Promise<ResumenDia['adBlue']> {
+    // Dos findFirst en vez de un OR: se prefiere "adblue" y solo si no hay se
+    // prueba "ad blue" (con espacio). Primero por nombre asc.
+    for (const needle of ['adblue', 'ad blue']) {
+      const item = await this.prisma.inventoryItem.findFirst({
+        where: {
+          isActive: true,
+          name: { contains: needle, mode: 'insensitive' },
+        },
+        orderBy: { name: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          unit: true,
+          stocks: { select: { quantity: true } },
+        },
+      });
+      if (item) {
+        return {
+          itemId: item.id,
+          nombre: item.name,
+          stock: round2(item.stocks.reduce((a, s) => a + s.quantity, 0)),
+          unidad: item.unit,
+        };
+      }
+    }
+    return null;
   }
 
   /** Rango resuelto: default mes actual; días como claves de negocio. */
