@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 
 import { PrismaService } from '../common/prisma/prisma.service';
 import { businessDayKey } from '../common/dates/business-time';
-import { DashboardService } from './dashboard.service';
+import { DashboardService, limitesDeHoy } from './dashboard.service';
 
 // Mocks compartidos a nivel de archivo: las Tasks 2-4 agregan describes
 // hermanos que reutilizan `prisma` y `service`.
@@ -89,5 +89,46 @@ describe('DashboardService.hoy', () => {
     expect(res.equipos.find((e) => e.equipmentId === 'e1')?.supervisor).toBe('(sin asignar)');
     expect(res.equipos.find((e) => e.equipmentId === 'e2')?.supervisor).toBe('(sin asignar)');
     expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('limitesDeHoy', () => {
+  it('día normal dura 24h', () => {
+    const { gte, lt } = limitesDeHoy(new Date('2026-10-16T15:00:00.000Z'));
+    expect(lt.getTime() - gte.getTime()).toBe(24 * 3_600_000);
+    expect(businessDayKey(gte)).toBe('2026-10-16');
+    expect(businessDayKey(new Date(lt.getTime() - 1))).toBe('2026-10-16');
+    expect(businessDayKey(lt)).toBe('2026-10-17');
+  });
+
+  it('días de cambio de hora (23h y 25h) cierran en la medianoche local', () => {
+    // Fechas reales de cambio de Chile 2026: se detectan por duración != 24h.
+    for (const dia of ['2026-04-04', '2026-04-05', '2026-09-05', '2026-09-06']) {
+      const { gte, lt } = limitesDeHoy(new Date(`${dia}T18:00:00.000Z`));
+      expect(businessDayKey(gte)).toBe(dia);
+      expect(businessDayKey(new Date(gte.getTime() - 1))).not.toBe(dia);
+      expect(businessDayKey(new Date(lt.getTime() - 1))).toBe(dia);
+      expect(businessDayKey(lt)).not.toBe(dia);
+    }
+    const horas = ['2026-04-04', '2026-04-05', '2026-09-05', '2026-09-06'].map((d) => {
+      const { gte, lt } = limitesDeHoy(new Date(`${d}T18:00:00.000Z`));
+      return (lt.getTime() - gte.getTime()) / 3_600_000;
+    });
+    expect(horas.some((h) => h !== 24)).toBe(true);
+  });
+});
+
+describe('DashboardService.hoy (duplicados)', () => {
+  it('dos tarjetas abiertas del mismo equipo: gana la más reciente', async () => {
+    prisma.equipment.findMany.mockResolvedValue([
+      { id: 'e1', internalCode: 'CG-002', status: 'OPERATIONAL' },
+    ]);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      { equipoId: 'e1', operador: 'Vieja', turno: 'DIURNO', supervisorId: null },
+      { equipoId: 'e1', operador: 'Nueva', turno: 'NOCTURNO', supervisorId: null },
+    ]);
+    const res = await service.hoy();
+    expect(prisma.registroHorometro.findMany.mock.calls[0][0].orderBy).toEqual({ fecha: 'asc' });
+    expect(res.equipos[0].operador).toBe('Nueva');
   });
 });
