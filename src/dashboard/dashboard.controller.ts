@@ -29,4 +29,9 @@ export class DashboardController {
   async mantenedores(@Query() q: DashboardRangeDto) {
     return { data: await this.service.mantenedores(q), message: 'ok' };
   }
+
+  @Get('vueltas')
+  async vueltas(@Query() q: DashboardRangeDto) {
+    return { data: await this.service.vueltas(q), message: 'ok' };
+  }
 }
