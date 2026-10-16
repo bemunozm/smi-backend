@@ -311,6 +311,25 @@ describe('DashboardService.equipos', () => {
     expect(res.find((x) => x.equipmentId === 'e1')?.litros).toBe(15);
   });
 
+  it('tarjeta cerrada dentro de la ventana SQL pero fuera del día de negocio se descarta', async () => {
+    // 2026-10-02T06:00Z = 2026-10-02 03:00 Chile: día siguiente al rango 10-01
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        valorInicial: 100,
+        valorFinal: 106,
+        fecha: new Date('2026-10-02T06:00:00.000Z'),
+      },
+    ]);
+    const res = await service.equipos({
+      desde: '2026-10-01',
+      hasta: '2026-10-01',
+    });
+    const e1 = res.find((x) => x.equipmentId === 'e1')!;
+    expect(e1.horas).toBe(0);
+    expect(e1.serieDiaria[0].opero).toBe(false);
+  });
+
   it('desde > hasta devuelve equipos con serie vacía, no error', async () => {
     const res = await service.equipos({
       desde: '2026-12-01',
@@ -371,6 +390,18 @@ describe('DashboardService.supervisores', () => {
       equipos: 2,
       turnos: 2,
     });
+  });
+
+  it('rango sin tarjetas: ambas claves de porTurno existen en cero', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+    prisma.shift.findMany.mockResolvedValue([]);
+    prisma.user.findMany.mockResolvedValue([]);
+    const res = await service.supervisores({
+      desde: '2026-10-01',
+      hasta: '2026-10-05',
+    });
+    expect(res.porTurno.DIURNO).toEqual({ horas: 0, equipos: 0 });
+    expect(res.porTurno.NOCTURNO).toEqual({ horas: 0, equipos: 0 });
   });
 
   it('supervisor sin usuario sale como (sin asignar)', async () => {
