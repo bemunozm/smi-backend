@@ -127,7 +127,7 @@ export class DashboardService {
         ? Promise.resolve([])
         : this.prisma.registroCombustible.findMany({
             where: { fecha: { gte: desde, lte: hasta } },
-            select: { equipoId: true, litros: true },
+            select: { equipoId: true, litros: true, fecha: true },
           }),
     ]);
 
@@ -143,6 +143,8 @@ export class DashboardService {
     }
     const litrosPorEquipo = new Map<string, number>();
     for (const c of cargas) {
+      // La ventana SQL va ampliada: recortar al día de negocio como las tarjetas.
+      if (!diasSet.has(businessDayKey(c.fecha))) continue;
       litrosPorEquipo.set(c.equipoId, (litrosPorEquipo.get(c.equipoId) ?? 0) + c.litros);
     }
 

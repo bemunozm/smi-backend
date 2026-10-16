@@ -150,7 +150,7 @@ describe('DashboardService.equipos', () => {
       { equipoId: 'e1', valorInicial: 106, valorFinal: 110, fecha: new Date('2026-10-03T13:00:00.000Z') },
     ]);
     prisma.registroCombustible.findMany.mockResolvedValue([
-      { equipoId: 'e1', litros: 50 },
+      { equipoId: 'e1', litros: 50, fecha: new Date('2026-10-02T13:00:00.000Z') },
     ]);
     const res = await service.equipos({ desde: '2026-10-01', hasta: '2026-10-03' });
     const e1 = res.find((x) => x.equipmentId === 'e1')!;
@@ -172,7 +172,7 @@ describe('DashboardService.equipos', () => {
 
   it('rendimiento: litros>0 con horas=0 → null (nunca Infinity); litros 0 con horas>0 → 0', async () => {
     prisma.registroCombustible.findMany.mockResolvedValue([
-      { equipoId: 'e1', litros: 30 },
+      { equipoId: 'e1', litros: 30, fecha: new Date('2026-10-01T13:00:00.000Z') },
     ]);
     prisma.registroHorometro.findMany.mockResolvedValue([
       { equipoId: 'e2', valorInicial: 10, valorFinal: 14, fecha: new Date('2026-10-01T13:00:00.000Z') },
@@ -193,6 +193,17 @@ describe('DashboardService.equipos', () => {
       horas: 2,
       opero: true,
     });
+  });
+
+  it('litros se recortan al día de negocio: carga fuera del rango no suma', async () => {
+    // 2026-10-01 01:00Z = 2026-09-30 22:00 Chile: fuera de un rango que empieza 10-01
+    // 2026-10-01 15:00Z = 2026-10-01 12:00 Chile: dentro
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      { equipoId: 'e1', litros: 20, fecha: new Date('2026-10-01T01:00:00.000Z') },
+      { equipoId: 'e1', litros: 15, fecha: new Date('2026-10-01T15:00:00.000Z') },
+    ]);
+    const res = await service.equipos({ desde: '2026-10-01', hasta: '2026-10-01' });
+    expect(res.find((x) => x.equipmentId === 'e1')?.litros).toBe(15);
   });
 
   it('desde > hasta devuelve equipos con serie vacía, no error', async () => {
