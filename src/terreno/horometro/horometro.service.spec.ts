@@ -47,6 +47,8 @@ describe('HorometroService', () => {
       findUniqueOrThrow: jest.fn(),
     },
     equipment: { findUnique: jest.fn(), updateMany: jest.fn() },
+    // Checklist diario del equipo (Módulo 3): sin fila, el equipo está libre.
+    dailyChecklist: { findUnique: jest.fn() },
     // Bloqueo de la fila (`FOR UPDATE`) al cerrar.
     $queryRaw: jest.fn(),
   };
@@ -362,6 +364,28 @@ describe('HorometroService', () => {
 
       expect(tx.registroHorometro.create).not.toHaveBeenCalled();
       expect(tx.equipment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rechaza la entrada si el checklist del día fue rechazado (Módulo 3)', async () => {
+      tx.dailyChecklist.findUnique.mockResolvedValueOnce({
+        status: 'REJECTED',
+      });
+
+      await expect(
+        service.create(
+          {
+            equipoId: 'e1',
+            operatorId: 'op_1',
+            turno: 'DIURNO',
+            valorInicial: 100,
+          },
+          session,
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { code: 'CHECKLIST_NOT_ACCEPTED' },
+      });
+      expect(tx.registroHorometro.create).not.toHaveBeenCalled();
     });
 
     it('el chequeo de turno abierto consulta por equipoId con valorFinal null', async () => {

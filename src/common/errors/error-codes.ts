@@ -32,6 +32,8 @@ export const ERROR_CODES = {
   STALE_UPDATE: 'STALE_UPDATE',
   CARD_NOT_CLOSED: 'CARD_NOT_CLOSED',
   INSUFFICIENT_STOCK: 'INSUFFICIENT_STOCK',
+  /** El checklist diario del equipo está por validar o rechazado (Módulo 3). */
+  CHECKLIST_NOT_ACCEPTED: 'CHECKLIST_NOT_ACCEPTED',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

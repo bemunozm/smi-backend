@@ -119,6 +119,8 @@ describe('ShiftsService', () => {
       delete: jest.fn(),
     },
     user: { findUnique: jest.fn() },
+    // Checklist diario del equipo (Módulo 3): sin fila, el equipo está libre.
+    dailyChecklist: { findUnique: jest.fn() },
     // Bloqueo de la fila (`FOR UPDATE`) al editar una tarjeta.
     $queryRaw: jest.fn(),
   };
@@ -134,6 +136,8 @@ describe('ShiftsService', () => {
     // Pre-check de solo lectura del equipo, ANTES del upsert del `Shift`
     // (que sí escribe) — ver `ShiftsService.openCard`.
     equipment: { findUnique: jest.fn() },
+    // Checklist diario del equipo (Módulo 3): sin fila, el equipo está libre.
+    dailyChecklist: { findUnique: jest.fn() },
     $transaction: jest.fn(),
   };
 
@@ -327,6 +331,24 @@ describe('ShiftsService', () => {
           code: 'EQUIPMENT_NOT_OPERATIONAL',
         });
         expect(tx.registroHorometro.create).not.toHaveBeenCalled();
+      }
+    });
+
+    it('CHECKLIST_NOT_ACCEPTED: 409 si el checklist del día está por validar (Módulo 3)', async () => {
+      prisma.dailyChecklist.findUnique.mockResolvedValueOnce({
+        status: 'SUBMITTED',
+      });
+
+      expect.assertions(3);
+      try {
+        await service.openCard(dto, session);
+      } catch (error: unknown) {
+        expect(error).toBeInstanceOf(ConflictException);
+        expect((error as ConflictException).getResponse()).toMatchObject({
+          code: 'CHECKLIST_NOT_ACCEPTED',
+        });
+        // Se corta antes de escribir el `Shift`.
+        expect(prisma.shift.upsert).not.toHaveBeenCalled();
       }
     });
 

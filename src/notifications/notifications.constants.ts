@@ -10,6 +10,8 @@ import type {
   ItemLowStockEvent,
   OrdenAssignedEvent,
   OrdenCompletedEvent,
+  ChecklistReviewedEvent,
+  ChecklistSubmittedEvent,
   RecordEditedEvent,
   ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
@@ -148,5 +150,55 @@ export function buildRecordEditedTemplate(
     cuerpo: event.changes
       .map((c) => `${c.label}: ${c.before} → ${c.after}`)
       .join('\n'),
+  };
+}
+
+/**
+ * `checklist.submitted` → SUPERVISOR: el mantenedor envió el checklist diario
+ * de un equipo y queda por validar (Módulo 3). El equipo no se libera para el
+ * operador hasta que el supervisor lo acepte.
+ */
+export const CHECKLIST_SUBMITTED_ROLES: readonly Role[] = [ROLES.SUPERVISOR];
+
+export function buildChecklistSubmittedTemplate(
+  event: ChecklistSubmittedEvent,
+): NotificationTemplate {
+  return {
+    tipo: DOMAIN_EVENTS.CHECKLIST_SUBMITTED,
+    titulo:
+      event.submission > 1
+        ? `Checklist de ${event.equipmentCode} corregido, por validar`
+        : `Checklist de ${event.equipmentCode} por validar`,
+    cuerpo:
+      `${event.mechanicName} envió el checklist diario del ${event.date}: ` +
+      `${event.declared} ítems revisados o con mantención, ` +
+      `${event.maintained} con mantención y ${event.photos} ${event.photos === 1 ? 'foto' : 'fotos'}.`,
+  };
+}
+
+/**
+ * `checklist.reviewed` → el mantenedor que lo hizo (`createForUser`) +
+ * ADMIN: el administrador se entera de cada validación, aceptada o
+ * rechazada, para saber qué está pasando con los equipos.
+ */
+export const CHECKLIST_REVIEWED_ROLES: readonly Role[] = [ROLES.ADMIN];
+
+export function buildChecklistReviewedTemplate(
+  event: ChecklistReviewedEvent,
+): NotificationTemplate {
+  const aceptado = event.decision === 'ACCEPTED';
+  return {
+    tipo: DOMAIN_EVENTS.CHECKLIST_REVIEWED,
+    titulo: aceptado
+      ? `Checklist de ${event.equipmentCode} aceptado`
+      : `Checklist de ${event.equipmentCode} rechazado`,
+    cuerpo: aceptado
+      ? `${event.reviewerName} aceptó el checklist del ${event.date} de ${event.mechanicName}: el equipo quedó liberado.` +
+        (event.comment
+          ? `
+${event.comment}`
+          : '')
+      : `${event.reviewerName} rechazó el checklist del ${event.date} de ${event.mechanicName}. Hay que corregirlo y reenviarlo:
+${event.comment ?? ''}`,
   };
 }
