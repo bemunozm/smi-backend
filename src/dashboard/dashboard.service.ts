@@ -114,7 +114,11 @@ function inicioDeDia(clave: string): Date {
  * `lt` es la medianoche local del día SIGUIENTE (no gte + 24h): los días de
  * cambio de hora duran 23h o 25h. */
 export function limitesDeHoy(ahora = new Date()): { gte: Date; lt: Date } {
-  const clave = businessDayKey(ahora); // 'YYYY-MM-DD' local
+  return limitesDeDia(businessDayKey(ahora)); // 'YYYY-MM-DD' local
+}
+
+/** Límites UTC del día de negocio `clave` ('YYYY-MM-DD' local). */
+export function limitesDeDia(clave: string): { gte: Date; lt: Date } {
   const siguiente = new Date(`${clave}T00:00:00.000Z`);
   siguiente.setUTCDate(siguiente.getUTCDate() + 1);
   return {
@@ -437,11 +441,10 @@ export class DashboardService {
     };
   }
 
-  /** Portada del admin: resumen del día de negocio actual (solo lectura). */
-  async resumenDia(): Promise<ResumenDia> {
-    const ahora = new Date();
-    const fecha = businessDayKey(ahora);
-    const limites = limitesDeHoy(ahora);
+  /** Portada del admin: resumen de un día de negocio (por defecto hoy; solo lectura). */
+  async resumenDia(fechaParam?: string): Promise<ResumenDia> {
+    const fecha = fechaParam ?? businessDayKey(new Date());
+    const limites = limitesDeDia(fecha);
     const ventana = {
       gte: new Date(limites.gte.getTime() - 12 * 3_600_000),
       lt: new Date(limites.lt.getTime() + 12 * 3_600_000),
@@ -484,7 +487,7 @@ export class DashboardService {
         where: { reporte: { fecha: parseDateOnlyUtc(fecha) } },
         select: { seccion: true, camiones: true, vueltasPorCamion: true },
       }),
-      this.adBlueStock(),
+      this.adBlueStock(), // saldo ACTUAL (balance vivo, no histórico) aunque se consulte otro día
     ]);
 
     type Op = {

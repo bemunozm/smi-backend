@@ -4,6 +4,7 @@ import { Roles } from '@thallesp/nestjs-better-auth';
 import { ROLES } from '../auth/roles';
 import { DashboardService } from './dashboard.service';
 import { DashboardRangeDto } from './dto/dashboard-range.dto';
+import { ResumenDiaQueryDto } from './dto/resumen-dia-query.dto';
 
 @Controller('dashboard')
 @Roles([ROLES.ADMIN])
@@ -16,8 +17,8 @@ export class DashboardController {
   }
 
   @Get('resumen-dia')
-  async resumenDia() {
-    return { data: await this.service.resumenDia(), message: 'ok' };
+  async resumenDia(@Query() q: ResumenDiaQueryDto) {
+    return { data: await this.service.resumenDia(q.fecha), message: 'ok' };
   }
 
   @Get('equipos')

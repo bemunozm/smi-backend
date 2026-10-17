@@ -705,6 +705,55 @@ describe('DashboardService.resumenDia', () => {
     expect(res.adBlue).toMatchObject({ itemId: 'i2', stock: 0 });
   });
 
+  describe('filtro por fecha', () => {
+    const primerWhere = (m: jest.Mock): Record<string, unknown> =>
+      (m.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
+    it('el param fecha fija los límites de tarjetas y el eco de fecha', async () => {
+      const res = await service.resumenDia('2026-10-15');
+      expect(res.fecha).toBe('2026-10-15');
+      const { gte, lt } = primerWhere(prisma.registroHorometro.findMany)
+        .fecha as { gte: Date; lt: Date };
+      // Una tarjeta del 15 (mediodía Chile) entra; una del 16 no.
+      const del15 = new Date('2026-10-15T15:00:00.000Z');
+      const del16 = new Date('2026-10-16T15:00:00.000Z');
+      expect(del15 >= gte && del15 < lt).toBe(true);
+      expect(del16 >= gte && del16 < lt).toBe(false);
+      expect(businessDayKey(gte)).toBe('2026-10-15');
+      expect(businessDayKey(lt)).toBe('2026-10-16');
+    });
+
+    it('descarta cargas fuera del día objetivo', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        {
+          ...carga('e1', 40, null),
+          fecha: new Date('2026-10-15T15:00:00.000Z'),
+        },
+        {
+          ...carga('e1', 99, null),
+          fecha: new Date('2026-10-16T15:00:00.000Z'),
+        },
+      ]);
+      const res = await service.resumenDia('2026-10-15');
+      expect(res.diesel.total).toBe(40);
+    });
+
+    it('producción usa el día del param (@db.Date)', async () => {
+      await service.resumenDia('2026-10-15');
+      expect(primerWhere(prisma.produccionTurno.findMany)).toEqual({
+        reporte: { fecha: new Date('2026-10-15T00:00:00.000Z') },
+      });
+    });
+
+    it('sin param = hoy', async () => {
+      const res = await service.resumenDia();
+      const hoy = businessDayKey(new Date());
+      expect(res.fecha).toBe(hoy);
+      expect(primerWhere(prisma.produccionTurno.findMany)).toEqual({
+        reporte: { fecha: new Date(`${hoy}T00:00:00.000Z`) },
+      });
+    });
+  });
+
   it('operacionPorEquipo: total = día + noche + no vinculados; solo con actividad', async () => {
     prisma.registroHorometro.findMany.mockResolvedValue([
       card('t1', 'e1', 'CG-002', 'DIURNO', 100, 106),
