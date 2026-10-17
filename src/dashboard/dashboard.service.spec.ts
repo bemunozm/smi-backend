@@ -221,6 +221,60 @@ describe('DashboardService.hoy (combustible y contador)', () => {
     expect(q.where.equipoId.in).toEqual(['e1', 'e2', 'e3']);
     expect(q.orderBy).toEqual({ fecha: 'desc' });
   });
+
+  it('acota la consulta de niveles a 60 días', async () => {
+    prisma.equipment.findMany.mockResolvedValue(EQ);
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+    const antes = Date.now();
+    await service.hoy();
+    const q = argDe<{ where: { fecha: { gte: Date } } }>(
+      prisma.registroHorometro.findMany,
+      1,
+      0,
+    );
+    const dias = (antes - q.where.fecha.gte.getTime()) / 86_400_000;
+    expect(dias).toBeGreaterThan(59.99);
+    expect(dias).toBeLessThan(60.01);
+  });
+
+  it('tarjeta abierta de hoy con nivel null cae al nivel de la tarjeta cerrada anterior', async () => {
+    prisma.equipment.findMany.mockResolvedValue([EQ[0]]);
+    prisma.registroHorometro.findMany
+      .mockResolvedValueOnce([
+        {
+          equipoId: 'e1',
+          operador: 'A',
+          turno: 'DIURNO',
+          supervisorId: null,
+          nivelCombustible: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        { equipoId: 'e1', nivelCombustible: 48, fecha: new Date('2026-10-15') },
+      ]);
+    const res = await service.hoy();
+    expect(res.equipos[0].nivelCombustible).toBe(48);
+  });
+
+  it('nivel 0 es 0 (no null)', async () => {
+    prisma.equipment.findMany.mockResolvedValue([EQ[0], EQ[1]]);
+    prisma.registroHorometro.findMany
+      .mockResolvedValueOnce([
+        {
+          equipoId: 'e1',
+          operador: 'A',
+          turno: 'DIURNO',
+          supervisorId: null,
+          nivelCombustible: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        { equipoId: 'e2', nivelCombustible: 0, fecha: new Date('2026-10-15') },
+      ]);
+    const res = await service.hoy();
+    expect(res.equipos[0].nivelCombustible).toBe(0);
+    expect(res.equipos[1].nivelCombustible).toBe(0);
+  });
 });
 
 describe('limitesDeHoy', () => {

@@ -171,15 +171,16 @@ export class DashboardService {
     );
     const porEquipo = new Map(abiertas.map((a) => [a.equipoId, a]));
 
-    // Último nivel conocido por equipo en UNA consulta batch (sin N+1). Se
-    // ordena por fecha desc y se filtran los niveles nulos; `distinct` deja la
-    // primera fila por equipo (la más nueva) — Prisma 6 lo resuelve en memoria o
-    // con DISTINCT ON según el driver — y el reduce de abajo (first-wins) lo
-    // garantiza igual sin depender de ello.
+    // Último nivel conocido por equipo en UNA consulta batch (sin N+1), acotado
+    // a 60 días: un equipo sin registros recientes muestra «—» en vez de un %
+    // añejo. El dedupe en memoria (first-wins, orden fecha desc) es barato a esta
+    // escala; `distinct` solo ayuda si Prisma lo empuja a la BD.
+    const desde60 = new Date(Date.now() - 60 * 86_400_000);
     const niveles = await this.prisma.registroHorometro.findMany({
       where: {
         equipoId: { in: equipos.map((e) => e.id) },
         nivelCombustible: { not: null },
+        fecha: { gte: desde60 },
       },
       distinct: ['equipoId'],
       orderBy: { fecha: 'desc' },
