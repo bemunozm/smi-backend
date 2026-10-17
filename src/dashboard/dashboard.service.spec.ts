@@ -62,6 +62,7 @@ describe('DashboardService.hoy', () => {
     const e1 = res.equipos.find((e) => e.equipmentId === 'e1');
     expect(e1).toMatchObject({
       estado: 'EN_USO',
+      status: 'OPERATIONAL',
       operador: 'Patricio Rojas',
       turno: 'DIURNO',
       supervisor: 'Limbert V.',
@@ -72,6 +73,12 @@ describe('DashboardService.hoy', () => {
     expect(res.equipos.find((e) => e.equipmentId === 'e4')?.estado).toBe(
       'INOPERATIVO',
     );
+    expect(res.equipos.map((e) => e.status)).toEqual([
+      'OPERATIONAL',
+      'OPERATIONAL',
+      'IN_WORKSHOP',
+      'OUT_OF_SERVICE',
+    ]);
   });
 
   it('una tarjeta abierta HOY gana sobre IN_WORKSHOP (opera de facto)', async () => {

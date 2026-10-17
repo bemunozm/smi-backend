@@ -10,6 +10,8 @@ export type EstadoEquipoHoy = {
   equipmentId: string;
   internalCode: string;
   estado: 'EN_USO' | 'DISPONIBLE' | 'INOPERATIVO';
+  /** Estado crudo del equipo (distingue «En taller» de «Fuera de servicio»). */
+  status: 'OPERATIONAL' | 'IN_WORKSHOP' | 'OUT_OF_SERVICE';
   operador?: string;
   turno?: string;
   supervisor?: string;
@@ -162,6 +164,7 @@ export class DashboardService {
           equipmentId: e.id,
           internalCode: e.internalCode,
           estado: 'EN_USO',
+          status: e.status,
           operador: tarjeta.operador,
           turno: tarjeta.turno,
           supervisor:
@@ -172,6 +175,7 @@ export class DashboardService {
         equipmentId: e.id,
         internalCode: e.internalCode,
         estado: e.status === 'OPERATIONAL' ? 'DISPONIBLE' : 'INOPERATIVO',
+        status: e.status,
       };
     });
 
