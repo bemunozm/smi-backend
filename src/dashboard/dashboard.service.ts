@@ -15,6 +15,12 @@ export type EstadoEquipoHoy = {
   operador?: string;
   turno?: string;
   supervisor?: string;
+  /** Unidad del contador del equipo (`Equipment.controlUnit`). */
+  unidadControl: 'HOURS' | 'KM';
+  /** Horómetro o kilometraje actual según `unidadControl`; null si no hay dato. */
+  contadorActual: number | null;
+  /** Último % de combustible conocido (tarjeta abierta de hoy, si no la más reciente); null si ninguno. */
+  nivelCombustible: number | null;
 };
 
 export type ResumenHoy = {
@@ -136,7 +142,14 @@ export class DashboardService {
   async hoy(): Promise<ResumenHoy> {
     const [equipos, abiertas] = await Promise.all([
       this.prisma.equipment.findMany({
-        select: { id: true, internalCode: true, status: true },
+        select: {
+          id: true,
+          internalCode: true,
+          status: true,
+          controlUnit: true,
+          currentHourmeter: true,
+          currentMileage: true,
+        },
         orderBy: { internalCode: 'asc' },
       }),
       this.prisma.registroHorometro.findMany({
@@ -146,6 +159,7 @@ export class DashboardService {
           operador: true,
           turno: true,
           supervisorId: true,
+          nivelCombustible: true,
         },
         // Ascendente: en el Map, la última fila (la más reciente) gana.
         orderBy: { fecha: 'asc' },
@@ -157,14 +171,44 @@ export class DashboardService {
     );
     const porEquipo = new Map(abiertas.map((a) => [a.equipoId, a]));
 
+    // Último nivel conocido por equipo en UNA consulta batch (sin N+1). Se
+    // ordena por fecha desc y se filtran los niveles nulos; `distinct` deja la
+    // primera fila por equipo (la más nueva) — Prisma 6 lo resuelve en memoria o
+    // con DISTINCT ON según el driver — y el reduce de abajo (first-wins) lo
+    // garantiza igual sin depender de ello.
+    const niveles = await this.prisma.registroHorometro.findMany({
+      where: {
+        equipoId: { in: equipos.map((e) => e.id) },
+        nivelCombustible: { not: null },
+      },
+      distinct: ['equipoId'],
+      orderBy: { fecha: 'desc' },
+      select: { equipoId: true, nivelCombustible: true, fecha: true },
+    });
+    const ultimoNivel = new Map<string, number>();
+    for (const n of niveles) {
+      if (n.nivelCombustible != null && !ultimoNivel.has(n.equipoId)) {
+        ultimoNivel.set(n.equipoId, n.nivelCombustible);
+      }
+    }
+
     const lista: EstadoEquipoHoy[] = equipos.map((e) => {
       const tarjeta = porEquipo.get(e.id);
+      const comunes = {
+        unidadControl: e.controlUnit,
+        contadorActual:
+          (e.controlUnit === 'HOURS' ? e.currentHourmeter : e.currentMileage) ??
+          null,
+        nivelCombustible:
+          tarjeta?.nivelCombustible ?? ultimoNivel.get(e.id) ?? null,
+      };
       if (tarjeta) {
         return {
           equipmentId: e.id,
           internalCode: e.internalCode,
           estado: 'EN_USO',
           status: e.status,
+          ...comunes,
           operador: tarjeta.operador,
           turno: tarjeta.turno,
           supervisor:
@@ -176,6 +220,7 @@ export class DashboardService {
         internalCode: e.internalCode,
         estado: e.status === 'OPERATIONAL' ? 'DISPONIBLE' : 'INOPERATIVO',
         status: e.status,
+        ...comunes,
       };
     });
 

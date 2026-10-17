@@ -132,6 +132,97 @@ describe('DashboardService.hoy', () => {
   });
 });
 
+describe('DashboardService.hoy (combustible y contador)', () => {
+  const EQ = [
+    {
+      id: 'e1',
+      internalCode: 'CG-002',
+      status: 'OPERATIONAL',
+      controlUnit: 'HOURS',
+      currentHourmeter: 1234.5,
+      currentMileage: null,
+    },
+    {
+      id: 'e2',
+      internalCode: 'CM-006',
+      status: 'OPERATIONAL',
+      controlUnit: 'KM',
+      currentHourmeter: null,
+      currentMileage: 80500,
+    },
+    {
+      id: 'e3',
+      internalCode: 'EX-001',
+      status: 'OPERATIONAL',
+      controlUnit: 'HOURS',
+      currentHourmeter: null,
+      currentMileage: null,
+    },
+  ];
+
+  it('unidadControl y contadorActual según controlUnit (null si no hay dato)', async () => {
+    prisma.equipment.findMany.mockResolvedValue(EQ);
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+    const res = await service.hoy();
+    expect(res.equipos[0]).toMatchObject({
+      unidadControl: 'HOURS',
+      contadorActual: 1234.5,
+    });
+    expect(res.equipos[1]).toMatchObject({
+      unidadControl: 'KM',
+      contadorActual: 80500,
+    });
+    expect(res.equipos[2]).toMatchObject({
+      unidadControl: 'HOURS',
+      contadorActual: null,
+    });
+  });
+
+  it('nivelCombustible: tarjeta abierta de hoy gana; si no, el registro más reciente; sin tarjetas = null', async () => {
+    prisma.equipment.findMany.mockResolvedValue(EQ);
+    prisma.registroHorometro.findMany
+      .mockResolvedValueOnce([
+        {
+          equipoId: 'e1',
+          operador: 'A',
+          turno: 'DIURNO',
+          supervisorId: null,
+          nivelCombustible: 70,
+        },
+      ])
+      .mockResolvedValueOnce([
+        // orden fecha desc: la primera por equipo es la más nueva
+        {
+          equipoId: 'e1',
+          nivelCombustible: 55,
+          fecha: new Date('2026-10-16'),
+        },
+        {
+          equipoId: 'e2',
+          nivelCombustible: 40,
+          fecha: new Date('2026-10-16'),
+        },
+        {
+          equipoId: 'e2',
+          nivelCombustible: 90,
+          fecha: new Date('2026-10-10'),
+        },
+      ]);
+    const res = await service.hoy();
+    expect(res.equipos[0].nivelCombustible).toBe(70); // abierta de hoy
+    expect(res.equipos[1].nivelCombustible).toBe(40); // más reciente de dos fechas
+    expect(res.equipos[2].nivelCombustible).toBeNull(); // sin tarjetas
+    // una sola consulta batch para los niveles (no N+1)
+    expect(prisma.registroHorometro.findMany).toHaveBeenCalledTimes(2);
+    const q = argDe<{
+      where: { equipoId: { in: string[] } };
+      orderBy: unknown;
+    }>(prisma.registroHorometro.findMany, 1, 0);
+    expect(q.where.equipoId.in).toEqual(['e1', 'e2', 'e3']);
+    expect(q.orderBy).toEqual({ fecha: 'desc' });
+  });
+});
+
 describe('limitesDeHoy', () => {
   it('día normal dura 24h', () => {
     const { gte, lt } = limitesDeHoy(new Date('2026-10-16T15:00:00.000Z'));
