@@ -889,6 +889,160 @@ model Hallazgo {
   @@index([createdById])
 }
 
+/// Catálogo de plantas y apoyos del reporte diario (R7 lo define administrable;
+/// por ahora solo seed — el CRUD de administración queda para otra semana).
+model Planta {
+  id     String  @id @default(cuid())
+  nombre String  @unique
+  orden  Int
+  activa Boolean @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  reportes ReportePlanta[]
+
+  @@map("planta")
+}
+
+/// Empresas externas que cargan en faena. Solo las 4 confirmadas en el seed;
+/// RT y Spence siguen en duda (Q8 del Acta N.° 006).
+model EmpresaExterna {
+  id     String  @id @default(cuid())
+  nombre String  @unique
+  activa Boolean @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  reportes ReporteEmpresa[]
+
+  @@map("empresa_externa")
+}
+
+/// Reporte diario del supervisor (Módulo B). Uno por fecha+turno. El PK es el
+/// UUID que genera el cliente (idempotencia offline, mismo criterio que
+/// `ShiftExitReport.id`).
+model ReporteDiario {
+  id    String   @id @default(uuid())
+  /// Sin hora — mismo criterio que `Shift.date`.
+  fecha DateTime @db.Date
+  /// DIURNO | NOCTURNO — `String` y no enum, mismo criterio que `Shift.type`.
+  turno String
+
+  /// Soft ref a `user.id` — mismo criterio que `Shift.supervisorId`.
+  supervisorId     String @map("supervisor_id")
+  /// Snapshot del nombre al enviar (si el usuario se renombra después, el
+  /// reporte histórico no cambia) — mismo criterio que
+  /// `TrabajoExtraordinario.operador`.
+  supervisorNombre String @map("supervisor_nombre")
+
+  observaciones String?
+
+  /// Dueño de la fila para el replay offline — mismo criterio que
+  /// `TrabajoExtraordinario.createdById`.
+  createdById String @map("created_by_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  produccion ProduccionTurno[]
+  tolvas     ReporteTolva[]
+  plantas    ReportePlanta[]
+  traspasos  ReporteTraspaso[]
+  empresas   ReporteEmpresa[]
+  personal   ReporteDiarioPersonal[]
+
+  @@unique([fecha, turno])
+  @@map("reporte_diario")
+}
+
+/// Camiones y vueltas de una sección del turno. Las vueltas son POR CAMIÓN
+/// (total de la sección = camiones × vueltasPorCamion) y las secciones NUNCA
+/// se suman entre sí: cada tipo se cobra con tarifa distinta (regla espejo de
+/// `smi-frontend/src/lib/reporte-diario.ts#vueltasDeSeccion`).
+model ProduccionTurno {
+  id        String        @id @default(cuid())
+  reporteId String        @map("reporte_id")
+  reporte   ReporteDiario @relation(fields: [reporteId], references: [id], onDelete: Cascade)
+
+  /// INTERNOS | MINA_CALETA | MINERAS — `String`, criterio de Terreno.
+  seccion          String
+  camiones         Int
+  vueltasPorCamion Int    @map("vueltas_por_camion")
+
+  @@unique([reporteId, seccion])
+  @@map("produccion_turno")
+}
+
+/// Cargas que cada tolva descargó a la planta PPE en el turno. El cliente
+/// pidió NO llamarlas «vueltas» (se confunden con las de camiones).
+model ReporteTolva {
+  id        String        @id @default(cuid())
+  reporteId String        @map("reporte_id")
+  reporte   ReporteDiario @relation(fields: [reporteId], references: [id], onDelete: Cascade)
+
+  tolva  Int
+  cargas Int
+
+  @@unique([reporteId, tolva])
+  @@map("reporte_tolva")
+}
+
+/// Plantas que operaron en el turno y qué producto elaboraron.
+model ReportePlanta {
+  id        String        @id @default(cuid())
+  reporteId String        @map("reporte_id")
+  reporte   ReporteDiario @relation(fields: [reporteId], references: [id], onDelete: Cascade)
+  plantaId  String        @map("planta_id")
+  planta    Planta        @relation(fields: [plantaId], references: [id])
+
+  producto String
+
+  @@unique([reporteId, plantaId])
+  @@map("reporte_planta")
+}
+
+/// Traspasos del turno por tipo de equipo.
+model ReporteTraspaso {
+  id        String        @id @default(cuid())
+  reporteId String        @map("reporte_id")
+  reporte   ReporteDiario @relation(fields: [reporteId], references: [id], onDelete: Cascade)
+
+  /// INTERNOS | EXTERNOS | MINA_PUERTO — `String`, criterio de Terreno.
+  tipo     String
+  cantidad Int
+
+  @@unique([reporteId, tipo])
+  @@map("reporte_traspaso")
+}
+
+/// Empresas externas que operaron en el turno.
+model ReporteEmpresa {
+  id        String         @id @default(cuid())
+  reporteId String         @map("reporte_id")
+  reporte   ReporteDiario  @relation(fields: [reporteId], references: [id], onDelete: Cascade)
+  empresaId String         @map("empresa_id")
+  empresa   EmpresaExterna @relation(fields: [empresaId], references: [id])
+
+  @@unique([reporteId, empresaId])
+  @@map("reporte_empresa")
+}
+
+/// Personal del turno (jefe de turno mina, HSE, etc.). Texto libre: no son
+/// usuarios de la plataforma.
+model ReporteDiarioPersonal {
+  id        String        @id @default(cuid())
+  reporteId String        @map("reporte_id")
+  reporte   ReporteDiario @relation(fields: [reporteId], references: [id], onDelete: Cascade)
+
+  rol    String
+  nombre String
+  orden  Int
+
+  @@map("reporte_diario_personal")
+}
+
 // ---------------------------------------------------------------------------
 // 4. Dominio Mantenimiento. Órdenes de trabajo, bitácora de
 // intervención, motor preventivo y actividades.

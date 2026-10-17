@@ -13,7 +13,11 @@ export interface Editor {
 
 /** Qué tipo de registro se editó. Crece cuando otro dominio lo use. */
 export type ChangeLogEntity =
-  'trabajo_extra' | 'hallazgo' | 'shift_card' | 'maintenance_plan';
+  | 'trabajo_extra'
+  | 'hallazgo'
+  | 'shift_card'
+  | 'maintenance_plan'
+  | 'reporte_diario';
 
 /** Un dato que cambió, con los valores ya legibles para una persona. */
 export interface FieldChange {

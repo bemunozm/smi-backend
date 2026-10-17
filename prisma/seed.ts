@@ -28,6 +28,7 @@ import { auth } from '../src/auth/auth';
 import { ROLES } from '../src/auth/roles';
 import { StockService } from '../src/inventory/stock.service';
 import { seedMantenimiento } from './seeds/mantenimiento.seed';
+import { seedReporteDiarioCatalogos } from './seeds/reporte-diario.seed';
 
 const logger = new Logger('Seed');
 
@@ -835,6 +836,9 @@ async function seed(): Promise<void> {
   // Dominio Mantenimiento: corre al final; resuelve el asignadoAId
   // buscando al mantenedor seed por email. No depende de Flota/Terreno (soft refs).
   await seedMantenimiento();
+
+  // Catálogos del reporte diario (plantas y empresas externas): upsert por nombre.
+  await seedReporteDiarioCatalogos();
 }
 
 void seed()
