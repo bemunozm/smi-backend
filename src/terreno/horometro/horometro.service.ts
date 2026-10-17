@@ -19,6 +19,9 @@ import { resolveCloseRace } from '../../common/idempotency/resolve-close-race';
 import { OperatorsService } from '../../operators/operators.service';
 import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
 import { resolveCapturedAt } from '../../common/dates/capture-time';
+import { todayInBusinessTimeZone } from '../../common/dates/business-time';
+import { assertChecklistNotPending } from '../../mantenimiento/daily-checklists/checklist-gate';
+import { parseDateOnlyUtc } from '../../shifts/date-only';
 import { CreateHorometroDto } from './dto/create-horometro.dto';
 import { SalidaHorometroDto } from './dto/salida-horometro.dto';
 
@@ -148,6 +151,13 @@ export class HorometroService {
           code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
         });
       }
+      // Módulo 3: con el checklist del día por validar o rechazado, el
+      // equipo no se libera.
+      await assertChecklistNotPending(
+        tx,
+        dto.equipoId,
+        parseDateOnlyUtc(todayInBusinessTimeZone(fecha)),
+      );
 
       const turnoAbierto = await tx.registroHorometro.findFirst({
         where: { equipoId: dto.equipoId, valorFinal: null },

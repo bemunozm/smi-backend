@@ -18,6 +18,8 @@ export const DOMAIN_EVENTS = {
   ITEM_LOW_STOCK: 'item.low-stock',
   SHIFT_EXIT_REPORT_SENT: 'shift.exit-report',
   RECORD_EDITED: 'record.edited',
+  CHECKLIST_SUBMITTED: 'checklist.submitted',
+  CHECKLIST_REVIEWED: 'checklist.reviewed',
 } as const;
 
 export type DomainEventName =
@@ -97,4 +99,41 @@ export interface RecordEditedEvent {
   entityLabel: string;
   editedBy: string;
   changes: { label: string; before: string; after: string }[];
+}
+
+/**
+ * Emitido por Mantenimiento (Joaquín) al enviar el checklist diario de un
+ * equipo (Módulo 2). Avisa al supervisor que tiene una revisión por validar
+ * (Módulo 3).
+ */
+export interface ChecklistSubmittedEvent {
+  checklistId: string;
+  equipmentId: string;
+  equipmentCode: string;
+  mechanicName: string;
+  /** `YYYY-MM-DD`. */
+  date: string;
+  declared: number;
+  maintained: number;
+  photos: number;
+  /** 1 = primer envío; 2 o más = corregido tras un rechazo. */
+  submission: number;
+}
+
+/**
+ * Emitido al validar el supervisor un checklist diario (Módulo 3 · R25). Le
+ * llega al mantenedor que lo hizo y al administrador: aceptado (el equipo
+ * queda liberado) o rechazado con lo que hay que corregir.
+ */
+export interface ChecklistReviewedEvent {
+  checklistId: string;
+  equipmentId: string;
+  equipmentCode: string;
+  /** `YYYY-MM-DD`. */
+  date: string;
+  decision: 'ACCEPTED' | 'REJECTED';
+  comment: string | null;
+  reviewerName: string;
+  mechanicId: string;
+  mechanicName: string;
 }

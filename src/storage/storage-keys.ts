@@ -57,6 +57,11 @@ export const FILE_KINDS = {
     prefix: 'tarea-photos/',
     allowedExtensions: IMAGE_EXTENSIONS,
   },
+  /** Foto de un ítem del checklist diario del mantenedor (Módulo 2, R24). */
+  'checklist-photo': {
+    prefix: 'checklist-photos/',
+    allowedExtensions: IMAGE_EXTENSIONS,
+  },
 } satisfies Record<string, FileKindConfig>;
 
 export type FileKind = keyof typeof FILE_KINDS;

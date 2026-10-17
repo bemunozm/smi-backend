@@ -14,6 +14,8 @@ import {
   type ItemLowStockEvent,
   type OrdenAssignedEvent,
   type OrdenCompletedEvent,
+  type ChecklistReviewedEvent,
+  type ChecklistSubmittedEvent,
   type RecordEditedEvent,
   type ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
@@ -27,6 +29,10 @@ import {
   ORDEN_ASSIGNED_ROLES,
   ORDEN_COMPLETED_ROLES,
   RECORD_EDITED_ROLES,
+  CHECKLIST_REVIEWED_ROLES,
+  CHECKLIST_SUBMITTED_ROLES,
+  buildChecklistReviewedTemplate,
+  buildChecklistSubmittedTemplate,
   SHIFT_EXIT_REPORT_ROLES,
   buildHallazgoCreatedTemplate,
   buildRecordEditedTemplate,
@@ -89,6 +95,34 @@ export class NotificationsListener {
     await this.notifications.createForRoles(ORDEN_COMPLETED_ROLES, {
       ...template,
       data: { ordenId: event.ordenId, equipoId },
+    });
+  }
+
+  @OnEvent(DOMAIN_EVENTS.CHECKLIST_SUBMITTED)
+  async onChecklistSubmitted(event: ChecklistSubmittedEvent): Promise<void> {
+    const template = buildChecklistSubmittedTemplate(event);
+    await this.notifications.createForRoles(CHECKLIST_SUBMITTED_ROLES, {
+      ...template,
+      data: { checklistId: event.checklistId, equipmentId: event.equipmentId },
+    });
+  }
+
+  @OnEvent(DOMAIN_EVENTS.CHECKLIST_REVIEWED)
+  async onChecklistReviewed(event: ChecklistReviewedEvent): Promise<void> {
+    const template = buildChecklistReviewedTemplate(event);
+    // `decision`: el aviso de un rechazo lleva al mantenedor directo a corregirlo.
+    const data = {
+      checklistId: event.checklistId,
+      equipmentId: event.equipmentId,
+      decision: event.decision,
+    };
+    await this.notifications.createForUser(event.mechanicId, {
+      ...template,
+      data,
+    });
+    await this.notifications.createForRoles(CHECKLIST_REVIEWED_ROLES, {
+      ...template,
+      data,
     });
   }
 

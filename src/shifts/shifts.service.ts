@@ -45,6 +45,7 @@ import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
 import { formatNumber } from '../common/format/number';
+import { assertChecklistNotPending } from '../mantenimiento/daily-checklists/checklist-gate';
 import {
   formatBusinessDate,
   formatBusinessDateTime,
@@ -316,6 +317,13 @@ export class ShiftsService {
         code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
       });
     }
+    // Módulo 3: con el checklist del día por validar o rechazado, el equipo
+    // no se libera (se repite dentro de la tx, igual que el estado).
+    await assertChecklistNotPending(
+      this.prisma,
+      dto.equipoId,
+      parseDateOnlyUtc(dto.shiftDate),
+    );
 
     const supervisorId = session.user.id;
 
@@ -370,6 +378,11 @@ export class ShiftsService {
             code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
           });
         }
+        await assertChecklistNotPending(
+          tx,
+          dto.equipoId,
+          parseDateOnlyUtc(dto.shiftDate),
+        );
 
         // Fast-path aplicativo — la garantía dura es el índice único parcial
         // `(equipo_id) WHERE "valorFinal" IS NULL` (mismo índice que usa

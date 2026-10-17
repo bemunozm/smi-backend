@@ -1308,3 +1308,129 @@ model Actividad {
 
   @@map("actividad")
 }
+
+// ============================================================================
+// Checklist diario del mantenedor (Módulo 2 · R23 + R24, Acta N.° 006).
+// ============================================================================
+
+/// Estado de un checklist diario enviado. Nace SUBMITTED (enviado al
+/// supervisor); ACCEPTED/REJECTED los pone la validación del supervisor
+/// (Módulo 3). El borrador vive en el equipo del mantenedor, no acá.
+enum ChecklistStatus {
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+}
+
+/// Lo que el mantenedor declaró de un ítem.
+enum ChecklistEntryStatus {
+  /// Se hizo mantención: exige descripción y puede llevar insumos.
+  MAINTAINED
+  /// Se revisó: marca de verificación, nota opcional.
+  CHECKED
+  /// No se revisó.
+  NOT_CHECKED
+}
+
+/// Catálogo de ítems del checklist diario (anexo del Acta N.° 006): el mismo
+/// para todos los equipos. Cambio de aceite y filtros NO van acá — son la
+/// mantención mayor de la pauta (250/500/1000/2000 h).
+model ChecklistItem {
+  id                  String   @id @default(cuid())
+  name                String
+  position            Int
+  /// Ítem crítico (R24): no se puede declarar revisado o mantenido sin foto.
+  requiresPhoto       Boolean  @default(false) @map("requires_photo")
+  /// Además pide la temperatura medida (A/C, con termómetro o pistola IR).
+  requiresTemperature Boolean  @default(false) @map("requires_temperature")
+  isActive            Boolean  @default(true) @map("is_active")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  entries DailyChecklistEntry[]
+
+  @@map("checklist_item")
+}
+
+/// Checklist diario de UN equipo en UN día, tal como lo envió el mantenedor
+/// al supervisor. Uno por equipo y día.
+model DailyChecklist {
+  id           String          @id @default(cuid())
+  /// Soft ref → `equipment.id`, como el resto de Mantenimiento.
+  equipmentId  String          @map("equipment_id")
+  /// Día de calendario del checklist (`YYYY-MM-DD`, hora de Chile).
+  date         DateTime        @db.Date
+  /// Horómetro u odómetro al hacer el checklist, según la unidad del equipo.
+  /// Obligatorio, pero NO actualiza la lectura del equipo: a veces se hace a
+  /// mitad de turno (en la colación) y no es la lectura de inicio ni de cierre.
+  counter      Float
+  status       ChecklistStatus @default(SUBMITTED)
+  mechanicId   String          @map("mechanic_id")
+  mechanicName String          @map("mechanic_name")
+  submittedAt  DateTime        @default(now()) @map("submitted_at")
+  /// Bodega de la que salieron los insumos (la de faena), si se usaron.
+  branchId     String?         @map("branch_id")
+  /// Cuántas veces se envió: sube cada vez que el mantenedor lo corrige tras
+  /// un rechazo y lo reenvía.
+  submissionCount Int          @default(1) @map("submission_count")
+
+  entries DailyChecklistEntry[]
+  /// Validaciones del supervisor (Módulo 3 · R25), de la más vieja a la más
+  /// nueva: un checklist rechazado y corregido acumula varias.
+  reviews DailyChecklistReview[]
+
+  /// `user.id` que lo creó: con el id del cliente decide si un reintento sin
+  /// señal es el mismo envío (replay) o uno ajeno (`ID_CONFLICT`).
+  createdById String? @map("created_by_id")
+
+  @@unique([equipmentId, date])
+  @@index([status])
+  @@index([date])
+  @@map("daily_checklist")
+}
+
+/// Lo declarado de un ítem del catálogo en un checklist.
+model DailyChecklistEntry {
+  id          String               @id @default(cuid())
+  checklistId String               @map("checklist_id")
+  checklist   DailyChecklist       @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  itemId      String?              @map("item_id")
+  item        ChecklistItem?       @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  /// Copia del nombre del ítem: el checklist sigue legible aunque el catálogo cambie.
+  itemName    String               @map("item_name")
+  position    Int
+  status      ChecklistEntryStatus
+  /// Qué se hizo (obligatoria si `MAINTAINED`).
+  description String?
+  /// Nota opcional al revisar.
+  note        String?
+  /// Temperatura medida en °C (A/C).
+  temperature Float?
+  /// Keys de las fotos en el storage privado (nunca URLs).
+  photoKeys   String[]             @map("photo_keys")
+  /// Insumos usados: `[{ itemId, sku, name, quantity }]`, ya descontados del stock.
+  supplies    Json?
+
+  @@index([checklistId])
+  @@map("daily_checklist_entry")
+}
+
+/// La decisión del supervisor sobre un envío del checklist diario (Módulo 3 ·
+/// R25): quién validó, cuándo y con qué comentario. Es la traza de auditoría;
+/// el estado vigente vive en `DailyChecklist.status`.
+model DailyChecklistReview {
+  id           String          @id @default(cuid())
+  checklistId  String          @map("checklist_id")
+  checklist    DailyChecklist  @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+  /// `ACCEPTED` o `REJECTED`.
+  decision     ChecklistStatus
+  /// Obligatorio al rechazar: qué tiene que corregir el mantenedor.
+  comment      String?
+  reviewerId   String          @map("reviewer_id")
+  reviewerName String          @map("reviewer_name")
+  /// Qué envío se validó (`DailyChecklist.submissionCount` en ese momento).
+  submission   Int
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  @@index([checklistId])
+  @@map("daily_checklist_review")
+}
