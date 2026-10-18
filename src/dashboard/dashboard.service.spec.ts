@@ -705,6 +705,7 @@ describe('DashboardService.resumenDia', () => {
     expect(res.lecturas).toEqual([
       {
         id: 't1',
+        equipmentId: 'e1',
         internalCode: 'CG-002',
         turno: 'DIURNO',
         inicial: 100,
@@ -713,6 +714,7 @@ describe('DashboardService.resumenDia', () => {
       },
       {
         id: 't3',
+        equipmentId: 'e1',
         internalCode: 'CG-002',
         turno: 'NOCTURNO',
         inicial: 106,
@@ -721,6 +723,7 @@ describe('DashboardService.resumenDia', () => {
       },
       {
         id: 't2',
+        equipmentId: 'e2',
         internalCode: 'EX-001',
         turno: 'NOCTURNO',
         inicial: 50,
@@ -921,12 +924,14 @@ describe('DashboardService.resumenDia', () => {
     const res = await service.resumenDia();
     expect(res.operacionPorEquipo).toEqual([
       {
+        equipmentId: 'e0',
         internalCode: 'AA-001',
         dia: { hm: 0, litros: 0 },
         noche: { hm: 0, litros: 0 },
         total: { hm: 0, litros: 7 },
       },
       {
+        equipmentId: 'e1',
         internalCode: 'CG-002',
         dia: { hm: 6, litros: 40 },
         noche: { hm: 4, litros: 30 },

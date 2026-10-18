@@ -95,6 +95,7 @@ export type ResumenDia = {
     unidad: string;
   } | null;
   operacionPorEquipo: {
+    equipmentId: string;
     internalCode: string;
     dia: { hm: number; litros: number };
     noche: { hm: number; litros: number };
@@ -103,6 +104,7 @@ export type ResumenDia = {
   flota: FlotaDia[];
   lecturas: {
     id: string; // id de la tarjeta (clave estable: puede haber 2 del mismo equipo+turno)
+    equipmentId: string;
     internalCode: string;
     turno: string;
     inicial: number;
@@ -567,15 +569,17 @@ export class DashboardService {
     const flota: FlotaDia[] = flotaHoy ?? (await this.flotaPasada(tarjetas));
 
     type Op = {
+      equipmentId: string;
       dia: { hm: number; litros: number };
       noche: { hm: number; litros: number };
       total: { hm: number; litros: number };
     };
     const ops = new Map<string, Op>();
-    const opDe = (code: string): Op => {
+    const opDe = (code: string, equipmentId: string): Op => {
       let o = ops.get(code);
       if (!o) {
         o = {
+          equipmentId,
           dia: { hm: 0, litros: 0 },
           noche: { hm: 0, litros: 0 },
           total: { hm: 0, litros: 0 },
@@ -593,7 +597,7 @@ export class DashboardService {
       // lámina de fin de día del cliente; la tarjeta en curso se ve en Lecturas.
       if (t.valorFinal == null) continue;
       const avance = t.valorFinal - t.valorInicial;
-      const o = opDe(t.equipo.internalCode);
+      const o = opDe(t.equipo.internalCode, t.equipoId);
       const lado = t.turno === 'NOCTURNO' ? 'noche' : 'dia';
       hm.total += avance;
       hm[lado] += avance;
@@ -605,7 +609,7 @@ export class DashboardService {
     for (const c of cargas) {
       // La ventana SQL va ampliada: recortar al día de negocio.
       if (businessDayKey(c.fecha) !== fecha) continue;
-      const o = opDe(c.equipo.internalCode);
+      const o = opDe(c.equipo.internalCode, c.equipoId);
       diesel.total += c.litros;
       o.total.litros += c.litros;
       // Sin vínculo (o tarjeta fuera de hoy): solo suma al total.
@@ -671,6 +675,7 @@ export class DashboardService {
       operacionPorEquipo: [...ops.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([internalCode, o]) => ({
+          equipmentId: o.equipmentId,
           internalCode,
           dia: par(o.dia),
           noche: par(o.noche),
@@ -679,6 +684,7 @@ export class DashboardService {
       lecturas: tarjetas
         .map((t) => ({
           id: t.id,
+          equipmentId: t.equipoId,
           internalCode: t.equipo.internalCode,
           turno: t.turno,
           inicial: t.valorInicial,
