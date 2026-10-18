@@ -507,14 +507,17 @@ export class DashboardService {
 
   /** Portada del admin: resumen de un día de negocio (por defecto hoy; solo lectura). */
   async resumenDia(fechaParam?: string): Promise<ResumenDia> {
-    const fecha = fechaParam ?? businessDayKey(new Date());
+    // Una sola lectura del reloj: si la medianoche cruza entre el default y
+    // la comparación, `esHoy` quedaría falso para el "hoy" recién calculado.
+    const hoyClave = businessDayKey(new Date());
+    const fecha = fechaParam ?? hoyClave;
     const limites = limitesDeDia(fecha);
     const ventana = {
       gte: new Date(limites.gte.getTime() - 12 * 3_600_000),
       lt: new Date(limites.lt.getTime() + 12 * 3_600_000),
     };
 
-    const esHoy = fecha === businessDayKey(new Date());
+    const esHoy = fecha === hoyClave;
 
     const [tarjetas, cargas, trabajos, produccion, adBlue, flotaHoy] =
       await Promise.all([
@@ -755,7 +758,6 @@ export class DashboardService {
     };
   }
 
-  /** Resuelve soft refs a `user.name` en UNA consulta. */
   /** Flota de un día pasado: OPERO con los datos de la ÚLTIMA tarjeta del día, o SIN_ACTIVIDAD. */
   private async flotaPasada(
     tarjetas: {
@@ -812,6 +814,7 @@ export class DashboardService {
     });
   }
 
+  /** Resuelve soft refs a `user.name` en UNA consulta. */
   private async nombresDe(
     ids: (string | null)[],
   ): Promise<Map<string, string>> {
