@@ -23,6 +23,13 @@ export type EstadoEquipoHoy = {
   nivelCombustible: number | null;
 };
 
+/** Ítem de flota del resumen de un día: hoy usa los estados de `/hoy`; un día pasado, OPERO / SIN_ACTIVIDAD. */
+export type FlotaDia = Omit<EstadoEquipoHoy, 'estado' | 'status'> & {
+  estado: EstadoEquipoHoy['estado'] | 'OPERO' | 'SIN_ACTIVIDAD';
+  /** Solo hoy: estado crudo actual del equipo (en un día pasado engañaría). */
+  status?: EstadoEquipoHoy['status'];
+};
+
 export type ResumenHoy = {
   totales: { enUso: number; disponibles: number; inoperativos: number };
   equipos: EstadoEquipoHoy[];
@@ -93,6 +100,7 @@ export type ResumenDia = {
     noche: { hm: number; litros: number };
     total: { hm: number; litros: number };
   }[];
+  flota: FlotaDia[];
   lecturas: {
     id: string; // id de la tarjeta (clave estable: puede haber 2 del mismo equipo+turno)
     internalCode: string;
@@ -140,6 +148,19 @@ export class DashboardService {
   constructor(private prisma: PrismaService) {}
 
   async hoy(): Promise<ResumenHoy> {
+    const lista = await this.flotaHoy();
+    return {
+      totales: {
+        enUso: lista.filter((x) => x.estado === 'EN_USO').length,
+        disponibles: lista.filter((x) => x.estado === 'DISPONIBLE').length,
+        inoperativos: lista.filter((x) => x.estado === 'INOPERATIVO').length,
+      },
+      equipos: lista,
+    };
+  }
+
+  /** Estado actual de toda la flota (base de `/hoy` y de la flota de «hoy» en el resumen del día). */
+  private async flotaHoy(): Promise<EstadoEquipoHoy[]> {
     const [equipos, abiertas] = await Promise.all([
       this.prisma.equipment.findMany({
         select: {
@@ -225,14 +246,7 @@ export class DashboardService {
       };
     });
 
-    return {
-      totales: {
-        enUso: lista.filter((x) => x.estado === 'EN_USO').length,
-        disponibles: lista.filter((x) => x.estado === 'DISPONIBLE').length,
-        inoperativos: lista.filter((x) => x.estado === 'INOPERATIVO').length,
-      },
-      equipos: lista,
-    };
+    return lista;
   }
 
   async equipos(q: DashboardRangeDto): Promise<MetricasEquipo[]> {
@@ -500,45 +514,54 @@ export class DashboardService {
       lt: new Date(limites.lt.getTime() + 12 * 3_600_000),
     };
 
-    const [tarjetas, cargas, trabajos, produccion, adBlue] = await Promise.all([
-      // Tarjetas de hoy UNA vez (cerradas y abiertas); de aquí salen hm,
-      // lecturas y operación por equipo.
-      this.prisma.registroHorometro.findMany({
-        where: { fecha: limites },
-        select: {
-          id: true,
-          equipoId: true,
-          turno: true,
-          valorInicial: true,
-          valorFinal: true,
-          equipo: { select: { internalCode: true } },
-        },
-      }),
-      this.prisma.registroCombustible.findMany({
-        where: { fecha: ventana },
-        select: {
-          equipoId: true,
-          litros: true,
-          registroHorometroId: true,
-          fecha: true,
-          equipo: { select: { internalCode: true } },
-        },
-      }),
-      this.prisma.trabajoExtraordinario.findMany({
-        where: { fecha: ventana },
-        select: {
-          totalHoras: true,
-          fecha: true,
-          equipo: { select: { internalCode: true } },
-        },
-      }),
-      // ReporteDiario.fecha es @db.Date: clave de hoy, sin ampliar.
-      this.prisma.produccionTurno.findMany({
-        where: { reporte: { fecha: parseDateOnlyUtc(fecha) } },
-        select: { seccion: true, camiones: true, vueltasPorCamion: true },
-      }),
-      this.adBlueStock(), // saldo ACTUAL (balance vivo, no histórico) aunque se consulte otro día
-    ]);
+    const esHoy = fecha === businessDayKey(new Date());
+
+    const [tarjetas, cargas, trabajos, produccion, adBlue, flotaHoy] =
+      await Promise.all([
+        // Tarjetas de hoy UNA vez (cerradas y abiertas); de aquí salen hm,
+        // lecturas y operación por equipo.
+        this.prisma.registroHorometro.findMany({
+          where: { fecha: limites },
+          select: {
+            id: true,
+            equipoId: true,
+            turno: true,
+            valorInicial: true,
+            valorFinal: true,
+            fecha: true,
+            operador: true,
+            supervisorId: true,
+            nivelCombustible: true,
+            equipo: { select: { internalCode: true } },
+          },
+        }),
+        this.prisma.registroCombustible.findMany({
+          where: { fecha: ventana },
+          select: {
+            equipoId: true,
+            litros: true,
+            registroHorometroId: true,
+            fecha: true,
+            equipo: { select: { internalCode: true } },
+          },
+        }),
+        this.prisma.trabajoExtraordinario.findMany({
+          where: { fecha: ventana },
+          select: {
+            totalHoras: true,
+            fecha: true,
+            equipo: { select: { internalCode: true } },
+          },
+        }),
+        // ReporteDiario.fecha es @db.Date: clave de hoy, sin ampliar.
+        this.prisma.produccionTurno.findMany({
+          where: { reporte: { fecha: parseDateOnlyUtc(fecha) } },
+          select: { seccion: true, camiones: true, vueltasPorCamion: true },
+        }),
+        this.adBlueStock(), // saldo ACTUAL (balance vivo, no histórico) aunque se consulte otro día
+        esHoy ? this.flotaHoy() : Promise.resolve(null),
+      ]);
+    const flota: FlotaDia[] = flotaHoy ?? (await this.flotaPasada(tarjetas));
 
     type Op = {
       dia: { hm: number; litros: number };
@@ -641,6 +664,7 @@ export class DashboardService {
         mineras: vueltas['MINERAS'] ?? 0,
       },
       adBlue,
+      flota,
       operacionPorEquipo: [...ops.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([internalCode, o]) => ({
@@ -732,6 +756,62 @@ export class DashboardService {
   }
 
   /** Resuelve soft refs a `user.name` en UNA consulta. */
+  /** Flota de un día pasado: OPERO con los datos de la ÚLTIMA tarjeta del día, o SIN_ACTIVIDAD. */
+  private async flotaPasada(
+    tarjetas: {
+      equipoId: string;
+      turno: string;
+      operador: string;
+      supervisorId: string | null;
+      nivelCombustible: number | null;
+      fecha: Date;
+    }[],
+  ): Promise<FlotaDia[]> {
+    const equipos = await this.prisma.equipment.findMany({
+      select: {
+        id: true,
+        internalCode: true,
+        controlUnit: true,
+        currentHourmeter: true,
+        currentMileage: true,
+      },
+      orderBy: { internalCode: 'asc' },
+    });
+    // Última tarjeta (fecha desc, abierta o cerrada) por equipo.
+    const ultima = new Map<string, (typeof tarjetas)[number]>();
+    for (const t of tarjetas) {
+      const previa = ultima.get(t.equipoId);
+      if (!previa || t.fecha.getTime() > previa.fecha.getTime()) {
+        ultima.set(t.equipoId, t);
+      }
+    }
+    const supervisores = await this.nombresDe(
+      [...ultima.values()].map((t) => t.supervisorId),
+    );
+    return equipos.map((e): FlotaDia => {
+      const comunes = {
+        equipmentId: e.id,
+        internalCode: e.internalCode,
+        unidadControl: e.controlUnit,
+        contadorActual:
+          (e.controlUnit === 'HOURS' ? e.currentHourmeter : e.currentMileage) ??
+          null,
+      };
+      const t = ultima.get(e.id);
+      if (!t) {
+        return { ...comunes, estado: 'SIN_ACTIVIDAD', nivelCombustible: null };
+      }
+      return {
+        ...comunes,
+        estado: 'OPERO',
+        operador: t.operador,
+        turno: t.turno,
+        supervisor: supervisores.get(t.supervisorId ?? '') ?? SIN_ASIGNAR,
+        nivelCombustible: t.nivelCombustible ?? null,
+      };
+    });
+  }
+
   private async nombresDe(
     ids: (string | null)[],
   ): Promise<Map<string, string>> {

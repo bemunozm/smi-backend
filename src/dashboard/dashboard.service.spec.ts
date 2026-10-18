@@ -935,3 +935,117 @@ describe('DashboardService.resumenDia', () => {
     ]);
   });
 });
+
+describe('DashboardService.resumenDia (flota)', () => {
+  const EQ = [
+    {
+      id: 'e1',
+      internalCode: 'CG-002',
+      status: 'IN_WORKSHOP',
+      controlUnit: 'HOURS',
+      currentHourmeter: 120.5,
+      currentMileage: null,
+    },
+    {
+      id: 'e2',
+      internalCode: 'EX-001',
+      status: 'OPERATIONAL',
+      controlUnit: 'KM',
+      currentHourmeter: null,
+      currentMileage: 900,
+    },
+  ];
+  const tarjeta = (over: Record<string, unknown>) => ({
+    id: 't',
+    equipoId: 'e1',
+    turno: 'DIURNO',
+    valorInicial: 100,
+    valorFinal: 104,
+    equipo: { internalCode: 'CG-002' },
+    operador: 'Pedro',
+    supervisorId: 'u1',
+    nivelCombustible: 50,
+    fecha: new Date('2026-10-15T15:00:00.000Z'),
+    ...over,
+  });
+
+  beforeEach(() => {
+    prisma.equipment.findMany.mockResolvedValue(EQ);
+    prisma.registroHorometro.findMany.mockResolvedValue([]);
+    prisma.registroCombustible.findMany.mockResolvedValue([]);
+    prisma.trabajoExtraordinario.findMany.mockResolvedValue([]);
+    prisma.produccionTurno.findMany.mockResolvedValue([]);
+    prisma.inventoryItem.findFirst.mockResolvedValue(null);
+  });
+
+  it('día pasado: OPERO con la ÚLTIMA tarjeta del día (abierta o cerrada) y SIN_ACTIVIDAD sin campos de uso', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      tarjeta({
+        id: 'a',
+        operador: 'Viejo',
+        nivelCombustible: 80,
+        fecha: new Date('2026-10-15T12:00:00.000Z'),
+      }),
+      tarjeta({
+        id: 'b',
+        turno: 'NOCTURNO',
+        operador: 'Nuevo',
+        valorFinal: null,
+        nivelCombustible: 30,
+        fecha: new Date('2026-10-15T22:00:00.000Z'),
+      }),
+    ]);
+    const res = await service.resumenDia('2026-10-15');
+    expect(res.flota).toEqual([
+      {
+        equipmentId: 'e1',
+        internalCode: 'CG-002',
+        estado: 'OPERO',
+        operador: 'Nuevo',
+        turno: 'NOCTURNO',
+        supervisor: 'Limbert V.',
+        nivelCombustible: 30,
+        unidadControl: 'HOURS',
+        contadorActual: 120.5,
+      },
+      {
+        equipmentId: 'e2',
+        internalCode: 'EX-001',
+        estado: 'SIN_ACTIVIDAD',
+        nivelCombustible: null,
+        unidadControl: 'KM',
+        contadorActual: 900,
+      },
+    ]);
+    expect(res.flota[0]).not.toHaveProperty('status');
+  });
+
+  it('día pasado: nivel null de esa tarjeta queda null (sin caer a otros días) y supervisor sin match = (sin asignar)', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      tarjeta({ nivelCombustible: null, supervisorId: null }),
+    ]);
+    const res = await service.resumenDia('2026-10-15');
+    expect(res.flota[0]).toMatchObject({
+      estado: 'OPERO',
+      nivelCombustible: null,
+      supervisor: '(sin asignar)',
+    });
+    // Solo la consulta de tarjetas del día: nada de búsqueda de niveles de 60 días.
+    expect(prisma.registroHorometro.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('hoy: delega al helper compartido con hoy() (mismos ítems, status crudo)', async () => {
+    const hoy = await service.hoy();
+    const res = await service.resumenDia();
+    expect(res.flota).toEqual(hoy.equipos);
+    expect(res.flota[0]).toMatchObject({
+      estado: 'INOPERATIVO',
+      status: 'IN_WORKSHOP',
+    });
+  });
+
+  it('hoy explícito (fecha == hoy) también usa la rama de hoy', async () => {
+    const res = await service.resumenDia(businessDayKey(new Date()));
+    expect(res.flota[0]).toHaveProperty('status', 'IN_WORKSHOP');
+  });
+});
