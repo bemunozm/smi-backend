@@ -7,9 +7,9 @@
  */
 
 /**
- * Umbral (en días) para pasar de `VIGENTE` a `POR_VENCER`. Centralizado
- * acá — nunca hardcodear el 30 inline — para que cualquier otro consumidor
- * futuro (ej. un cron de notificaciones) lea el mismo número.
+ * Umbral por defecto (en días) para pasar de `VIGENTE` a `POR_VENCER`. Cada
+ * documento trae el suyo (`alertDaysBefore`, Módulo 4); este es el valor con
+ * que nace y el que se usa si no se pasa otro.
  */
 export const DOCUMENT_EXPIRY_WARNING_DAYS = 30;
 
@@ -55,6 +55,8 @@ export function daysBetweenDateOnly(now: Date, expiry: Date): number {
 export function buildDocumentExpiryInfo(
   expiry: Date | null,
   now: Date = new Date(),
+  /** Días de anticipación del documento (`alertDaysBefore`). */
+  warningDays: number = DOCUMENT_EXPIRY_WARNING_DAYS,
 ): DocumentExpiryInfo {
   if (!expiry) {
     return { expiry: null, status: 'SIN_DATO', daysToExpiry: null };
@@ -63,7 +65,7 @@ export function buildDocumentExpiryInfo(
   const status: DocumentStatus =
     daysToExpiry < 0
       ? 'VENCIDO'
-      : daysToExpiry <= DOCUMENT_EXPIRY_WARNING_DAYS
+      : daysToExpiry <= warningDays
         ? 'POR_VENCER'
         : 'VIGENTE';
   return { expiry: expiry.toISOString(), status, daysToExpiry };

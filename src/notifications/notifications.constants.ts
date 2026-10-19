@@ -11,6 +11,8 @@ import type {
   OrdenAssignedEvent,
   OrdenCompletedEvent,
   ChecklistReviewedEvent,
+  DocumentExpiringEvent,
+  LightServiceDueEvent,
   ChecklistSubmittedEvent,
   RecordEditedEvent,
   ShiftExitReportSentEvent,
@@ -200,5 +202,61 @@ ${event.comment}`
           : '')
       : `${event.reviewerName} rechazó el checklist del ${event.date} de ${event.mechanicName}. Hay que corregirlo y reenviarlo:
 ${event.comment ?? ''}`,
+  };
+}
+
+/**
+ * `document.expiring` y `light-service.due` → MANTENEDOR + ADMIN (Módulo 4 ·
+ * R21): para no operar con documentos vencidos ni pasarse de la mantención.
+ */
+export const VENCIMIENTO_ROLES: readonly Role[] = [
+  ROLES.MANTENEDOR,
+  ROLES.ADMIN,
+];
+
+function nombreEquipo(code: string, plate: string | null): string {
+  return plate ? `${code} (${plate})` : code;
+}
+
+function fechaLegible(dateOnly: string): string {
+  const [y, m, d] = dateOnly.split('-');
+  return `${d}-${m}-${y}`;
+}
+
+export function buildDocumentExpiringTemplate(
+  event: DocumentExpiringEvent,
+): NotificationTemplate {
+  const equipo = nombreEquipo(event.equipmentCode, event.licensePlate);
+  const fecha = fechaLegible(event.expiryDate);
+  if (event.kind === 'VENCIDO') {
+    return {
+      tipo: DOMAIN_EVENTS.DOCUMENT_EXPIRING,
+      titulo: `${event.documentLabel} vencido: ${equipo}`,
+      cuerpo: `${event.documentLabel} de ${equipo} venció el ${fecha}. No operar el equipo hasta renovarlo.`,
+    };
+  }
+  const dias =
+    event.daysToExpiry === 0
+      ? 'vence hoy'
+      : `vence en ${event.daysToExpiry} ${event.daysToExpiry === 1 ? 'día' : 'días'}`;
+  return {
+    tipo: DOMAIN_EVENTS.DOCUMENT_EXPIRING,
+    titulo: `${event.documentLabel} por vencer: ${equipo}`,
+    cuerpo: `${event.documentLabel} de ${equipo} ${dias} (${fecha}).`,
+  };
+}
+
+export function buildLightServiceDueTemplate(
+  event: LightServiceDueEvent,
+): NotificationTemplate {
+  const equipo = nombreEquipo(event.equipmentCode, event.licensePlate);
+  const faltan =
+    event.remainingKm <= 0
+      ? 'ya le toca'
+      : `le faltan ${formatNumber(event.remainingKm)} km`;
+  return {
+    tipo: DOMAIN_EVENTS.LIGHT_SERVICE_DUE,
+    titulo: `Mantención de ${formatNumber(event.nextKm)} km: ${equipo}`,
+    cuerpo: `A ${equipo} ${faltan} para la mantención de los ${formatNumber(event.nextKm)} km. La orden ya está en el tablero del taller.`,
   };
 }

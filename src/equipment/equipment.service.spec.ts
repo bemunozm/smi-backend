@@ -1437,7 +1437,7 @@ describe('EquipmentService', () => {
           equipmentId: { in: ['eq_1', 'eq_2'] },
           expiryDate: { not: null },
         },
-        select: { equipmentId: true, expiryDate: true },
+        select: { equipmentId: true, expiryDate: true, alertDaysBefore: true },
       });
     });
 

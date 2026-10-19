@@ -15,6 +15,8 @@ import {
   type OrdenAssignedEvent,
   type OrdenCompletedEvent,
   type ChecklistReviewedEvent,
+  type DocumentExpiringEvent,
+  type LightServiceDueEvent,
   type ChecklistSubmittedEvent,
   type RecordEditedEvent,
   type ShiftExitReportSentEvent,
@@ -30,6 +32,9 @@ import {
   ORDEN_COMPLETED_ROLES,
   RECORD_EDITED_ROLES,
   CHECKLIST_REVIEWED_ROLES,
+  VENCIMIENTO_ROLES,
+  buildDocumentExpiringTemplate,
+  buildLightServiceDueTemplate,
   CHECKLIST_SUBMITTED_ROLES,
   buildChecklistReviewedTemplate,
   buildChecklistSubmittedTemplate,
@@ -123,6 +128,26 @@ export class NotificationsListener {
     await this.notifications.createForRoles(CHECKLIST_REVIEWED_ROLES, {
       ...template,
       data,
+    });
+  }
+
+  @OnEvent(DOMAIN_EVENTS.DOCUMENT_EXPIRING)
+  async onDocumentExpiring(event: DocumentExpiringEvent): Promise<void> {
+    await this.notifications.createForRoles(VENCIMIENTO_ROLES, {
+      ...buildDocumentExpiringTemplate(event),
+      data: {
+        documentId: event.documentId,
+        equipmentId: event.equipmentId,
+        kind: event.kind,
+      },
+    });
+  }
+
+  @OnEvent(DOMAIN_EVENTS.LIGHT_SERVICE_DUE)
+  async onLightServiceDue(event: LightServiceDueEvent): Promise<void> {
+    await this.notifications.createForRoles(VENCIMIENTO_ROLES, {
+      ...buildLightServiceDueTemplate(event),
+      data: { equipmentId: event.equipmentId, ordenId: event.ordenId },
     });
   }
 

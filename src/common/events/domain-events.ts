@@ -20,6 +20,8 @@ export const DOMAIN_EVENTS = {
   RECORD_EDITED: 'record.edited',
   CHECKLIST_SUBMITTED: 'checklist.submitted',
   CHECKLIST_REVIEWED: 'checklist.reviewed',
+  DOCUMENT_EXPIRING: 'document.expiring',
+  LIGHT_SERVICE_DUE: 'light-service.due',
 } as const;
 
 export type DomainEventName =
@@ -136,4 +138,37 @@ export interface ChecklistReviewedEvent {
   reviewerName: string;
   mechanicId: string;
   mechanicName: string;
+}
+
+/**
+ * Módulo 4 · R21: un documento del equipo entró en su plazo de aviso
+ * (`POR_VENCER`) o venció (`VENCIDO`). Le llega al mantenedor y al
+ * administrador una sola vez por documento, aviso y fecha.
+ */
+export interface DocumentExpiringEvent {
+  documentId: string;
+  equipmentId: string;
+  equipmentCode: string;
+  licensePlate: string | null;
+  /** «Revisión técnica», «Seguro»… o el título del documento. */
+  documentLabel: string;
+  kind: 'POR_VENCER' | 'VENCIDO';
+  /** `YYYY-MM-DD`. */
+  expiryDate: string;
+  /** Negativo si ya venció. */
+  daysToExpiry: number;
+}
+
+/**
+ * Módulo 4 · R21: a un vehículo liviano le falta poco para su mantención de
+ * cada 10.000 km. Ya se creó la orden PREVENTIVA en el tablero del taller.
+ */
+export interface LightServiceDueEvent {
+  equipmentId: string;
+  equipmentCode: string;
+  licensePlate: string | null;
+  ordenId: string;
+  /** El kilometraje en que toca (30.000). */
+  nextKm: number;
+  remainingKm: number;
 }

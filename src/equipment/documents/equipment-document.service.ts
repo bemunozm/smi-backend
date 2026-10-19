@@ -31,6 +31,8 @@ export interface EquipmentDocumentResponse {
   /** Nombre "humano" del archivo (el que subió el usuario). */
   fileName: string | null;
   notes: string | null;
+  /** Con cuántos días de anticipación se avisa que vence. */
+  alertDaysBefore: number;
   createdAt: Date;
   updatedAt: Date;
   status: DocumentStatus;
@@ -45,6 +47,7 @@ const CAMPO_LABEL: Record<string, string> = {
   expiryDate: 'Vencimiento',
   fileName: 'Nombre del archivo',
   notes: 'Notas',
+  alertDaysBefore: 'Avisar días antes',
 };
 
 const UPDATE_FIELDS = {
@@ -53,6 +56,7 @@ const UPDATE_FIELDS = {
   expiryDate: true,
   fileName: true,
   notes: true,
+  alertDaysBefore: true,
 } as const;
 
 /** El vencimiento viaja como texto ISO (o fecha sola): se compara como
@@ -64,6 +68,18 @@ function withExpiryAsInstant(
   const parsed = new Date(values.expiryDate);
   if (Number.isNaN(parsed.getTime())) return values;
   return { ...values, expiryDate: parsed };
+}
+
+/**
+ * El formulario manda el vencimiento como fecha sola (`YYYY-MM-DD`) y Prisma
+ * exige un instante: sin convertirlo, guardar un documento con vencimiento
+ * fallaba con 500. `new Date('2026-11-08')` es la medianoche UTC de ese día.
+ */
+function aFecha<T extends string | null | undefined>(
+  value: T,
+): Date | Exclude<T, string> {
+  return (typeof value === 'string' ? new Date(value) : value) as
+    Date | Exclude<T, string>;
 }
 
 @Injectable()
@@ -129,6 +145,7 @@ export class EquipmentDocumentService {
           ...(id ? { id } : {}),
           equipmentId,
           ...rest,
+          expiryDate: aFecha(rest.expiryDate),
           fileKey: finalKey,
           createdById: userId,
         },
@@ -187,10 +204,11 @@ export class EquipmentDocumentService {
     // Mismo criterio que `create`: el `try/catch` cubre
     // SOLO la escritura en Prisma. El borrado del archivo viejo y el shaping
     // van DESPUÉS, fuera del try.
+    const datos = { ...rest, expiryDate: aFecha(rest.expiryDate) };
     const write = (db: Prisma.TransactionClient) =>
       db.equipmentDocument.update({
         where: { id },
-        data: finalKey !== undefined ? { ...rest, fileKey: finalKey } : rest,
+        data: finalKey !== undefined ? { ...datos, fileKey: finalKey } : datos,
       });
 
     let document: EquipmentDocument;
@@ -278,6 +296,8 @@ export class EquipmentDocumentService {
   ): Promise<EquipmentDocumentResponse> {
     const { status, daysToExpiry } = buildDocumentExpiryInfo(
       document.expiryDate,
+      new Date(),
+      document.alertDaysBefore,
     );
     return {
       id: document.id,
@@ -294,6 +314,7 @@ export class EquipmentDocumentService {
         : null,
       fileName: document.fileName,
       notes: document.notes,
+      alertDaysBefore: document.alertDaysBefore,
       createdAt: document.createdAt,
       updatedAt: document.updatedAt,
       status,

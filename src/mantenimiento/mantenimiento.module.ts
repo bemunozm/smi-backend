@@ -6,6 +6,8 @@ import { StorageModule } from '../storage/storage.module';
 import { ActividadesController } from './actividades.controller';
 import { DailyChecklistsController } from './daily-checklists/daily-checklists.controller';
 import { DailyChecklistsService } from './daily-checklists/daily-checklists.service';
+import { VencimientosController } from './vencimientos/vencimientos.controller';
+import { VencimientosService } from './vencimientos/vencimientos.service';
 import { MaintenancePlansController } from './maintenance-plans/maintenance-plans.controller';
 import { MaintenancePlansService } from './maintenance-plans/maintenance-plans.service';
 import { ActividadesService } from './actividades.service';
@@ -29,6 +31,7 @@ import { UmbralesService } from './umbrales.service';
     ActividadesController,
     MaintenancePlansController,
     DailyChecklistsController,
+    VencimientosController,
   ],
   providers: [
     OrdenesService,
@@ -37,6 +40,7 @@ import { UmbralesService } from './umbrales.service';
     ActividadesService,
     MaintenancePlansService,
     DailyChecklistsService,
+    VencimientosService,
   ],
 })
 export class MantenimientoModule {}
