@@ -857,12 +857,16 @@ export class EquipmentService {
 
     const documentos = await this.prisma.equipmentDocument.findMany({
       where: { equipmentId: { in: idsUnicos }, expiryDate: { not: null } },
-      select: { equipmentId: true, expiryDate: true },
+      select: { equipmentId: true, expiryDate: true, alertDaysBefore: true },
     });
 
     const alertas = new Map<string, DocumentsAlert>();
     for (const documento of documentos) {
-      const { status } = buildDocumentExpiryInfo(documento.expiryDate);
+      const { status } = buildDocumentExpiryInfo(
+        documento.expiryDate,
+        new Date(),
+        documento.alertDaysBefore,
+      );
       if (status !== 'VENCIDO' && status !== 'POR_VENCER') continue;
 
       // VENCIDO ya es la urgencia máxima: si el equipo ya tiene una alerta

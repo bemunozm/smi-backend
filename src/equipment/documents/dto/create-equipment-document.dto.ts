@@ -2,11 +2,14 @@ import { EquipmentDocumentType } from '@prisma/client';
 import {
   IsDateString,
   IsEnum,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
@@ -59,4 +62,14 @@ export class CreateEquipmentDocumentDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+
+  /**
+   * Módulo 4: con cuántos días de anticipación avisar que vence (1 a 365).
+   * Sin dato, el documento usa 30.
+   */
+  @IsOptional()
+  @IsInt({ message: 'Los días de aviso tienen que ser un número entero.' })
+  @Min(1, { message: 'Avisa al menos 1 día antes.' })
+  @Max(365, { message: 'El aviso puede ser hasta 365 días antes.' })
+  alertDaysBefore?: number;
 }

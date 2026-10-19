@@ -329,6 +329,10 @@ model EquipmentDocument {
   /// un uuid sin significado para el usuario.
   fileName   String?               @map("file_name")
   notes      String?
+  /// Módulo 4 · R21: con cuántos días de anticipación avisar que vence. Lo
+  /// elige quien carga el documento; también marca desde cuándo la ficha lo
+  /// muestra «por vencer».
+  alertDaysBefore Int @default(30) @map("alert_days_before")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -338,8 +342,27 @@ model EquipmentDocument {
   /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
   createdById String? @map("created_by_id")
 
+  expiryAlerts DocumentExpiryAlert[]
+
   @@index([equipmentId])
   @@map("equipment_document")
+}
+
+/// Aviso de vencimiento ya enviado (Módulo 4 · R21): uno por documento, tipo
+/// de aviso y fecha de vencimiento. Así la revisión periódica no repite el
+/// aviso, y si el documento se renueva (otra fecha) vuelve a avisar.
+model DocumentExpiryAlert {
+  id         String            @id @default(cuid())
+  documentId String            @map("document_id")
+  document   EquipmentDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  /// `POR_VENCER` (entró en el plazo de aviso) o `VENCIDO`.
+  kind       String
+  /// El vencimiento que se avisó.
+  expiryDate DateTime          @map("expiry_date")
+  createdAt  DateTime          @default(now()) @map("created_at")
+
+  @@unique([documentId, kind, expiryDate])
+  @@map("document_expiry_alert")
 }
 
 // ============================================================================

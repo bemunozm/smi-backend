@@ -39,7 +39,9 @@ function assertNonEmptyId(id: string, param = 'id'): void {
  *
  * Lectura abierta a cualquier sesión autenticada (el `AuthGuard` global ya
  * exige sesión) — mismo criterio que `EquipmentController.findAll/findOne`.
- * Escritura restringida a SUPERVISOR/ADMIN, igual que `/api/files`.
+ * Escritura solo para ADMIN (Módulo 4, decisión de Joaquín del 19/10): el
+ * administrador carga los documentos; mantenedor y administrador reciben los
+ * avisos de vencimiento.
  */
 @Controller('equipment')
 export class EquipmentDocumentController {
@@ -55,7 +57,7 @@ export class EquipmentDocumentController {
   }
 
   @Post(':equipmentId/documents')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.ADMIN])
   async create(
     @Param('equipmentId') equipmentId: string,
     @Body() dto: CreateEquipmentDocumentDto,
@@ -69,7 +71,7 @@ export class EquipmentDocumentController {
   }
 
   @Patch('documents/:id')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.ADMIN])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentDocumentDto,
@@ -84,7 +86,7 @@ export class EquipmentDocumentController {
   }
 
   @Delete('documents/:id')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.ADMIN])
   async remove(@Param('id') id: string) {
     assertNonEmptyId(id);
     await this.service.remove(id);

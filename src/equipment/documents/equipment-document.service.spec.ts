@@ -123,6 +123,27 @@ describe('EquipmentDocumentService', () => {
       expect(result).not.toHaveProperty('fileKey');
     });
 
+    it('el vencimiento del formulario (YYYY-MM-DD) se guarda como fecha, no como texto', async () => {
+      equipmentFindUnique.mockResolvedValue({ id: 'eq_1' });
+      documentCreate.mockResolvedValue({ ...RAW_DOCUMENT, fileKey: null });
+
+      await service.create(
+        'eq_1',
+        {
+          type: EquipmentDocumentType.INSURANCE,
+          expiryDate: '2026-11-08',
+          alertDaysBefore: 45,
+        },
+        USER_ID,
+      );
+
+      const [{ data }] = documentCreate.mock.calls[0] as [
+        { data: { expiryDate: Date; alertDaysBefore: number } },
+      ];
+      expect(data.expiryDate).toEqual(new Date('2026-11-08T00:00:00.000Z'));
+      expect(data.alertDaysBefore).toBe(45);
+    });
+
     it('con fileKey reclama la key tmp y crea con la key final + fileName', async () => {
       equipmentFindUnique.mockResolvedValue({ id: 'eq_1' });
       claimTmp.mockResolvedValue('equipment-documents/final.pdf');
