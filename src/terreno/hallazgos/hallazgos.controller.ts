@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   Param,
@@ -69,5 +70,14 @@ export class HallazgosController {
   @Get(':id/changes')
   async findChanges(@Param('id') id: string) {
     return { data: await this.service.findChanges(id), message: 'ok' };
+  }
+
+  /** Eliminación definitiva — solo el administrador, desde su vista de
+   * hallazgos. Los supervisores corrigen con PATCH, nunca borran. */
+  @Delete(':id')
+  @Roles([ROLES.ADMIN])
+  async remove(@Param('id') id: string) {
+    await this.service.remove(id);
+    return { data: null, message: 'Hallazgo eliminado' };
   }
 }

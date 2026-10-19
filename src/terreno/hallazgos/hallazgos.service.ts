@@ -310,6 +310,27 @@ export class HallazgosService {
   }
 
   /**
+   * Elimina un hallazgo — solo el administrador (ver controller). La foto del
+   * bucket se suelta best-effort DESPUÉS de borrar la fila (si el borrado
+   * falla, la foto sigue donde debe). Las OT/actividades que lo referencian
+   * son soft refs (`hallazgoId` sin FK) y conservan su valor; el historial de
+   * cambios (`ChangeLog`) también se conserva como traza.
+   */
+  async remove(id: string) {
+    const registro = await this.prisma.hallazgo.findUnique({
+      where: { id },
+      select: { fotoKey: true },
+    });
+    if (!registro) throw new NotFoundException('Hallazgo no encontrado');
+
+    await this.prisma.hallazgo.delete({ where: { id } });
+
+    if (registro.fotoKey) {
+      await this.storage.deleteBestEffort(registro.fotoKey);
+    }
+  }
+
+  /**
    * Nunca devuelve `fotoKey` — solo `fotoUrl`, firmada cuando el registro
    * tiene key (subida nueva por R2/MinIO) o el valor legacy tal cual (subida
    * vieja por `/api/uploads`). Genérico sobre `T` para no perder los campos
