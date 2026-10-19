@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -18,6 +22,7 @@ describe('HallazgosService', () => {
       findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      delete: jest.fn(),
     },
     // La corrección y su registro de cambios van en una sola transacción.
     $transaction: jest.fn(),
@@ -27,7 +32,12 @@ describe('HallazgosService', () => {
   const eventEmitter = { emit: jest.fn() };
   // La foto va al storage privado: `claimTmp` mueve la key temporal a su
   // lugar definitivo y `sign` la firma al devolverla.
-  const storage = { claimTmp: jest.fn(), sign: jest.fn(), discard: jest.fn() };
+  const storage = {
+    claimTmp: jest.fn(),
+    sign: jest.fn(),
+    discard: jest.fn(),
+    deleteBestEffort: jest.fn(),
+  };
   const changeLog = { record: jest.fn(), findFor: jest.fn() };
 
   beforeEach(async () => {
@@ -621,6 +631,42 @@ describe('HallazgosService', () => {
         expect(prisma.hallazgo.update).not.toHaveBeenCalled();
         expect(changeLog.record).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('remove', () => {
+    it('borra la fila y suelta la foto del bucket (best-effort, después del delete)', async () => {
+      prisma.hallazgo.findUnique.mockResolvedValue({ fotoKey: 'hallazgo-photos/h1.jpg' });
+
+      await service.remove('h1');
+
+      expect(prisma.hallazgo.delete).toHaveBeenCalledWith({ where: { id: 'h1' } });
+      expect(storage.deleteBestEffort).toHaveBeenCalledWith('hallazgo-photos/h1.jpg');
+    });
+
+    it('sin foto no toca el storage', async () => {
+      prisma.hallazgo.findUnique.mockResolvedValue({ fotoKey: null });
+
+      await service.remove('h1');
+
+      expect(prisma.hallazgo.delete).toHaveBeenCalledWith({ where: { id: 'h1' } });
+      expect(storage.deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('un id inexistente da 404 sin borrar nada', async () => {
+      prisma.hallazgo.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove('nope')).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.hallazgo.delete).not.toHaveBeenCalled();
+      expect(storage.deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('si el delete falla, la foto NO se suelta', async () => {
+      prisma.hallazgo.findUnique.mockResolvedValue({ fotoKey: 'hallazgo-photos/h1.jpg' });
+      prisma.hallazgo.delete.mockRejectedValue(new Error('db caída'));
+
+      await expect(service.remove('h1')).rejects.toThrow('db caída');
+      expect(storage.deleteBestEffort).not.toHaveBeenCalled();
     });
   });
 });
