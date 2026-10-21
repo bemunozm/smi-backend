@@ -14,6 +14,7 @@ import {
   type PendingStockEvents,
 } from '../inventory/stock.service';
 import { StorageService } from '../storage/storage.service';
+import { resolveAsignadosMap } from './common/asignado.util';
 import type { CreateIntervencionDto } from './dto/create-intervencion.dto';
 import type { IntervencionResponseDto } from './dto/intervencion-response.dto';
 
@@ -27,6 +28,7 @@ const INTERVENCION_SELECT = {
   fotoKey: true,
   soloLectura: true,
   fecha: true,
+  realizadaPorId: true,
   insumos: {
     select: { id: true, insumoId: true, cantidad: true },
   },
@@ -55,8 +57,14 @@ export class IntervencionesService {
       orderBy: { fecha: 'desc' },
     });
 
+    const nombres = await resolveAsignadosMap(
+      this.prisma,
+      intervenciones.map((intervencion) => intervencion.realizadaPorId),
+    );
     return Promise.all(
-      intervenciones.map((intervencion) => this.toResponseDto(intervencion)),
+      intervenciones.map((intervencion) =>
+        this.toResponseDto(intervencion, nombres),
+      ),
     );
   }
 
@@ -88,7 +96,7 @@ export class IntervencionesService {
           ownerId: createdById,
           // El reintento devuelve la fila ya creada SIN repetir el descuento:
           // los movimientos de stock salieron con la transacción original.
-          result: () => this.toResponseDto(intervencion),
+          result: () => this.shapeOne(intervencion),
         };
       },
       create: () => this.createFresh(orden, dto, userId),
@@ -182,7 +190,17 @@ export class IntervencionesService {
       `Intervención registrada en orden ${orden.id}: ${intervencion.id}`,
     );
 
-    return this.toResponseDto(intervencion);
+    return this.shapeOne(intervencion);
+  }
+
+  /** `toResponseDto` para UNA fila: resuelve su `realizadaPor` por su cuenta. */
+  private async shapeOne(
+    intervencion: SelectedIntervencion,
+  ): Promise<IntervencionResponseDto> {
+    const nombres = await resolveAsignadosMap(this.prisma, [
+      intervencion.realizadaPorId,
+    ]);
+    return this.toResponseDto(intervencion, nombres);
   }
 
   /** Resuelve la unidad de Flota desde el `equipoId` libre de la OT. */
@@ -223,6 +241,7 @@ export class IntervencionesService {
    */
   private async toResponseDto(
     intervencion: SelectedIntervencion,
+    nombres: Map<string, { nombre: string }>,
   ): Promise<IntervencionResponseDto> {
     return {
       id: intervencion.id,
@@ -235,6 +254,10 @@ export class IntervencionesService {
         ? await this.storage.sign(intervencion.fotoKey)
         : null,
       soloLectura: intervencion.soloLectura,
+      realizadaPor:
+        (intervencion.realizadaPorId &&
+          nombres.get(intervencion.realizadaPorId)?.nombre) ||
+        null,
       insumos: intervencion.insumos.map((insumo) => ({
         id: insumo.id,
         insumoId: insumo.insumoId,
