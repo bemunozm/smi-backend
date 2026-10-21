@@ -24,6 +24,8 @@ describe('HallazgosService', () => {
       update: jest.fn(),
       delete: jest.fn(),
     },
+    // `createdById` es soft ref a `user.id`: el nombre se resuelve en lote.
+    user: { findMany: jest.fn() },
     // La corrección y su registro de cambios van en una sola transacción.
     $transaction: jest.fn(),
     // Bloqueo de la fila (`FOR UPDATE`) cuando la edición trae `X-Expected`.
@@ -59,6 +61,7 @@ describe('HallazgosService', () => {
       id: 'e1',
       internalCode: 'CA-011',
     });
+    prisma.user.findMany.mockReset().mockResolvedValue([]);
     storage.claimTmp.mockImplementation((key) => `hallazgo-photos/${key}`);
     storage.sign.mockImplementation((key) => `https://signed.example/${key}`);
     prisma.hallazgo.create.mockImplementation(
@@ -67,6 +70,53 @@ describe('HallazgosService', () => {
         ...data,
       }),
     );
+  });
+
+  describe('registradoPor — quién registró el hallazgo', () => {
+    const base = { equipoId: 'e1', descripcion: 'Fuga', prioridad: 'ALTA' };
+    const fila = (id: string, createdById: string) => ({
+      id,
+      equipoId: 'e1',
+      descripcion: 'Fuga',
+      prioridad: 'ALTA',
+      estado: 'ABIERTO',
+      fecha: new Date('2026-10-20T10:00:00Z'),
+      fotoKey: null,
+      fotoUrl: null,
+      createdById,
+      equipo: { internalCode: 'CA-011' },
+    });
+
+    it('al crear expone el nombre de quien lo registró, nunca createdById', async () => {
+      prisma.user.findMany.mockResolvedValue([{ id: 'u1', name: 'Ana Soto' }]);
+
+      const res = await service.create(base, 'u1');
+
+      expect(res.registradoPor).toBe('Ana Soto');
+      expect('createdById' in res).toBe(false);
+    });
+
+    it('findAll resuelve los nombres de todos los creadores en UN solo query', async () => {
+      prisma.hallazgo.findMany.mockResolvedValue([fila('h1', 'u1'), fila('h2', 'u2')]);
+      prisma.user.findMany.mockResolvedValue([
+        { id: 'u1', name: 'Ana Soto' },
+        { id: 'u2', name: 'Pedro Pérez' },
+      ]);
+
+      const res = await service.findAll();
+
+      expect(res.map((r) => r.registradoPor)).toEqual(['Ana Soto', 'Pedro Pérez']);
+      expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('usuario borrado o desconocido: registradoPor queda null', async () => {
+      prisma.hallazgo.findMany.mockResolvedValue([fila('h1', 'u-borrado')]);
+      prisma.user.findMany.mockResolvedValue([]);
+
+      const res = await service.findAll();
+
+      expect(res[0]!.registradoPor).toBeNull();
+    });
   });
 
   it('crea con estado ABIERTO y guarda la prioridad', async () => {

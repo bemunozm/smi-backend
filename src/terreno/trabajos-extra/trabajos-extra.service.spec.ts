@@ -31,6 +31,8 @@ describe('TrabajosExtraService', () => {
     },
     // Se mockea para probar que un turno abierto no bloquea el trabajo.
     registroHorometro: { findFirst: jest.fn() },
+    // `createdById` es soft ref a `user.id`: el nombre se resuelve en lote.
+    user: { findMany: jest.fn() },
     // La edición y su registro de cambios van en una sola transacción.
     $transaction: jest.fn(),
     // Bloqueo de la fila (`FOR UPDATE`) cuando la edición trae `X-Expected`.
@@ -57,6 +59,7 @@ describe('TrabajosExtraService', () => {
       internalCode: 'CA-011',
     });
     prisma.registroHorometro.findFirst.mockResolvedValue(null);
+    prisma.user.findMany.mockReset().mockResolvedValue([]);
     prisma.trabajoExtraordinario.findUnique.mockResolvedValue(null);
     prisma.trabajoExtraordinario.findFirst.mockResolvedValue(null);
     prisma.trabajoExtraordinario.create.mockImplementation(
@@ -68,6 +71,45 @@ describe('TrabajosExtraService', () => {
       id: 'op_1',
       name: 'Juan Rojas',
       isActive: true,
+    });
+  });
+
+  describe('registradoPor — quién registró el trabajo', () => {
+    const base: CreateTrabajoExtraDto = {
+      equipoId: 'e1',
+      operatorId: 'op_1',
+      faena: 'Rajo Norte',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      actividades: ['REGULACION_CARGA'],
+      descripcion: 'Carga de material',
+    };
+
+    it('al crear expone el nombre de quien lo registró, nunca createdById', async () => {
+      prisma.user.findMany.mockResolvedValue([{ id: USER_ID, name: 'Ana Soto' }]);
+
+      const res = await createAs(base);
+
+      expect(res.registradoPor).toBe('Ana Soto');
+      expect('createdById' in res).toBe(false);
+    });
+
+    it('findAll resuelve los nombres de todos los creadores en UN solo query', async () => {
+      prisma.trabajoExtraordinario.findMany.mockResolvedValue([
+        { id: 't1', createdById: 'u1', equipo: { internalCode: 'CA-011' } },
+        { id: 't2', createdById: 'u2', equipo: { internalCode: 'PE-004' } },
+      ]);
+      prisma.user.findMany.mockResolvedValue([
+        { id: 'u1', name: 'Ana Soto' },
+        { id: 'u2', name: 'Pedro Pérez' },
+      ]);
+
+      const res = await service.findAll();
+
+      expect(res.map((r) => r.registradoPor)).toEqual(['Ana Soto', 'Pedro Pérez']);
+      expect(res.every((r) => !('createdById' in r))).toBe(true);
+      expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -395,7 +437,9 @@ describe('TrabajosExtraService', () => {
 
       const res = await createAs(payload);
 
-      expect(res).toEqual({ id: ID, operador: 'Juan Rojas' });
+      // `registradoPor: null`: el reintento igual pasa por `findOne`, que
+      // resuelve el nombre (acá el mock de `user.findMany` devuelve vacío).
+      expect(res).toEqual({ id: ID, operador: 'Juan Rojas', registradoPor: null });
       expect(prisma.equipment.findUnique).not.toHaveBeenCalled();
       expect(assertActive).not.toHaveBeenCalled();
       expect(prisma.registroHorometro.findFirst).not.toHaveBeenCalled();
@@ -413,7 +457,7 @@ describe('TrabajosExtraService', () => {
         capturedAt: '2001-01-01T00:00:00.000Z',
       });
 
-      expect(res).toEqual({ id: ID });
+      expect(res).toEqual({ id: ID, registradoPor: null });
     });
 
     it('otro usuario con el mismo id -> 409 ID_CONFLICT', async () => {
@@ -446,7 +490,7 @@ describe('TrabajosExtraService', () => {
         .mockResolvedValueOnce(winner);
       prisma.trabajoExtraordinario.create.mockRejectedValueOnce(p2002());
 
-      await expect(createAs(payload)).resolves.toEqual({ id: ID });
+      await expect(createAs(payload)).resolves.toEqual({ id: ID, registradoPor: null });
     });
 
     it('carrera P2002 contra otro usuario -> 409 ID_CONFLICT', async () => {
