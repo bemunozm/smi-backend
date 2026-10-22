@@ -37,6 +37,7 @@ describe('EquipmentDocumentService', () => {
   const deleteBestEffort = jest.fn();
   const sign = jest.fn();
   const queryRaw = jest.fn();
+  const lightConfigFindUnique = jest.fn();
 
   beforeEach(async () => {
     [
@@ -51,6 +52,7 @@ describe('EquipmentDocumentService', () => {
       deleteBestEffort,
       sign,
       queryRaw,
+      lightConfigFindUnique,
     ].forEach((m) => m.mockReset());
     sign.mockResolvedValue('https://minio.local/signed/x');
 
@@ -61,6 +63,8 @@ describe('EquipmentDocumentService', () => {
           provide: PrismaService,
           useValue: {
             equipment: { findUnique: equipmentFindUnique },
+            // Configuración del liviano (Módulo 4): sin fila, valen 30 días.
+            lightVehicleConfig: { findUnique: lightConfigFindUnique },
             equipmentDocument: {
               create: documentCreate,
               findMany: documentFindMany,
@@ -141,6 +145,31 @@ describe('EquipmentDocumentService', () => {
         { data: { expiryDate: Date; alertDaysBefore: number } },
       ];
       expect(data.expiryDate).toEqual(new Date('2026-11-08T00:00:00.000Z'));
+      expect(data.alertDaysBefore).toBe(45);
+    });
+
+    it('en un liviano, el aviso del seguro lo fija su «Asignar mantenciones», no el formulario', async () => {
+      equipmentFindUnique.mockResolvedValue({
+        id: 'eq_1',
+        equipmentClass: 'LIGHT',
+      });
+      lightConfigFindUnique.mockResolvedValue({
+        serviceAlertKm: 1000,
+        technicalInspectionAlertDays: 30,
+        circulationPermitAlertDays: 30,
+        insuranceAlertDays: 45,
+      });
+      documentCreate.mockResolvedValue({ ...RAW_DOCUMENT, fileKey: null });
+
+      await service.create(
+        'eq_1',
+        { type: EquipmentDocumentType.INSURANCE, alertDaysBefore: 10 },
+        USER_ID,
+      );
+
+      const [{ data }] = documentCreate.mock.calls[0] as [
+        { data: { alertDaysBefore: number } },
+      ];
       expect(data.alertDaysBefore).toBe(45);
     });
 

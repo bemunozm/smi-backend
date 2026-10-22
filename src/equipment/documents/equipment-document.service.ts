@@ -14,6 +14,7 @@ import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StorageService } from '../../storage/storage.service';
 import { buildDocumentExpiryInfo, DocumentStatus } from '../document-expiry';
+import { lightDocAlertDays } from '../../mantenimiento/vencimientos/light-config';
 import { CreateEquipmentDocumentDto } from './dto/create-equipment-document.dto';
 import { UpdateEquipmentDocumentDto } from './dto/update-equipment-document.dto';
 
@@ -131,6 +132,14 @@ export class EquipmentDocumentService {
     await this.assertEquipmentExists(equipmentId);
 
     const { id, fileKey, ...rest } = dto;
+    // En un liviano, el aviso de revisión técnica, permiso y seguro lo fija su
+    // «Asignar mantenciones» (Módulo 4), no el formulario del documento.
+    const diasLiviano = await lightDocAlertDays(
+      this.prisma,
+      equipmentId,
+      rest.type,
+    );
+    if (diasLiviano != null) rest.alertDaysBefore = diasLiviano;
     const finalKey = fileKey
       ? await this.storage.claimTmp(fileKey, userId, 'equipment-document')
       : undefined;
@@ -187,6 +196,13 @@ export class EquipmentDocumentService {
   ): Promise<EquipmentDocumentResponse> {
     const existente = await this.findOrThrow(id);
     const { fileKey, ...rest } = dto;
+    // Mismo criterio que `create`: en un liviano manda su configuración.
+    const diasLiviano = await lightDocAlertDays(
+      this.prisma,
+      existente.equipmentId,
+      rest.type ?? existente.type,
+    );
+    if (diasLiviano != null) rest.alertDaysBefore = diasLiviano;
 
     let finalKey: string | null | undefined;
     if (fileKey === undefined) {
