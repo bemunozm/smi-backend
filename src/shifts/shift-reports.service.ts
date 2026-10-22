@@ -27,7 +27,8 @@ import type { ShiftExitReportSentEvent } from '../common/events/domain-events';
 import { ERROR_CODES } from '../common/errors/error-codes';
 import { StorageService } from '../storage/storage.service';
 import { resolveCapturedAt } from '../common/dates/capture-time';
-import { assertShiftDateWithinWindow, parseDateOnlyUtc } from './date-only';
+import { assertShiftDateWithinWindow, formatDateOnly, parseDateOnlyUtc } from './date-only';
+import { resolveNombresUsuarios } from '../terreno/common/registrado-por.util';
 import { CreateShiftReportDto } from './dto/create-shift-report.dto';
 import { renderPdfBuffer } from './pdf/pdf-renderer';
 import {
@@ -46,6 +47,22 @@ const CARDS_INCLUDE = {
 type CardWithEquipo = Prisma.RegistroHorometroGetPayload<{
   include: typeof CARDS_INCLUDE;
 }>;
+
+/** Una fila del registro de reportes de salida (`GET /api/shift-reports`). */
+export interface ShiftReportListItem {
+  id: string;
+  /** `YYYY-MM-DD` del turno reportado. */
+  shiftDate: string;
+  /** DIURNO | NOCTURNO. */
+  shiftType: string;
+  /** Nombre del supervisor del turno — null si la cuenta ya no existe. */
+  supervisor: string | null;
+  cardCount: number;
+  /** PENDING | SENT | FAILED | SKIPPED. */
+  emailStatus: string;
+  fileName: string;
+  createdAt: string;
+}
 
 export interface ShiftReportResponse {
   id: string;
@@ -278,6 +295,42 @@ export class ShiftReportsService {
     } satisfies ShiftExitReportSentEvent);
 
     return this.shape(report, missingCardIds);
+  }
+
+  /**
+   * `GET /api/shift-reports` — el registro de reportes de salida para el
+   * administrador: cada fila con la fecha y el turno del `Shift`, el nombre
+   * del supervisor (soft ref resuelta en UN query) y el estado del correo.
+   * El PDF se descarga aparte por `GET /:id/file` (URL firmada).
+   */
+  async list(): Promise<ShiftReportListItem[]> {
+    const reportes = await this.prisma.shiftExitReport.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        cardCount: true,
+        emailStatus: true,
+        fileName: true,
+        createdAt: true,
+        shift: { select: { date: true, type: true, supervisorId: true } },
+      },
+    });
+
+    const nombres = await resolveNombresUsuarios(
+      this.prisma,
+      reportes.map((reporte) => reporte.shift.supervisorId),
+    );
+
+    return reportes.map((reporte) => ({
+      id: reporte.id,
+      shiftDate: formatDateOnly(reporte.shift.date),
+      shiftType: reporte.shift.type,
+      supervisor: nombres.get(reporte.shift.supervisorId) ?? null,
+      cardCount: reporte.cardCount,
+      emailStatus: reporte.emailStatus,
+      fileName: reporte.fileName,
+      createdAt: reporte.createdAt.toISOString(),
+    }));
   }
 
   /**
