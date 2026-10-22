@@ -26,8 +26,13 @@ describe('VencimientosService (Módulo 4)', () => {
   const prisma = {
     equipmentDocument: { findMany: jest.fn() },
     documentExpiryAlert: { create: jest.fn() },
-    equipment: { findMany: jest.fn() },
+    equipment: { findMany: jest.fn(), findUnique: jest.fn() },
     maintenancePlan: { findMany: jest.fn() },
+    lightVehicleConfig: {
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      upsert: jest.fn(),
+    },
     $transaction: jest.fn(),
   };
   const events = { emit: jest.fn() };
@@ -45,6 +50,9 @@ describe('VencimientosService (Módulo 4)', () => {
       (cb: (t: typeof tx) => Promise<unknown>) => cb(tx),
     );
     plans.statusForAll.mockResolvedValue([]);
+    // Sin configuración guardada: valen los valores por defecto.
+    prisma.lightVehicleConfig.findMany.mockResolvedValue([]);
+    prisma.lightVehicleConfig.findUnique.mockResolvedValue(null);
   });
 
   describe('checkDocuments', () => {
@@ -165,6 +173,36 @@ describe('VencimientosService (Módulo 4)', () => {
       expect(tx.ordenTrabajo.create).not.toHaveBeenCalled();
       // eq_2 tiene pauta: ni siquiera se busca su orden.
       expect(tx.ordenTrabajo.findFirst).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('configuración del liviano («Asignar mantenciones»)', () => {
+    it('el aviso en km configurado manda sobre los 1.000 de defecto', async () => {
+      prisma.equipment.findMany.mockResolvedValue([
+        { ...EQUIPO, currentMileage: 27_500 },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([]);
+      prisma.lightVehicleConfig.findMany.mockResolvedValue([
+        { equipmentId: 'eq_1', serviceAlertKm: 3_000 },
+      ]);
+      tx.ordenTrabajo.findFirst.mockResolvedValue(null);
+      tx.ordenTrabajo.create.mockResolvedValue({ id: 'ot_1' });
+
+      // A 2.500 km de los 30.000: con 1.000 no avisaría; con 3.000, sí.
+      expect(await service.checkLightServices()).toBe(1);
+    });
+
+    it('un equipo pesado no tiene configuración de liviano', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        ...EQUIPO,
+        brand: 'CAT',
+        model: '336',
+        equipmentClass: 'HEAVY',
+        currentMileage: null,
+      });
+      await expect(service.lightConfig('eq_1', HOY)).rejects.toThrow(
+        'no es liviano',
+      );
     });
   });
 

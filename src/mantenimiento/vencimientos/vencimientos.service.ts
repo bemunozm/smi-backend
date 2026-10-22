@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  NotFoundException,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
@@ -19,9 +20,16 @@ import {
   type DocumentStatus,
 } from '../../equipment/document-expiry';
 import { MaintenancePlansService } from '../maintenance-plans/maintenance-plans.service';
+import type { Editor } from '../../change-log/change-log.service';
+import {
+  LIGHT_DOC_ALERT_FIELD,
+  lightConfigOf,
+  type LightConfig,
+} from './light-config';
 import {
   DOCUMENT_TYPE_LABEL,
   DOCUMENT_TYPES_WITHOUT_EXPIRY,
+  LIGHT_SERVICE_INTERVAL_KM,
   documentAlertKind,
   nextLightService,
 } from './vencimientos-rules';
@@ -74,6 +82,32 @@ export interface CalendarEquipment {
   /** Documentos con vencimiento: los vencidos y los del año del calendario. */
   documents: CalendarDocument[];
   service: CalendarService | null;
+}
+
+/** «Asignar mantenciones» de un liviano: su configuración y cómo está hoy. */
+export interface LightConfigView {
+  equipment: {
+    id: string;
+    internalCode: string;
+    licensePlate: string | null;
+    brand: string;
+    model: string;
+    /** Odómetro actual, o `null` sin lectura. */
+    mileage: number | null;
+  };
+  /** Siempre 10.000 km (no se configura). */
+  intervalKm: number;
+  config: LightConfig;
+  /** La próxima mantención con el aviso configurado, o `null` sin odómetro. */
+  service: CalendarService | null;
+  /** El papel vigente más próximo de cada tipo con vencimiento, si hay. */
+  documents: {
+    type: 'TECHNICAL_INSPECTION' | 'CIRCULATION_PERMIT' | 'INSURANCE';
+    label: string;
+    expiryDate: string | null;
+    daysToExpiry: number | null;
+    status: DocumentStatus | null;
+  }[];
 }
 
 export interface CalendarView {
@@ -221,11 +255,16 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
       this.prisma.maintenancePlan.findMany({ select: { equipmentId: true } }),
     ]);
     const tienePauta = new Set(conPauta.map((p) => p.equipmentId));
+    const avisoKm = await this.avisosKm();
 
     let creadas = 0;
     for (const equipo of livianos) {
       if (tienePauta.has(equipo.id)) continue;
-      const servicio = nextLightService(equipo.currentMileage);
+      const servicio = nextLightService(
+        equipo.currentMileage,
+        LIGHT_SERVICE_INTERVAL_KM,
+        avisoKm.get(equipo.id),
+      );
       if (!servicio?.due) continue;
 
       // Es lo que identifica la orden de ese kilometraje (y lo que muestra el
@@ -321,6 +360,7 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
     const pautas = new Map(
       (await this.plans.statusForAll()).map((p) => [p.equipmentId, p]),
     );
+    const avisoKm = await this.avisosKm();
 
     return {
       months,
@@ -354,7 +394,12 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
               alertDaysBefore: d.alertDaysBefore,
             };
           }),
-          service: this.servicio(e, counter, pautas.get(e.id)),
+          service: this.servicio(
+            e,
+            counter,
+            pautas.get(e.id),
+            avisoKm.get(e.id),
+          ),
         };
       }),
     };
@@ -366,6 +411,7 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
     pauta:
       | Awaited<ReturnType<MaintenancePlansService['statusForAll']>>[number]
       | undefined,
+    alertKm?: number,
   ): CalendarService | null {
     if (pauta?.status.next) {
       const next = pauta.status.next;
@@ -378,7 +424,11 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
       };
     }
     if (e.controlUnit !== 'KM') return null;
-    const liviano = nextLightService(counter);
+    const liviano = nextLightService(
+      counter,
+      LIGHT_SERVICE_INTERVAL_KM,
+      alertKm,
+    );
     if (!liviano) return null;
     return {
       source: 'LIVIANO',
@@ -387,6 +437,128 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
       remaining: liviano.remainingKm,
       due: liviano.due,
     };
+  }
+
+  /** «Asignar mantenciones» de un liviano: configuración, mantención y papeles. */
+  async lightConfig(
+    equipmentId: string,
+    now: Date = new Date(),
+  ): Promise<LightConfigView> {
+    const equipo = await this.liviano(equipmentId);
+    const config = await lightConfigOf(this.prisma, equipmentId);
+    const documentos = await this.prisma.equipmentDocument.findMany({
+      where: {
+        equipmentId,
+        type: {
+          in: ['TECHNICAL_INSPECTION', 'CIRCULATION_PERMIT', 'INSURANCE'],
+        },
+        expiryDate: { not: null },
+      },
+      orderBy: { expiryDate: 'desc' },
+      select: { type: true, expiryDate: true, alertDaysBefore: true },
+    });
+    const tipos = [
+      'TECHNICAL_INSPECTION',
+      'CIRCULATION_PERMIT',
+      'INSURANCE',
+    ] as const;
+    return {
+      equipment: {
+        id: equipo.id,
+        internalCode: equipo.internalCode,
+        licensePlate: equipo.licensePlate,
+        brand: equipo.brand,
+        model: equipo.model,
+        mileage: equipo.currentMileage,
+      },
+      intervalKm: LIGHT_SERVICE_INTERVAL_KM,
+      config,
+      service: this.servicio(
+        { controlUnit: 'KM' },
+        equipo.currentMileage,
+        undefined,
+        config.serviceAlertKm,
+      ),
+      documents: tipos.map((type) => {
+        // El más nuevo de ese tipo: es el que está corriendo.
+        const doc = documentos.find((d) => d.type === type);
+        const info = doc
+          ? buildDocumentExpiryInfo(
+              doc.expiryDate,
+              now,
+              config[LIGHT_DOC_ALERT_FIELD[type]!],
+            )
+          : null;
+        return {
+          type,
+          label: DOCUMENT_TYPE_LABEL[type],
+          expiryDate: doc?.expiryDate ? diaDe(doc.expiryDate) : null,
+          daysToExpiry: info?.daysToExpiry ?? null,
+          status: info?.status ?? null,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Guarda la configuración del liviano y la aplica: los papeles de cada tipo
+   * del vehículo quedan con esos días de aviso, y se revisa de inmediato por
+   * si con los nuevos márgenes ya corresponde avisar.
+   */
+  async saveLightConfig(
+    equipmentId: string,
+    config: LightConfig,
+    editor: Editor,
+  ): Promise<LightConfigView> {
+    await this.liviano(equipmentId);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.lightVehicleConfig.upsert({
+        where: { equipmentId },
+        create: { equipmentId, ...config, updatedById: editor.id },
+        update: { ...config, updatedById: editor.id },
+      });
+      for (const [type, campo] of Object.entries(LIGHT_DOC_ALERT_FIELD)) {
+        await tx.equipmentDocument.updateMany({
+          where: {
+            equipmentId,
+            type: type as keyof typeof LIGHT_DOC_ALERT_FIELD,
+          },
+          data: { alertDaysBefore: config[campo] },
+        });
+      }
+    });
+    await this.checkAll();
+    return this.lightConfig(equipmentId);
+  }
+
+  private async liviano(equipmentId: string) {
+    const equipo = await this.prisma.equipment.findUnique({
+      where: { id: equipmentId },
+      select: {
+        id: true,
+        internalCode: true,
+        licensePlate: true,
+        brand: true,
+        model: true,
+        equipmentClass: true,
+        currentMileage: true,
+      },
+    });
+    if (!equipo) throw new NotFoundException('Equipo no encontrado');
+    if (equipo.equipmentClass !== 'LIGHT') {
+      throw new BadRequestException(
+        'Este equipo no es liviano: usa la pauta de mantención por hitos.',
+      );
+    }
+    return equipo;
+  }
+
+  /** Los km de aviso configurados, por equipo (los que no tienen, usan el de defecto). */
+  private async avisosKm(): Promise<Map<string, number>> {
+    const filas = await this.prisma.lightVehicleConfig.findMany({
+      select: { equipmentId: true, serviceAlertKm: true },
+    });
+    return new Map(filas.map((f) => [f.equipmentId, f.serviceAlertKm]));
   }
 
   private etiqueta(type: string, title: string | null): string {

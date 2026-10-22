@@ -1457,3 +1457,24 @@ model DailyChecklistReview {
   @@index([checklistId])
   @@map("daily_checklist_review")
 }
+
+/// «Asignar mantenciones» de un vehículo liviano (Módulo 4): los livianos no
+/// usan la pauta por hitos de los pesados. Su mantención es siempre cada
+/// 10.000 km; acá se elige con cuántos km avisar antes, y con cuántos días
+/// avisar antes de que venza cada papel. Sin fila, valen los valores por
+/// defecto. Soft ref → `equipment.id`, como el resto de Mantenimiento.
+model LightVehicleConfig {
+  equipmentId String @id @map("equipment_id")
+  /// Km antes de cada múltiplo de 10.000 en que se avisa y se crea la orden.
+  serviceAlertKm Int @default(1000) @map("service_alert_km")
+  /// Días antes del vencimiento de cada papel en que se avisa. Se copian a
+  /// `EquipmentDocument.alertDaysBefore` de ese tipo del vehículo.
+  technicalInspectionAlertDays Int @default(30) @map("technical_inspection_alert_days")
+  circulationPermitAlertDays   Int @default(30) @map("circulation_permit_alert_days")
+  insuranceAlertDays           Int @default(30) @map("insurance_alert_days")
+
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedById String?  @map("updated_by_id")
+
+  @@map("light_vehicle_config")
+}
