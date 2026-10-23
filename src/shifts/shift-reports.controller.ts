@@ -43,6 +43,18 @@ export class ShiftReportsController {
   }
 
   /**
+   * Registro de reportes para la vista «Reportes» del administrador.
+   * SOBRESCRIBE el gate de clase (SUPERVISOR+ADMIN): el listado completo —de
+   * todos los supervisores— es solo del administrador, mismo patrón de
+   * override por método que `UsersController.findAll`.
+   */
+  @Roles([ROLES.ADMIN])
+  @Get()
+  async list() {
+    return { data: await this.service.list(), message: 'ok' };
+  }
+
+  /**
    * "Descargar": 302 a una URL RECIÉN firmada — mismo patrón que
    * `EquipmentDocumentController.getFile`. Los errores (403/404) siguen el
    * `{data,message}` del filtro global: `@Redirect()` solo intercepta el

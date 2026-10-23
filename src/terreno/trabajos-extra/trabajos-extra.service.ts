@@ -13,6 +13,7 @@ import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { formatNumber } from '../../common/format/number';
 import { OperatorsService } from '../../operators/operators.service';
+import { resolveNombresUsuarios } from '../common/registrado-por.util';
 import { resolveCapturedAt } from '../../common/dates/capture-time';
 import { formatBusinessDate } from '../../common/dates/business-time';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
@@ -40,13 +41,15 @@ const TRABAJO_EXTRA_INCLUDE = {
   equipo: { select: { internalCode: true } },
 } satisfies Prisma.TrabajoExtraordinarioInclude;
 
-/** Un trabajo tal como sale a la API: sin `createdById`. */
+/** Un trabajo tal como sale a la API: sin `createdById` crudo — en su lugar
+ * va `registradoPor`, el nombre resuelto de quien lo registró (null si la
+ * cuenta ya no existe). */
 export type TrabajoExtraResponse = Omit<
   Prisma.TrabajoExtraordinarioGetPayload<{
     include: typeof TRABAJO_EXTRA_INCLUDE;
   }>,
   'createdById'
->;
+> & { registradoPor: string | null };
 
 /** Los datos de un trabajo que se pueden escribir, al crear o al editar. */
 type DatosTrabajo = Pick<
@@ -173,7 +176,7 @@ export class TrabajosExtraService {
       observaciones: dto.observaciones ?? null,
     });
 
-    return this.prisma.trabajoExtraordinario.create({
+    const creado = await this.prisma.trabajoExtraordinario.create({
       data: {
         ...(dto.id ? { id: dto.id } : {}),
         createdById: userId,
@@ -182,13 +185,20 @@ export class TrabajosExtraService {
       },
       include: TRABAJO_EXTRA_INCLUDE,
     });
+    const nombres = await resolveNombresUsuarios(this.prisma, [userId]);
+    return this.shape(creado, nombres);
   }
 
-  findAll(): Promise<TrabajoExtraResponse[]> {
-    return this.prisma.trabajoExtraordinario.findMany({
+  async findAll(): Promise<TrabajoExtraResponse[]> {
+    const registros = await this.prisma.trabajoExtraordinario.findMany({
       orderBy: { fecha: 'desc' },
       include: TRABAJO_EXTRA_INCLUDE,
     });
+    const nombres = await resolveNombresUsuarios(
+      this.prisma,
+      registros.map((r) => r.createdById),
+    );
+    return registros.map((r) => this.shape(r, nombres));
   }
 
   async findOne(id: string): Promise<TrabajoExtraResponse> {
@@ -197,7 +207,8 @@ export class TrabajosExtraService {
       include: TRABAJO_EXTRA_INCLUDE,
     });
     if (!reg) throw new NotFoundException('Registro no encontrado');
-    return reg;
+    const nombres = await resolveNombresUsuarios(this.prisma, [reg.createdById]);
+    return this.shape(reg, nombres);
   }
 
   /**
@@ -333,7 +344,22 @@ export class TrabajosExtraService {
       } satisfies RecordEditedEvent);
     }
 
-    return registro;
+    const nombres = await resolveNombresUsuarios(this.prisma, [
+      registro.createdById,
+    ]);
+    return this.shape(registro, nombres);
+  }
+
+  /** Cambia el `createdById` crudo por `registradoPor` (el nombre resuelto). */
+  private shape<T extends { createdById: string | null }>(
+    registro: T,
+    nombres: Map<string, string>,
+  ): Omit<T, 'createdById'> & { registradoPor: string | null } {
+    const { createdById, ...resto } = registro;
+    return {
+      ...resto,
+      registradoPor: (createdById && nombres.get(createdById)) || null,
+    };
   }
 
   /**

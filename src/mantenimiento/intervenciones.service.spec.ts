@@ -16,6 +16,7 @@ const MOCK_INTERVENCION = {
   fotoKey: null,
   soloLectura: false,
   fecha: new Date('2026-01-03T00:00:00.000Z'),
+  realizadaPorId: 'user_1',
   insumos: [{ id: 'insumo_row_1', insumoId: 'item_1', cantidad: 2 }],
 };
 
@@ -28,6 +29,7 @@ const MOCK_RESPONSE = {
   horometro: null,
   fotoUrl: null,
   soloLectura: false,
+  realizadaPor: 'Marco Díaz',
   insumos: [{ id: 'insumo_row_1', insumoId: 'item_1', cantidad: 2 }],
   fecha: '2026-01-03T00:00:00.000Z',
 };
@@ -46,6 +48,8 @@ describe('IntervencionesService', () => {
   const intervencionFindMany = jest.fn();
   const intervencionFindUnique = jest.fn();
   const equipmentFindUnique = jest.fn();
+  // `realizadaPorId` es soft ref a `user.id`: el nombre se resuelve en lote.
+  const userFindMany = jest.fn();
   const transaction = jest.fn();
   const txIntervencionCreate = jest.fn();
   const stockIssue = jest.fn();
@@ -78,6 +82,7 @@ describe('IntervencionesService', () => {
     intervencionFindUnique.mockResolvedValue(null);
     equipmentFindUnique.mockResolvedValue(null);
     stockIssue.mockResolvedValue({});
+    userFindMany.mockReset().mockResolvedValue([{ id: 'user_1', name: 'Marco Díaz' }]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -91,6 +96,7 @@ describe('IntervencionesService', () => {
               findUnique: intervencionFindUnique,
             },
             equipment: { findUnique: equipmentFindUnique },
+            user: { findMany: userFindMany },
             $transaction: transaction,
           },
         },
@@ -127,6 +133,21 @@ describe('IntervencionesService', () => {
     const result = await service.findAllByOrden('orden_1');
 
     expect(result).toEqual([MOCK_RESPONSE]);
+  });
+
+  it('findAllByOrden resuelve realizadaPor en UN solo query; cuenta borrada queda null', async () => {
+    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'EQ-1' });
+    intervencionFindMany.mockResolvedValue([
+      MOCK_INTERVENCION,
+      { ...MOCK_INTERVENCION, id: 'intervencion_2', realizadaPorId: 'u-borrado' },
+      // Fila anterior al campo: sin autor registrado.
+      { ...MOCK_INTERVENCION, id: 'intervencion_3', realizadaPorId: null },
+    ]);
+
+    const result = await service.findAllByOrden('orden_1');
+
+    expect(result.map((r) => r.realizadaPor)).toEqual(['Marco Díaz', null, null]);
+    expect(userFindMany).toHaveBeenCalledTimes(1);
   });
 
   it('create lanza NotFoundException si la orden no existe', async () => {

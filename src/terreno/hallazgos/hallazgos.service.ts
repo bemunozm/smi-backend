@@ -20,6 +20,7 @@ import {
   type Editor,
 } from '../../change-log/change-log.service';
 import { StorageService } from '../../storage/storage.service';
+import { resolveNombresUsuarios } from '../common/registrado-por.util';
 import { CreateHallazgoDto } from './dto/create-hallazgo.dto';
 import { UpdateHallazgoDto } from './dto/update-hallazgo.dto';
 
@@ -84,19 +85,21 @@ const HALLAZGO_INCLUDE = {
   equipo: { select: { internalCode: true } },
 } satisfies Prisma.HallazgoInclude;
 
-/** Un hallazgo tal como sale a la API: sin `createdById`. */
-type HallazgoWithEquipo = Omit<
-  Prisma.HallazgoGetPayload<{ include: typeof HALLAZGO_INCLUDE }>,
-  'createdById'
->;
+/** La fila completa con su equipo — `shape` la convierte en la forma de la API. */
+type HallazgoWithEquipo = Prisma.HallazgoGetPayload<{
+  include: typeof HALLAZGO_INCLUDE;
+}>;
 
 /**
  * Forma de un hallazgo en la API — nunca expone `fotoKey` (igual que
  * `CombustibleResponse`: `fotoUrl` es la key firmada cuando hay `fotoKey`, o
- * el valor legacy tal cual cuando el registro no tiene key).
+ * el valor legacy tal cual cuando el registro no tiene key) ni `createdById`
+ * crudo: en su lugar va `registradoPor`, el nombre resuelto de quien lo
+ * registró (null si la cuenta ya no existe).
  */
-export type HallazgoResponse<T> = Omit<T, 'fotoKey'> & {
+export type HallazgoResponse<T> = Omit<T, 'fotoKey' | 'createdById'> & {
   fotoUrl: string | null;
+  registradoPor: string | null;
 };
 
 @Injectable()
@@ -183,7 +186,8 @@ export class HallazgosService {
       descripcion: hallazgo.descripcion,
     } satisfies HallazgoCreatedEvent);
 
-    return this.shape(hallazgo);
+    const nombres = await resolveNombresUsuarios(this.prisma, [userId]);
+    return this.shape(hallazgo, nombres);
   }
 
   async findAll() {
@@ -191,7 +195,11 @@ export class HallazgosService {
       orderBy: { fecha: 'desc' },
       include: HALLAZGO_INCLUDE,
     });
-    return Promise.all(registros.map((r) => this.shape(r)));
+    const nombres = await resolveNombresUsuarios(
+      this.prisma,
+      registros.map((r) => r.createdById),
+    );
+    return Promise.all(registros.map((r) => this.shape(r, nombres)));
   }
 
   async findOne(id: string) {
@@ -200,7 +208,8 @@ export class HallazgosService {
       include: HALLAZGO_INCLUDE,
     });
     if (!reg) throw new NotFoundException('Hallazgo no encontrado');
-    return this.shape(reg);
+    const nombres = await resolveNombresUsuarios(this.prisma, [reg.createdById]);
+    return this.shape(reg, nombres);
   }
 
   /**
@@ -301,7 +310,10 @@ export class HallazgosService {
       } satisfies RecordEditedEvent);
     }
 
-    return this.shape(registro);
+    const nombres = await resolveNombresUsuarios(this.prisma, [
+      registro.createdById,
+    ]);
+    return this.shape(registro, nombres);
   }
 
   /** Los cambios de un hallazgo, del más reciente al más viejo. */
@@ -333,15 +345,22 @@ export class HallazgosService {
   /**
    * Nunca devuelve `fotoKey` — solo `fotoUrl`, firmada cuando el registro
    * tiene key (subida nueva por R2/MinIO) o el valor legacy tal cual (subida
-   * vieja por `/api/uploads`). Genérico sobre `T` para no perder los campos
+   * vieja por `/api/uploads`). `createdById` tampoco sale crudo: viaja como
+   * `registradoPor` (el nombre, resuelto por el caller con
+   * `resolveNombresUsuarios`). Genérico sobre `T` para no perder los campos
    * extra que traiga la fila, como el `equipo: { internalCode }` de `findAll`.
    */
   private async shape<
-    T extends { fotoUrl: string | null; fotoKey: string | null },
-  >(registro: T): Promise<HallazgoResponse<T>> {
-    const { fotoKey, fotoUrl, ...resto } = registro;
+    T extends {
+      fotoUrl: string | null;
+      fotoKey: string | null;
+      createdById: string | null;
+    },
+  >(registro: T, nombres: Map<string, string>): Promise<HallazgoResponse<T>> {
+    const { fotoKey, fotoUrl, createdById, ...resto } = registro;
     return {
       ...resto,
+      registradoPor: (createdById && nombres.get(createdById)) || null,
       fotoUrl: fotoKey ? await this.storage.sign(fotoKey) : fotoUrl,
     } as HallazgoResponse<T>;
   }

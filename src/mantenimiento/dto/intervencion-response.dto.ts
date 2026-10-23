@@ -16,6 +16,9 @@ export interface IntervencionResponseDto {
   /** URL firmada de la foto del cierre, o null. Nunca se expone la key. */
   fotoUrl: string | null;
   soloLectura: boolean;
+  /** Nombre de quien la realizó (`realizadaPorId` resuelto) — null en filas
+   * anteriores al campo o si la cuenta ya no existe. */
+  realizadaPor: string | null;
   insumos: IntervencionInsumoResponseDto[];
   fecha: string;
 }

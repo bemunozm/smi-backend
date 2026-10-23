@@ -72,12 +72,15 @@ describe('ShiftReportsService', () => {
   const prisma = {
     shiftExitReport: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
       create: jest.fn(),
       count: jest.fn(),
       updateMany: jest.fn(),
     },
     shift: { findUnique: jest.fn() },
     registroHorometro: { findMany: jest.fn() },
+    // `shift.supervisorId` es soft ref a `user.id`: el nombre se resuelve en lote.
+    user: { findMany: jest.fn() },
   };
   const storage = {
     putServerFile: jest.fn(),
@@ -132,6 +135,43 @@ describe('ShiftReportsService', () => {
         ...data,
       }),
     );
+  });
+
+  describe('list — registro de reportes para el administrador', () => {
+    const fila = (id: string, supervisorId: string) => ({
+      id,
+      cardCount: 3,
+      emailStatus: 'SENT',
+      fileName: `reporte-${id}.pdf`,
+      createdAt: new Date('2026-10-21T18:00:00.000Z'),
+      shift: {
+        date: new Date('2026-10-21T00:00:00.000Z'),
+        type: 'DIURNO',
+        supervisorId,
+      },
+    });
+
+    it('lista cada reporte con la fecha/turno del shift y el supervisor resuelto en UN query', async () => {
+      prisma.shiftExitReport.findMany.mockResolvedValue([fila('r2', 'u1'), fila('r1', 'u-borrado')]);
+      prisma.user.findMany.mockResolvedValue([{ id: 'u1', name: 'Ana Soto' }]);
+
+      const res = await service.list();
+
+      expect(res).toEqual([
+        {
+          id: 'r2',
+          shiftDate: '2026-10-21',
+          shiftType: 'DIURNO',
+          supervisor: 'Ana Soto',
+          cardCount: 3,
+          emailStatus: 'SENT',
+          fileName: 'reporte-r2.pdf',
+          createdAt: '2026-10-21T18:00:00.000Z',
+        },
+        expect.objectContaining({ id: 'r1', supervisor: null }),
+      ]);
+      expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('create', () => {
