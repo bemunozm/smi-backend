@@ -471,13 +471,21 @@ export class EquipmentService {
    * porque son tablas distintas). `supervisorId` sigue validando contra
    * `user` con `assertSupervisor` (rol SUPERVISOR, no baneado) — el
    * supervisor SÍ es un usuario de la plataforma, a diferencia del operador.
+   *
+   * Un LIVIANO no lleva operador: la camioneta se asigna a un supervisor o,
+   * a veces, a un mantenedor (`supervisorId` admite los dos roles).
    */
   async updateAssignment(
     id: string,
     dto: UpdateEquipmentAssignmentDto,
     expected?: ExpectedValues,
   ) {
-    await this.assertExiste(id);
+    const actual = await this.prisma.equipment.findUnique({
+      where: { id },
+      select: { id: true, equipmentClass: true },
+    });
+    if (!actual) throw new NotFoundException(`Equipo "${id}" no encontrado`);
+    const liviano = actual.equipmentClass === 'LIGHT';
 
     // `Unchecked`, no `EquipmentUpdateInput`: como `currentOperatorId`
     // tiene una relación Prisma real (`currentOperator`), el input
@@ -493,6 +501,11 @@ export class EquipmentService {
       if (dto.operatorId === null) {
         data.currentOperatorId = null;
       } else {
+        if (liviano) {
+          throw new BadRequestException(
+            'Los livianos no llevan operador: se asignan a un supervisor o a un mantenedor.',
+          );
+        }
         await this.operators.assertActive(dto.operatorId);
         data.currentOperatorId = dto.operatorId;
       }
@@ -503,7 +516,10 @@ export class EquipmentService {
       if (dto.supervisorId === null) {
         data.currentSupervisorId = null;
       } else {
-        await this.assertSupervisor(dto.supervisorId);
+        await this.assertSupervisor(
+          dto.supervisorId,
+          liviano ? [ROLES.SUPERVISOR, ROLES.MANTENEDOR] : [ROLES.SUPERVISOR],
+        );
         data.currentSupervisorId = dto.supervisorId;
       }
       desired.supervisorId = dto.supervisorId;
@@ -721,7 +737,11 @@ export class EquipmentService {
       supervisor: currentSupervisorId
         ? (supervisoresPorId.get(currentSupervisorId) ?? null)
         : null,
-      inUse: currentOperatorId != null,
+      // Un liviano no lleva operador: está en uso si tiene a alguien a cargo.
+      inUse:
+        currentOperatorId != null ||
+        ((resto as { equipmentClass?: string }).equipmentClass === 'LIGHT' &&
+          currentSupervisorId != null),
       currentFuelLevel: horometros[0]?.nivelCombustible ?? null,
       openShift: turnosAbiertosPorEquipo.get(equipo.id) ?? null,
       documentsAlert: alertasPorEquipo.get(equipo.id) ?? null,
@@ -892,7 +912,10 @@ export class EquipmentService {
    * usuario de la plataforma), sin `role` param: solo hay un rol posible
    * para este chequeo.
    */
-  private async assertSupervisor(userId: string): Promise<void> {
+  private async assertSupervisor(
+    userId: string,
+    roles: readonly string[] = [ROLES.SUPERVISOR],
+  ): Promise<void> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { id: true, role: true, banned: true },
@@ -900,9 +923,9 @@ export class EquipmentService {
     if (!user) {
       throw new BadRequestException(`El usuario "${userId}" no existe`);
     }
-    if (user.role !== ROLES.SUPERVISOR) {
+    if (!user.role || !roles.includes(user.role)) {
       throw new BadRequestException(
-        `El usuario "${userId}" no tiene el rol ${ROLES.SUPERVISOR}`,
+        `El usuario "${userId}" no tiene el rol ${roles.join(' o ')}`,
       );
     }
     if (user.banned) {
