@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EquipmentStatus, Prisma } from '@prisma/client';
+import { EquipmentClass, EquipmentStatus, Prisma } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../../auth/roles';
@@ -48,6 +48,10 @@ const HOROMETRO_INTERNAL_FIELDS_OMIT = {
  * el mismo mensaje al caller. */
 const TURNO_ABIERTO_MSG =
   'El equipo ya tiene un turno en curso; registrá la salida antes de una nueva entrada.';
+
+/** Por qué un liviano no pasa por la ENTRADA/SALIDA de Flota. */
+const CAMIONETA_POR_TARJETA =
+  'En una camioneta el km se registra con su tarjeta: la abre el supervisor (Registro de equipo) o el mantenedor («Mi camioneta») y se cierra al cargar combustible, con km final, litros y foto.';
 
 @Injectable()
 export class HorometroService {
@@ -137,12 +141,18 @@ export class HorometroService {
         where: { id: dto.equipoId },
         select: {
           status: true,
+          equipmentClass: true,
           controlUnit: true,
           currentHourmeter: true,
           currentMileage: true,
         },
       });
       if (!equipo) throw new NotFoundException('Equipo no encontrado');
+      // Un liviano no pasa por la ENTRADA de Flota: no lleva operador y su
+      // tarjeta se cierra al cargar combustible (km final, litros y foto).
+      if (equipo.equipmentClass === EquipmentClass.LIGHT) {
+        throw new BadRequestException(CAMIONETA_POR_TARJETA);
+      }
 
       // Un equipo fuera de servicio o en taller no puede abrir turno.
       if (equipo.status !== EquipmentStatus.OPERATIONAL) {
@@ -265,6 +275,19 @@ export class HorometroService {
           throw this.alreadyClosedError();
         }
 
+        // Un liviano tampoco se cierra por la SALIDA de Flota, ni siquiera el
+        // administrador: sin litros ni foto, y sin el turno de quien cierra.
+        const equipoRegistro = await tx.equipment.findUnique({
+          where: { id: registro.equipoId },
+          select: { equipmentClass: true },
+        });
+        if (equipoRegistro?.equipmentClass === EquipmentClass.LIGHT) {
+          throw new ConflictException({
+            message: CAMIONETA_POR_TARJETA,
+            code: ERROR_CODES.SHIFT_CARD_CLOSE_ELSEWHERE,
+          });
+        }
+
         if (
           registro.shiftId != null &&
           !sessionHasRole(session.user.role, ROLES.ADMIN)
@@ -380,12 +403,34 @@ export class HorometroService {
     });
   }
 
-  findAll() {
-    return this.prisma.registroHorometro.findMany({
+  /**
+   * Con `supervisorName`: quién abrió cada registro. En un liviano no hay
+   * operador —lo usa un supervisor o un mantenedor— y la ficha muestra eso.
+   */
+  async findAll() {
+    const registros = await this.prisma.registroHorometro.findMany({
       orderBy: { fecha: 'desc' },
       include: { equipo: { select: { internalCode: true } } },
       omit: HOROMETRO_INTERNAL_FIELDS_OMIT,
     });
+    const ids = [
+      ...new Set(
+        registros.flatMap((r) => (r.supervisorId ? [r.supervisorId] : [])),
+      ),
+    ];
+    const usuarios = ids.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const nombre = new Map(usuarios.map((u) => [u.id, u.name]));
+    return registros.map((r) => ({
+      ...r,
+      supervisorName: r.supervisorId
+        ? (nombre.get(r.supervisorId) ?? null)
+        : null,
+    }));
   }
 
   async findOne(id: string) {

@@ -61,6 +61,7 @@ export class FichaService {
           model: true,
           year: true,
           status: true,
+          equipmentClass: true,
           currentHourmeter: true,
           currentMileage: true,
         },
@@ -141,7 +142,9 @@ export class FichaService {
       ...combustibles.map((r) =>
         this.mapCombustible(r, fotoUrlsPorCombustible.get(r.id) ?? null),
       ),
-      ...horometros.map((r) => this.mapHorometro(r)),
+      ...horometros.map((r) =>
+        this.mapHorometro(r, equipo.equipmentClass === 'LIGHT'),
+      ),
       ...trabajosExtra.map((r) => this.mapTrabajoExtra(r)),
       ...hallazgos.map((r) =>
         this.mapHallazgo(r, fotoUrlsPorHallazgo.get(r.id) ?? null),
@@ -225,7 +228,31 @@ export class FichaService {
     return new Map(entradas);
   }
 
-  private mapHorometro(registro: RegistroHorometro): EventoFicha {
+  /** En un liviano: km y sin operador (la usa un supervisor o un mantenedor). */
+  private mapHorometro(
+    registro: RegistroHorometro,
+    liviano = false,
+  ): EventoFicha {
+    if (liviano) {
+      const final =
+        registro.valorFinal !== null
+          ? ` → ${formatNumber(registro.valorFinal)} km (${formatNumber(registro.valorFinal - registro.valorInicial)} km)`
+          : ' km · en uso';
+      return {
+        id: registro.id,
+        tipo: 'HOROMETRO',
+        fecha: registro.fecha.toISOString(),
+        titulo: 'Uso de la camioneta',
+        detalle: `Km ${formatNumber(registro.valorInicial)}${final}${
+          registro.closedByName ? `. Cerró ${registro.closedByName}` : ''
+        }`,
+        meta: {
+          turno: registro.turno,
+          valorInicial: registro.valorInicial,
+          valorFinal: registro.valorFinal,
+        },
+      };
+    }
     return {
       id: registro.id,
       tipo: 'HOROMETRO',
