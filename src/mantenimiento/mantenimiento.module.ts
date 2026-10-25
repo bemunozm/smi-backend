@@ -10,6 +10,8 @@ import { VencimientosController } from './vencimientos/vencimientos.controller';
 import { VencimientosService } from './vencimientos/vencimientos.service';
 import { MaintenancePlansController } from './maintenance-plans/maintenance-plans.controller';
 import { MaintenancePlansService } from './maintenance-plans/maintenance-plans.service';
+import { MaintenanceForecastController } from './pronostico/maintenance-forecast.controller';
+import { MaintenanceForecastService } from './pronostico/maintenance-forecast.service';
 import { ActividadesService } from './actividades.service';
 import { IntervencionesController } from './intervenciones.controller';
 import { IntervencionesService } from './intervenciones.service';
@@ -32,6 +34,7 @@ import { UmbralesService } from './umbrales.service';
     MaintenancePlansController,
     DailyChecklistsController,
     VencimientosController,
+    MaintenanceForecastController,
   ],
   providers: [
     OrdenesService,
@@ -41,6 +44,7 @@ import { UmbralesService } from './umbrales.service';
     MaintenancePlansService,
     DailyChecklistsService,
     VencimientosService,
+    MaintenanceForecastService,
   ],
 })
 export class MantenimientoModule {}

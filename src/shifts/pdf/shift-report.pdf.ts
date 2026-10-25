@@ -20,6 +20,8 @@ export interface ShiftReportCardInput {
   readonly operatorName: string;
   readonly valorInicial: number;
   readonly valorFinal: number | null;
+  /** Los livianos van en km: sus valores llevan la unidad. Sin dato, horas. */
+  readonly unit?: 'h' | 'km';
   /** `valorFinal − valorInicial`, `null` si la tarjeta sigue abierta. */
   readonly horasMaquina: number | null;
   readonly fuelLiters: number | null;
@@ -61,18 +63,29 @@ export function formatShiftTypeEs(shiftType: string): string {
 }
 
 function buildCardRow(card: ShiftReportCardInput): Table['body'][number] {
+  // Los livianos van en km: la unidad junto al valor (las columnas dicen horómetro).
+  const km = card.unit === 'km' ? ' km' : '';
   return [
     { text: `${card.equipoInternalCode}\n${card.equipoType}`, fontSize: 9 },
     { text: card.operatorName, fontSize: 9 },
-    { text: formatNumber(card.valorInicial), fontSize: 9, alignment: 'right' },
     {
-      text:
-        card.valorFinal !== null ? formatNumber(card.valorFinal) : 'En curso',
+      text: `${formatNumber(card.valorInicial)}${km}`,
       fontSize: 9,
       alignment: 'right',
     },
     {
-      text: card.horasMaquina !== null ? formatNumber(card.horasMaquina) : '—',
+      text:
+        card.valorFinal !== null
+          ? `${formatNumber(card.valorFinal)}${km}`
+          : 'En curso',
+      fontSize: 9,
+      alignment: 'right',
+    },
+    {
+      text:
+        card.horasMaquina !== null
+          ? `${formatNumber(card.horasMaquina)}${km}`
+          : '—',
       fontSize: 9,
       alignment: 'right',
     },
@@ -94,12 +107,26 @@ function buildCardRow(card: ShiftReportCardInput): Table['body'][number] {
 }
 
 function buildCardsTable(cards: readonly ShiftReportCardInput[]): Content {
+  // Con camionetas (km) en el reporte, los títulos no hablan de horómetro.
+  const conKm = cards.some((c) => c.unit === 'km');
   const header: Table['body'][number] = [
     { text: 'Equipo', style: 'tableHeader' },
     { text: 'Operador', style: 'tableHeader' },
-    { text: 'Horómetro inicial', style: 'tableHeader', alignment: 'right' },
-    { text: 'Horómetro final', style: 'tableHeader', alignment: 'right' },
-    { text: 'Horas máquina', style: 'tableHeader', alignment: 'right' },
+    {
+      text: conKm ? 'Inicial' : 'Horómetro inicial',
+      style: 'tableHeader',
+      alignment: 'right',
+    },
+    {
+      text: conKm ? 'Final' : 'Horómetro final',
+      style: 'tableHeader',
+      alignment: 'right',
+    },
+    {
+      text: conKm ? 'Horas / km' : 'Horas máquina',
+      style: 'tableHeader',
+      alignment: 'right',
+    },
     { text: 'Litros', style: 'tableHeader', alignment: 'right' },
     { text: 'AdBlue (L)', style: 'tableHeader', alignment: 'right' },
     { text: 'Observaciones', style: 'tableHeader' },

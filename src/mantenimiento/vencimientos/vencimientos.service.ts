@@ -312,7 +312,7 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
   /**
    * El calendario anual de los vehículos livianos: 12 meses desde `desde`
    * (`YYYY-MM`, por defecto el mes actual), con los documentos que vencen en
-   * cada mes —más los ya vencidos— y la próxima mantención. La mantención va
+   * cada mes —más los ya vencidos y los que vencen después— y la próxima mantención. La mantención va
    * por km, sin fecha: se muestra cuánto falta.
    */
   async calendar(
@@ -322,7 +322,6 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
     equipmentId?: string,
   ): Promise<CalendarView> {
     const months = this.meses(desde, now);
-    const fin = new Date(`${this.mesSiguiente(months[11])}-01T00:00:00.000Z`);
 
     const equipos = await this.prisma.equipment.findMany({
       where: {
@@ -342,7 +341,9 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
         currentHourmeter: true,
         documents: {
           where: {
-            expiryDate: { not: null, lt: fin },
+            // Todos, no solo los de estos 12 meses: la vista «por documento»
+            // muestra cuándo vence cada papel aunque sea en dos años.
+            expiryDate: { not: null },
             type: { notIn: [...DOCUMENT_TYPES_WITHOUT_EXPIRY] },
           },
           orderBy: { expiryDate: 'asc' },

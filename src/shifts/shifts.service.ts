@@ -24,7 +24,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { ControlUnit, EquipmentStatus, Prisma } from '@prisma/client';
+import {
+  ControlUnit,
+  EquipmentClass,
+  EquipmentStatus,
+  Prisma,
+} from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../auth/roles';
@@ -85,7 +90,14 @@ class ShiftCardIdRaceError extends Error {}
 class ShiftCardCloseRaceError extends Error {}
 
 const SHIFT_CARD_INCLUDE = {
-  equipo: { select: { internalCode: true, type: true, controlUnit: true } },
+  equipo: {
+    select: {
+      internalCode: true,
+      type: true,
+      controlUnit: true,
+      equipmentClass: true,
+    },
+  },
   shift: {
     include: {
       exitReports: {
@@ -121,7 +133,13 @@ export interface ShiftCardExitReportResponse {
 export interface ShiftCardResponse {
   id: string;
   equipoId: string;
-  equipo: { internalCode: string; type: string; controlUnit: ControlUnit };
+  equipo: {
+    internalCode: string;
+    type: string;
+    controlUnit: ControlUnit;
+    /** `LIGHT`: la tarjeta va por km, sin operador, y la cierra cualquier supervisor. */
+    equipmentClass: EquipmentClass;
+  };
   operatorId: string | null;
   /** Snapshot de texto (`RegistroHorometro.operador`) — se mantiene aunque el
    * operador del catálogo se renombre o desactive después. */
@@ -151,6 +169,11 @@ export interface ShiftCardResponse {
   fechaSalida: Date | null;
   createdAt: Date;
   closedAt: Date | null;
+  /** Quién la cerró (en los livianos, puede no ser quien la abrió). */
+  closedById: string | null;
+  closedByName: string | null;
+  /** El turno en que se cerró: ahí entra en el reporte de salida. */
+  closedShift: { id: string; date: string; type: string } | null;
 }
 
 export interface ShiftCardSummaryResponse {
@@ -296,8 +319,11 @@ export class ShiftsService {
     const clientClockSkewMs =
       computeClientClockSkewMs(clientTimeHeader, now) ?? discardedSkewMs;
 
-    // Precondición pura de la request — antes de tocar el equipo/turno.
-    const operator = await this.operators.assertActive(dto.operatorId);
+    // Precondición pura de la request — antes de tocar el equipo/turno. En
+    // los livianos no hay operador (la camioneta la maneja el supervisor).
+    const operator = dto.operatorId
+      ? await this.operators.assertActive(dto.operatorId)
+      : null;
 
     // Lectura del equipo ANTES del upsert del `Shift` (que sí escribe) —
     // así una request con un `equipoId` que no existe, o un equipo fuera de
@@ -308,9 +334,20 @@ export class ShiftsService {
     // pre-check es solo un fast-path de solo lectura.
     const equipoPrecheck = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },
-      select: { status: true },
+      select: { status: true, equipmentClass: true },
     });
     if (!equipoPrecheck) throw new NotFoundException('Equipo no encontrado');
+    if (
+      sessionHasRole(session.user.role, ROLES.MANTENEDOR) &&
+      equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT
+    ) {
+      throw new ForbiddenException(
+        'El mantenedor solo registra el uso de vehículos livianos.',
+      );
+    }
+    if (!operator && equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT) {
+      throw new BadRequestException('Elige el operador del equipo.');
+    }
     if (equipoPrecheck.status !== EquipmentStatus.OPERATIONAL) {
       throw new ConflictException({
         message: 'El equipo no está operativo',
@@ -422,8 +459,8 @@ export class ShiftsService {
               equipoId: dto.equipoId,
               valorInicial: dto.valorInicial,
               turno: dto.shiftType,
-              operador: operator.name,
-              operatorId: operator.id,
+              operador: operator?.name ?? '',
+              operatorId: operator?.id ?? null,
               supervisorId,
               shiftId: shift.id,
               fecha: capturedAt,
@@ -483,7 +520,16 @@ export class ShiftsService {
     // la rama de replay, que devolvería la tarjeta COMPLETA de A —incluida la
     // URL firmada de su foto— sin pasar nunca por este chequeo.
     const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
-    if (card.supervisorId !== session.user.id && !isAdmin) {
+    // Un vehículo LIVIANO lo puede cerrar cualquier supervisor: la carga de
+    // combustible se hace a veces 24–48 h después, en otro turno, y no
+    // siempre por quien abrió la tarjeta (pedido del cliente, 24/10). Los
+    // pesados mantienen la regla de dueño.
+    const equipoCierre = await this.prisma.equipment.findUnique({
+      where: { id: card.equipoId },
+      select: { equipmentClass: true },
+    });
+    const esLiviano = equipoCierre?.equipmentClass === EquipmentClass.LIGHT;
+    if (card.supervisorId !== session.user.id && !isAdmin && !esLiviano) {
       throw new ForbiddenException({
         message: 'No puedes cerrar la tarjeta de otro supervisor',
         code: ERROR_CODES.NOT_OWNER,
@@ -507,6 +553,20 @@ export class ShiftsService {
         message: `La lectura final (${formatNumber(dto.valorFinal)}) no puede ser menor que la inicial (${formatNumber(card.valorInicial)})`,
         code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
       });
+    }
+
+    // El liviano entra en el reporte de salida del turno de quien lo cierra.
+    let closedShiftId: string | null = null;
+    if (esLiviano) {
+      if (!dto.shiftDate || !dto.shiftType) {
+        throw new BadRequestException(
+          'Falta el turno de quien cierra la tarjeta del liviano.',
+        );
+      }
+      assertShiftDateWithinWindow(dto.shiftDate, now);
+      closedShiftId = (
+        await this.upsertShift(session.user.id, dto.shiftDate, dto.shiftType)
+      ).id;
     }
 
     const { at: capturedAt, discardedSkewMs } = resolveCapturedAt(
@@ -553,6 +613,9 @@ export class ShiftsService {
             fechaSalida: capturedAt,
             closedAt: now,
             closeClientId: dto.closeClientId,
+            closedById: session.user.id,
+            closedByName: session.user.name?.trim() || session.user.email,
+            closedShiftId,
             fuelLiters: dto.fuelLiters,
             pumpPhotoKey,
             observaciones: dto.observaciones ?? null,
@@ -952,10 +1015,25 @@ export class ShiftsService {
     const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
     const cutoff = new Date(Date.now() - MINE_CLOSED_WINDOW_MS);
 
+    // Además de las propias: las tarjetas de livianos ABIERTAS (cualquiera
+    // las puede cerrar) y las de livianos que cerró este supervisor.
+    const visibles: Prisma.RegistroHorometroWhereInput = isAdmin
+      ? {}
+      : {
+          OR: [
+            { supervisorId: session.user.id },
+            {
+              equipo: { equipmentClass: EquipmentClass.LIGHT },
+              OR: [{ valorFinal: null }, { closedById: session.user.id }],
+            },
+          ],
+        };
     const cards = await this.prisma.registroHorometro.findMany({
       where: {
-        ...(isAdmin ? {} : { supervisorId: session.user.id }),
-        OR: [{ valorFinal: null }, { closedAt: { gte: cutoff } }],
+        AND: [
+          visibles,
+          { OR: [{ valorFinal: null }, { closedAt: { gte: cutoff } }] },
+        ],
       },
       orderBy: { fecha: 'desc' },
       include: SHIFT_CARD_INCLUDE,
@@ -1165,6 +1243,21 @@ export class ShiftsService {
           })
         : [];
     const supervisorsById = new Map(supervisors.map((s) => [s.id, s.name]));
+    const closedShiftIds = Array.from(
+      new Set(
+        cards
+          .map((card) => card.closedShiftId)
+          .filter((id): id is string => id != null),
+      ),
+    );
+    const closedShifts =
+      closedShiftIds.length > 0
+        ? await this.prisma.shift.findMany({
+            where: { id: { in: closedShiftIds } },
+            select: { id: true, date: true, type: true },
+          })
+        : [];
+    const closedShiftsById = new Map(closedShifts.map((s) => [s.id, s]));
 
     return Promise.all(
       cards.map(async (card) => ({
@@ -1210,6 +1303,16 @@ export class ShiftsService {
         fechaSalida: card.fechaSalida,
         createdAt: card.createdAt,
         closedAt: card.closedAt,
+        closedById: card.closedById,
+        closedByName: card.closedByName,
+        closedShift: (() => {
+          const s = card.closedShiftId
+            ? closedShiftsById.get(card.closedShiftId)
+            : undefined;
+          return s
+            ? { id: s.id, date: formatDateOnly(s.date), type: s.type }
+            : null;
+        })(),
       })),
     );
   }

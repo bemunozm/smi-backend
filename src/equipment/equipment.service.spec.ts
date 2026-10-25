@@ -1116,6 +1116,53 @@ describe('EquipmentService', () => {
   });
 
   describe('updateAssignment', () => {
+    it('liviano: rechaza un operador (se asigna a un supervisor o mantenedor)', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'LIGHT' });
+
+      await expect(
+        service.updateAssignment('eq_1', { operatorId: 'op_1' }),
+      ).rejects.toThrow('Los livianos no llevan operador');
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('liviano: acepta un MANTENEDOR a cargo y queda en uso', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'LIGHT' });
+      userFindUnique.mockResolvedValue({
+        id: 'user_mant',
+        role: ROLES.MANTENEDOR,
+      });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        equipmentClass: 'LIGHT',
+        currentOperatorId: null,
+        currentOperator: null,
+        currentSupervisorId: 'user_mant',
+        horometros: [],
+      });
+      userFindMany.mockResolvedValue([{ id: 'user_mant', name: 'Mario Mantenedor' }]);
+
+      const result = await service.updateAssignment('eq_1', {
+        supervisorId: 'user_mant',
+      });
+
+      expect(result).toMatchObject({
+        inUse: true,
+        supervisor: { id: 'user_mant', name: 'Mario Mantenedor' },
+      });
+    });
+
+    it('pesado: un mantenedor no puede quedar como supervisor a cargo', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'HEAVY' });
+      userFindUnique.mockResolvedValue({
+        id: 'user_mant',
+        role: ROLES.MANTENEDOR,
+      });
+
+      await expect(
+        service.updateAssignment('eq_1', { supervisorId: 'user_mant' }),
+      ).rejects.toThrow('no tiene el rol');
+    });
+
     it('asigna un operador ACTIVO del catálogo y un supervisor válido', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1' }); // assertExiste
       assertActive.mockResolvedValue({

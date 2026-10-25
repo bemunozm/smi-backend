@@ -475,6 +475,30 @@ describe('HorometroService', () => {
       );
     });
 
+    it('un liviano no abre por la ENTRADA de Flota (va por su tarjeta)', async () => {
+      tx.equipment.findUnique.mockResolvedValue({
+        id: 'e1',
+        status: 'OPERATIONAL',
+        equipmentClass: 'LIGHT',
+        controlUnit: 'KM',
+        currentHourmeter: null,
+        currentMileage: 100,
+      });
+
+      await expect(
+        service.create(
+          {
+            equipoId: 'e1',
+            operatorId: 'op_1',
+            turno: 'DIURNO',
+            valorInicial: 100,
+          },
+          session,
+        ),
+      ).rejects.toThrow('En una camioneta el km se registra con su tarjeta');
+      expect(tx.registroHorometro.create).not.toHaveBeenCalled();
+    });
+
     it('crea el registro y actualiza el equipo dentro de la misma transacción', async () => {
       await service.create(
         {
@@ -685,6 +709,17 @@ describe('HorometroService', () => {
         valorFinal: null,
         shiftId: null,
       });
+    });
+
+    it('un liviano no se cierra por la SALIDA de Flota, ni siquiera el ADMIN', async () => {
+      tx.equipment.findUnique.mockResolvedValueOnce({ equipmentClass: 'LIGHT' });
+
+      await expect(
+        service.salida('r1', { valorFinal: 130 }, buildSession('admin_1', 'ADMIN')),
+      ).rejects.toMatchObject({
+        response: { code: 'SHIFT_CARD_CLOSE_ELSEWHERE' },
+      });
+      expect(tx.registroHorometro.update).not.toHaveBeenCalled();
     });
 
     it('cierra el turno, cuadra el contador a valorFinal y setea fechaSalida y closedAt', async () => {

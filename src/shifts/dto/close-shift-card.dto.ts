@@ -2,6 +2,7 @@ import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsDateString,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -11,6 +12,9 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+
+import { IsDateOnly } from '../date-only';
+import { SHIFT_TYPES, type ShiftType } from '../shift-type';
 
 import { normalizeObservaciones } from '../../common/normalize-observaciones';
 import { TMP_KEY_REGEX } from '../../storage/storage-keys';
@@ -79,4 +83,18 @@ export class CloseShiftCardDto {
   @IsOptional()
   @IsDateString()
   photoCapturedAt?: string;
+
+  /**
+   * El turno de quien CIERRA (`YYYY-MM-DD` + tipo). Obligatorio en los
+   * vehículos livianos: los puede cerrar otro supervisor días después, y la
+   * tarjeta entra en el reporte de salida de ESE turno. En los pesados se
+   * ignora (los cierra el mismo supervisor, en su turno).
+   */
+  @IsOptional()
+  @IsDateOnly()
+  shiftDate?: string;
+
+  @IsOptional()
+  @IsIn(SHIFT_TYPES)
+  shiftType?: ShiftType;
 }
