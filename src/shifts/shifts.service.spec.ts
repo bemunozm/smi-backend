@@ -229,6 +229,58 @@ describe('ShiftsService', () => {
       expect(result.id).toBe('card_1');
     });
 
+    it('liviano: se abre sin operador (la camioneta la maneja el supervisor)', async () => {
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        status: 'OPERATIONAL',
+        equipmentClass: 'LIGHT',
+      });
+
+      await service.openCard({ ...dto, operatorId: undefined }, session);
+
+      expect(assertActive).not.toHaveBeenCalled();
+      expect(lastCallData(tx.registroHorometro.create)).toMatchObject({
+        operador: '',
+        operatorId: null,
+        supervisorId: 'sup_1',
+      });
+    });
+
+    it('mantenedor: abre la camioneta que usa, pero no un pesado', async () => {
+      const mantenedor = {
+        ...session,
+        user: { ...session.user, id: 'mant_1', role: 'MANTENEDOR' },
+      } as typeof session;
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        status: 'OPERATIONAL',
+        equipmentClass: 'HEAVY',
+      });
+      await expect(service.openCard(dto, mantenedor)).rejects.toThrow(
+        'solo registra el uso de vehículos livianos',
+      );
+
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        status: 'OPERATIONAL',
+        equipmentClass: 'LIGHT',
+      });
+      await service.openCard({ ...dto, operatorId: undefined }, mantenedor);
+      expect(lastCallData(tx.registroHorometro.create)).toMatchObject({
+        supervisorId: 'mant_1',
+        operatorId: null,
+      });
+    });
+
+    it('pesado: sin operador no se abre', async () => {
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        status: 'OPERATIONAL',
+        equipmentClass: 'HEAVY',
+      });
+
+      await expect(
+        service.openCard({ ...dto, operatorId: undefined }, session),
+      ).rejects.toThrow('Elige el operador');
+      expect(tx.registroHorometro.create).not.toHaveBeenCalled();
+    });
+
     it('cuadra el contador del equipo a valorInicial cuando no está por debajo del vigente', async () => {
       await service.openCard(dto, session);
 
@@ -950,6 +1002,46 @@ describe('ShiftsService', () => {
           code: 'NOT_OWNER',
         });
       }
+    });
+
+    it('liviano: OTRO supervisor puede cerrarla, y entra en el turno de quien cierra', async () => {
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        equipmentClass: 'LIGHT',
+      });
+
+      await service.closeCard(
+        'card_1',
+        { ...dto, shiftDate: todayShiftDate(), shiftType: 'NOCTURNO' },
+        buildSession('otro_sup'),
+      );
+
+      expect(prisma.shift.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            supervisorId_date_type: expect.objectContaining({
+              supervisorId: 'otro_sup',
+              type: 'NOCTURNO',
+            }) as unknown,
+          },
+        }),
+      );
+      const [{ data }] = tx.registroHorometro.updateMany.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({
+        closedById: 'otro_sup',
+        closedShiftId: 'shift_1',
+      });
+    });
+
+    it('liviano: sin el turno de quien cierra, 400', async () => {
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        equipmentClass: 'LIGHT',
+      });
+
+      await expect(
+        service.closeCard('card_1', dto, buildSession('otro_sup')),
+      ).rejects.toThrow('Falta el turno de quien cierra');
     });
 
     it('ADMIN puede cerrar la tarjeta de otro supervisor', async () => {
@@ -1689,15 +1781,23 @@ describe('ShiftsService', () => {
   });
 
   describe('mine', () => {
-    it('SUPERVISOR ve solo las suyas', async () => {
+    it('SUPERVISOR ve las suyas, los livianos abiertos y los livianos que él cerró', async () => {
       prisma.registroHorometro.findMany.mockResolvedValue([]);
 
       await service.mine(buildSession('sup_1'));
 
       const [args] = prisma.registroHorometro.findMany.mock.calls[0] as [
-        { where: Record<string, unknown> },
+        { where: { AND: [Record<string, unknown>, unknown] } },
       ];
-      expect(args.where).toMatchObject({ supervisorId: 'sup_1' });
+      expect(args.where.AND[0]).toEqual({
+        OR: [
+          { supervisorId: 'sup_1' },
+          {
+            equipo: { equipmentClass: 'LIGHT' },
+            OR: [{ valorFinal: null }, { closedById: 'sup_1' }],
+          },
+        ],
+      });
     });
 
     it('ADMIN ve todas (sin filtro de supervisorId)', async () => {
@@ -1719,12 +1819,15 @@ describe('ShiftsService', () => {
       const [args] = prisma.registroHorometro.findMany.mock.calls[0] as [
         {
           where: {
-            OR: [{ valorFinal: null }, { closedAt: { gte: unknown } }];
+            AND: [
+              unknown,
+              { OR: [{ valorFinal: null }, { closedAt: { gte: unknown } }] },
+            ];
           };
         },
       ];
-      expect(args.where.OR[0]).toEqual({ valorFinal: null });
-      expect(args.where.OR[1].closedAt.gte).toBeInstanceOf(Date);
+      expect(args.where.AND[1].OR[0]).toEqual({ valorFinal: null });
+      expect(args.where.AND[1].OR[1].closedAt.gte).toBeInstanceOf(Date);
     });
 
     it('el shape público no incluye pumpPhotoKey ni closeClientId', async () => {

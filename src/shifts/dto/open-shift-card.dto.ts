@@ -2,6 +2,7 @@ import {
   IsDateString,
   IsIn,
   IsNumber,
+  IsOptional,
   IsString,
   IsUUID,
   Max,
@@ -21,12 +22,13 @@ export class OpenShiftCardDto {
   @IsString()
   equipoId!: string;
 
-  /** Operador del catálogo propio (`Operator`) — a diferencia de Flota, ACÁ
-   * es obligatorio: la tarjeta de turno siempre tiene un operador asignado.
-   * `ShiftsService` valida que exista y esté activo (404 / 409
-   * `OPERATOR_INACTIVE`). */
+  /** Operador del catálogo propio (`Operator`). Obligatorio en los equipos
+   * pesados (lo exige `ShiftsService`, que valida que exista y esté activo:
+   * 404 / 409 `OPERATOR_INACTIVE`). En los vehículos LIVIANOS no se pide:
+   * las camionetas las manejan los supervisores sin registrar operador. */
+  @IsOptional()
   @IsString()
-  operatorId!: string;
+  operatorId?: string;
 
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0)

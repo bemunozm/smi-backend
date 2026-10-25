@@ -175,6 +175,21 @@ describe('ShiftReportsService', () => {
   });
 
   describe('create', () => {
+    it('incluye los livianos que este supervisor CERRÓ en su turno (los pudo abrir otro)', async () => {
+      await service.create(
+        baseDto(),
+        buildSession('sup_1', 'SUPERVISOR', 'Ana Soto'),
+      );
+
+      const [{ where }] = prisma.registroHorometro.findMany.mock.calls[0] as [
+        { where: { OR: unknown } },
+      ];
+      expect(where.OR).toEqual([
+        { shiftId: 'shift_1' },
+        { closedShiftId: 'shift_1' },
+      ]);
+    });
+
     it('genera el PDF, sube al storage, crea la fila y emite el evento DESPUÉS del commit', async () => {
       const session = buildSession('sup_1', 'SUPERVISOR', 'Ana Soto');
       const dto = baseDto();

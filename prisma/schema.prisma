@@ -732,6 +732,14 @@ model RegistroHorometro {
   createdAt DateTime  @default(now()) @map("created_at")
   closedAt  DateTime? @map("closed_at")
 
+  /// Quién cerró la tarjeta y en qué turno suyo (soft ref → `Shift.id`). En
+  /// los vehículos livianos la puede cerrar OTRO supervisor, a veces 24–48 h
+  /// después (al cargar combustible): la tarjeta entra en el reporte de
+  /// salida del turno en que se CIERRA, no en el que se abrió.
+  closedById    String? @map("closed_by_id")
+  closedByName  String? @map("closed_by_name")
+  closedShiftId String? @map("closed_shift_id")
+
   /// Desfase detectado entre el reloj del dispositivo y el del servidor al
   /// abrir/cerrar (`clientTimestamp - serverTimestamp`, en ms) — se audita,
   /// nunca se usa para rechazar salvo que sea absurdo (> 24 h en el futuro
@@ -744,6 +752,7 @@ model RegistroHorometro {
 
   @@index([shiftId])
   @@index([supervisorId])
+  @@index([closedShiftId])
 }
 
 /// Turno de Supervisión en Terreno: agrupa las tarjetas (`RegistroHorometro`)

@@ -38,6 +38,9 @@ export class ShiftCardsController {
    * cualquiera de los dos para el replay).
    */
   @Post()
+  // También el MANTENEDOR: registra el km de la camioneta que usa para
+  // moverse en faena (solo livianos, lo valida el service).
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.MANTENEDOR])
   async open(
     @Body() dto: OpenShiftCardDto,
     @Session() session: UserSession,
@@ -51,6 +54,10 @@ export class ShiftCardsController {
 
   @Post(':id/close')
   @HttpCode(HttpStatus.OK)
+  // También el MANTENEDOR: registra el km de la camioneta que usa para
+  // moverse en faena (solo livianos, lo valida el service).
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.MANTENEDOR])
+
   async close(
     @Param('id') id: string,
     @Body() dto: CloseShiftCardDto,
@@ -92,6 +99,9 @@ export class ShiftCardsController {
   // Declarada como ruta ESTÁTICA ('mine') — no hay `GET :id` en este
   // controller con el que pueda chocar el orden de registro de Nest.
   @Get('mine')
+  // También el MANTENEDOR: registra el km de la camioneta que usa para
+  // moverse en faena (solo livianos, lo valida el service).
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.MANTENEDOR])
   async mine(@Session() session: UserSession) {
     return { data: await this.service.mine(session), message: 'ok' };
   }

@@ -27,7 +27,11 @@ import type { ShiftExitReportSentEvent } from '../common/events/domain-events';
 import { ERROR_CODES } from '../common/errors/error-codes';
 import { StorageService } from '../storage/storage.service';
 import { resolveCapturedAt } from '../common/dates/capture-time';
-import { assertShiftDateWithinWindow, formatDateOnly, parseDateOnlyUtc } from './date-only';
+import {
+  assertShiftDateWithinWindow,
+  formatDateOnly,
+  parseDateOnlyUtc,
+} from './date-only';
 import { resolveNombresUsuarios } from '../terreno/common/registrado-por.util';
 import { CreateShiftReportDto } from './dto/create-shift-report.dto';
 import { renderPdfBuffer } from './pdf/pdf-renderer';
@@ -41,7 +45,7 @@ import {
 } from './shift-exit-report-email-status';
 
 const CARDS_INCLUDE = {
-  equipo: { select: { internalCode: true, type: true } },
+  equipo: { select: { internalCode: true, type: true, controlUnit: true } },
 } satisfies Prisma.RegistroHorometroInclude;
 
 type CardWithEquipo = Prisma.RegistroHorometroGetPayload<{
@@ -197,7 +201,12 @@ export class ShiftReportsService {
     }
 
     const cards = await this.prisma.registroHorometro.findMany({
-      where: { id: { in: dto.cardIds }, shiftId: shift.id },
+      // Las del turno, más los livianos que este supervisor CERRÓ en él (los
+      // pudo abrir otro, en otro turno).
+      where: {
+        id: { in: dto.cardIds },
+        OR: [{ shiftId: shift.id }, { closedShiftId: shift.id }],
+      },
       include: CARDS_INCLUDE,
       orderBy: { equipo: { internalCode: 'asc' } },
     });
@@ -403,7 +412,9 @@ export class ShiftReportsService {
     return {
       equipoInternalCode: card.equipo.internalCode,
       equipoType: card.equipo.type,
-      operatorName: card.operador,
+      // Los livianos van sin operador (los maneja el supervisor).
+      operatorName: card.operador || '—',
+      unit: card.equipo.controlUnit === 'KM' ? 'km' : 'h',
       valorInicial: card.valorInicial,
       valorFinal: card.valorFinal,
       horasMaquina:
@@ -422,7 +433,10 @@ export class ShiftReportsService {
     cardIds: readonly string[],
   ): Promise<string[]> {
     const found = await this.prisma.registroHorometro.findMany({
-      where: { id: { in: [...cardIds] }, shiftId },
+      where: {
+        id: { in: [...cardIds] },
+        OR: [{ shiftId }, { closedShiftId: shiftId }],
+      },
       select: { id: true },
     });
     const foundIds = new Set(found.map((card) => card.id));
