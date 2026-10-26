@@ -33,20 +33,22 @@ export class UpdateShiftCardDto {
 
   @ValidateIf(isPresent)
   @IsNumber({ allowNaN: false, allowInfinity: false })
-  @Min(0)
-  @Max(1_000_000)
+  @Min(0, { message: 'La lectura no puede ser negativa.' })
+  @Max(1_000_000, { message: 'La lectura no puede superar 1.000.000.' })
   valorInicial?: number;
 
   @ValidateIf(isPresent)
   @IsNumber({ allowNaN: false, allowInfinity: false })
-  @Min(0)
-  @Max(1_000_000)
+  @Min(0, { message: 'La lectura no puede ser negativa.' })
+  @Max(1_000_000, { message: 'La lectura no puede superar 1.000.000.' })
   valorFinal?: number;
 
   @ValidateIf(isPresent)
   @IsNumber({ allowNaN: false, allowInfinity: false })
-  @Min(0)
-  @Max(10_000)
+  @Min(0, { message: 'Los litros no pueden ser negativos.' })
+  @Max(10_000, {
+    message: 'Los litros no pueden superar 10.000 L: revisa que no sea el kilometraje u horómetro.',
+  })
   fuelLiters?: number;
 
   @ValidateIf(isPresent)
