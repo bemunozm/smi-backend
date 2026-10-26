@@ -31,8 +31,8 @@ export class OpenShiftCardDto {
   operatorId?: string;
 
   @IsNumber({ allowNaN: false, allowInfinity: false })
-  @Min(0)
-  @Max(1_000_000)
+  @Min(0, { message: 'La lectura no puede ser negativa.' })
+  @Max(1_000_000, { message: 'La lectura no puede superar 1.000.000.' })
   valorInicial!: number;
 
   /** `YYYY-MM-DD`, sin hora — ver `date-only.ts`. Valida shape + calendario

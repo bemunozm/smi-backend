@@ -29,8 +29,8 @@ export class CloseShiftCardDto {
   closeClientId!: string;
 
   @IsNumber({ allowNaN: false, allowInfinity: false })
-  @Min(0)
-  @Max(1_000_000)
+  @Min(0, { message: 'La lectura no puede ser negativa.' })
+  @Max(1_000_000, { message: 'La lectura no puede superar 1.000.000.' })
   valorFinal!: number;
 
   /** Litros cargados al cierre — obligatorio (la spec lo pide así), 0
@@ -38,8 +38,10 @@ export class CloseShiftCardDto {
    * los camiones de extracción minera más grandes cargan varios miles de
    * litros, pero no cientos de miles. */
   @IsNumber()
-  @Min(0)
-  @Max(10_000)
+  @Min(0, { message: 'Los litros no pueden ser negativos.' })
+  @Max(10_000, {
+    message: 'Los litros no pueden superar 10.000 L: revisa que no sea el kilometraje u horómetro.',
+  })
   fuelLiters!: number;
 
   /** AdBlue cargado en el turno (el cliente exige registrarlo al cerrar). Opcional: un cierre
