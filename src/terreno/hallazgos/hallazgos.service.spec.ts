@@ -97,7 +97,10 @@ describe('HallazgosService', () => {
     });
 
     it('findAll resuelve los nombres de todos los creadores en UN solo query', async () => {
-      prisma.hallazgo.findMany.mockResolvedValue([fila('h1', 'u1'), fila('h2', 'u2')]);
+      prisma.hallazgo.findMany.mockResolvedValue([
+        fila('h1', 'u1'),
+        fila('h2', 'u2'),
+      ]);
       prisma.user.findMany.mockResolvedValue([
         { id: 'u1', name: 'Ana Soto' },
         { id: 'u2', name: 'Pedro Pérez' },
@@ -105,7 +108,10 @@ describe('HallazgosService', () => {
 
       const res = await service.findAll();
 
-      expect(res.map((r) => r.registradoPor)).toEqual(['Ana Soto', 'Pedro Pérez']);
+      expect(res.map((r) => r.registradoPor)).toEqual([
+        'Ana Soto',
+        'Pedro Pérez',
+      ]);
       expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
     });
 
@@ -115,7 +121,7 @@ describe('HallazgosService', () => {
 
       const res = await service.findAll();
 
-      expect(res[0]!.registradoPor).toBeNull();
+      expect(res[0].registradoPor).toBeNull();
     });
   });
 
@@ -686,12 +692,18 @@ describe('HallazgosService', () => {
 
   describe('remove', () => {
     it('borra la fila y suelta la foto del bucket (best-effort, después del delete)', async () => {
-      prisma.hallazgo.findUnique.mockResolvedValue({ fotoKey: 'hallazgo-photos/h1.jpg' });
+      prisma.hallazgo.findUnique.mockResolvedValue({
+        fotoKey: 'hallazgo-photos/h1.jpg',
+      });
 
       await service.remove('h1');
 
-      expect(prisma.hallazgo.delete).toHaveBeenCalledWith({ where: { id: 'h1' } });
-      expect(storage.deleteBestEffort).toHaveBeenCalledWith('hallazgo-photos/h1.jpg');
+      expect(prisma.hallazgo.delete).toHaveBeenCalledWith({
+        where: { id: 'h1' },
+      });
+      expect(storage.deleteBestEffort).toHaveBeenCalledWith(
+        'hallazgo-photos/h1.jpg',
+      );
     });
 
     it('sin foto no toca el storage', async () => {
@@ -699,20 +711,26 @@ describe('HallazgosService', () => {
 
       await service.remove('h1');
 
-      expect(prisma.hallazgo.delete).toHaveBeenCalledWith({ where: { id: 'h1' } });
+      expect(prisma.hallazgo.delete).toHaveBeenCalledWith({
+        where: { id: 'h1' },
+      });
       expect(storage.deleteBestEffort).not.toHaveBeenCalled();
     });
 
     it('un id inexistente da 404 sin borrar nada', async () => {
       prisma.hallazgo.findUnique.mockResolvedValue(null);
 
-      await expect(service.remove('nope')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.remove('nope')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
       expect(prisma.hallazgo.delete).not.toHaveBeenCalled();
       expect(storage.deleteBestEffort).not.toHaveBeenCalled();
     });
 
     it('si el delete falla, la foto NO se suelta', async () => {
-      prisma.hallazgo.findUnique.mockResolvedValue({ fotoKey: 'hallazgo-photos/h1.jpg' });
+      prisma.hallazgo.findUnique.mockResolvedValue({
+        fotoKey: 'hallazgo-photos/h1.jpg',
+      });
       prisma.hallazgo.delete.mockRejectedValue(new Error('db caída'));
 
       await expect(service.remove('h1')).rejects.toThrow('db caída');

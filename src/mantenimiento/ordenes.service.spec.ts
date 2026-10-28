@@ -125,9 +125,13 @@ describe('OrdenesService', () => {
     stockIssue.mockReset();
     emitPending.mockReset();
     claimTmp.mockReset();
-    claimTmp.mockImplementation((key: string) => Promise.resolve(`claimed/${key}`));
+    claimTmp.mockImplementation((key: string) =>
+      Promise.resolve(`claimed/${key}`),
+    );
     sign.mockReset();
-    sign.mockImplementation((key: string) => Promise.resolve(`https://signed/${key}`));
+    sign.mockImplementation((key: string) =>
+      Promise.resolve(`https://signed/${key}`),
+    );
     discard.mockReset();
     hallazgoFindUnique.mockReset();
     hallazgoUpdate.mockReset();
@@ -304,7 +308,12 @@ describe('OrdenesService', () => {
       ordenTrabajoFindUnique.mockResolvedValue(MOCK_ORDEN);
       tareaOTUpdate.mockResolvedValue({ ...MOCK_ORDEN.tareas[0], hecha: true });
 
-      const result = await service.updateTarea('orden_1', 'tarea_1', { hecha: true }, EDITOR);
+      const result = await service.updateTarea(
+        'orden_1',
+        'tarea_1',
+        { hecha: true },
+        EDITOR,
+      );
 
       expect(result.hecha).toBe(true);
       expect(recordUpsert).not.toHaveBeenCalled();
@@ -320,10 +329,16 @@ describe('OrdenesService', () => {
         texto: 'Cambio de aceite',
       });
       ordenTrabajoFindUnique.mockResolvedValue(MOCK_PREVENTIVA);
-      tareaOTUpdate.mockResolvedValue({ ...TAREA_HECHA, fotoKey: 'claimed/tmp/foto.jpg' });
+      tareaOTUpdate.mockResolvedValue({
+        ...TAREA_HECHA,
+        fotoKey: 'claimed/tmp/foto.jpg',
+      });
       // Queda una pendiente: la orden va a EN_PROCESO, no a COMPLETADA.
       tareaOTFindMany.mockResolvedValue([{ hecha: true }, { hecha: false }]);
-      ordenTrabajoUpdate.mockResolvedValue({ ...MOCK_PREVENTIVA, estado: 'EN_PROCESO' });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'EN_PROCESO',
+      });
 
       const result = await service.updateTarea(
         'orden_prev',
@@ -332,7 +347,11 @@ describe('OrdenesService', () => {
         EDITOR,
       );
 
-      expect(claimTmp).toHaveBeenCalledWith('tmp/foto.jpg', EDITOR.id, 'tarea-photo');
+      expect(claimTmp).toHaveBeenCalledWith(
+        'tmp/foto.jpg',
+        EDITOR.id,
+        'tarea-photo',
+      );
       expect(tareaOTUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -347,7 +366,11 @@ describe('OrdenesService', () => {
       expect(recordUpsert).toHaveBeenCalledWith(
         expect.objectContaining({
           where: {
-            planItemId_cycle_milestone: { planItemId: 'item_a', cycle: 1, milestone: 250 },
+            planItemId_cycle_milestone: {
+              planItemId: 'item_a',
+              cycle: 1,
+              milestone: 250,
+            },
           },
           create: expect.objectContaining({
             equipmentId: MOCK_PREVENTIVA.equipoId,
@@ -374,9 +397,17 @@ describe('OrdenesService', () => {
       ordenTrabajoFindUnique.mockResolvedValue(MOCK_PREVENTIVA);
       tareaOTUpdate.mockResolvedValue({ ...TAREA_HECHA, id: 'tarea_b' });
       tareaOTFindMany.mockResolvedValue([{ hecha: true }, { hecha: true }]);
-      ordenTrabajoUpdate.mockResolvedValue({ ...MOCK_PREVENTIVA, estado: 'COMPLETADA' });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'COMPLETADA',
+      });
 
-      await service.updateTarea('orden_prev', 'tarea_b', { hecha: true, notas: 'ok' }, EDITOR);
+      await service.updateTarea(
+        'orden_prev',
+        'tarea_b',
+        { hecha: true, notas: 'ok' },
+        EDITOR,
+      );
 
       expect(ordenTrabajoUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ data: { estado: 'COMPLETADA' } }),
@@ -394,11 +425,19 @@ describe('OrdenesService', () => {
         planItemId: 'item_a',
         texto: 'Cambio de aceite',
       });
-      ordenTrabajoFindUnique.mockResolvedValue({ ...MOCK_PREVENTIVA, estado: 'EN_PROCESO' });
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'EN_PROCESO',
+      });
       tareaOTUpdate.mockResolvedValue({ ...TAREA_HECHA, hecha: false });
       tareaOTFindMany.mockResolvedValue([{ hecha: false }, { hecha: false }]);
 
-      await service.updateTarea('orden_prev', 'tarea_a', { hecha: false }, EDITOR);
+      await service.updateTarea(
+        'orden_prev',
+        'tarea_a',
+        { hecha: false },
+        EDITOR,
+      );
 
       expect(recordDeleteMany).toHaveBeenCalledWith({
         where: { planItemId: 'item_a', cycle: 1, milestone: 250 },
@@ -417,7 +456,10 @@ describe('OrdenesService', () => {
       ordenTrabajoFindUnique.mockResolvedValue(MOCK_PREVENTIVA);
       tareaOTUpdate.mockResolvedValue(TAREA_HECHA);
       tareaOTFindMany.mockResolvedValue([{ hecha: true }, { hecha: false }]);
-      ordenTrabajoUpdate.mockResolvedValue({ ...MOCK_PREVENTIVA, estado: 'EN_PROCESO' });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'EN_PROCESO',
+      });
 
       await service.updateTarea(
         'orden_prev',
@@ -711,8 +753,14 @@ describe('OrdenesService', () => {
     };
 
     it('create con hallazgoId toma el hallazgo con un claim CONDICIONAL atómico', async () => {
-      hallazgoFindUnique.mockResolvedValue({ id: 'hallazgo_1', estado: 'ABIERTO' });
-      ordenTrabajoCreate.mockResolvedValue({ ...MOCK_ORDEN, hallazgoId: 'hallazgo_1' });
+      hallazgoFindUnique.mockResolvedValue({
+        id: 'hallazgo_1',
+        estado: 'ABIERTO',
+      });
+      ordenTrabajoCreate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        hallazgoId: 'hallazgo_1',
+      });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
       const result = await service.create(CREATE_DTO, 'user_1');
@@ -727,7 +775,10 @@ describe('OrdenesService', () => {
     });
 
     it('create con hallazgo que no está ABIERTO: 409 y no crea la orden', async () => {
-      hallazgoFindUnique.mockResolvedValue({ id: 'hallazgo_1', estado: 'EN_PROCESO' });
+      hallazgoFindUnique.mockResolvedValue({
+        id: 'hallazgo_1',
+        estado: 'EN_PROCESO',
+      });
       hallazgoUpdateMany.mockResolvedValue({ count: 0 });
 
       await expect(service.create(CREATE_DTO, 'user_1')).rejects.toThrow(
@@ -739,7 +790,10 @@ describe('OrdenesService', () => {
     it('carrera: el hallazgo se veía ABIERTO pero otro lo tomó primero → 409, sin OT duplicada', async () => {
       // El findUnique del 404 lo vio ABIERTO, pero entre medio otro create ganó
       // el claim: updateMany devuelve count 0 y este create pierde limpio.
-      hallazgoFindUnique.mockResolvedValue({ id: 'hallazgo_1', estado: 'ABIERTO' });
+      hallazgoFindUnique.mockResolvedValue({
+        id: 'hallazgo_1',
+        estado: 'ABIERTO',
+      });
       hallazgoUpdateMany.mockResolvedValue({ count: 0 });
 
       await expect(service.create(CREATE_DTO, 'user_1')).rejects.toThrow(
@@ -751,14 +805,23 @@ describe('OrdenesService', () => {
     it('create con hallazgo inexistente: 404', async () => {
       hallazgoFindUnique.mockResolvedValue(null);
 
-      await expect(service.create(CREATE_DTO, 'user_1')).rejects.toThrow(NotFoundException);
+      await expect(service.create(CREATE_DTO, 'user_1')).rejects.toThrow(
+        NotFoundException,
+      );
       expect(ordenTrabajoCreate).not.toHaveBeenCalled();
     });
 
     it('update a COMPLETADA cierra el hallazgo ligado', async () => {
-      const enProceso = { ...MOCK_ORDEN, estado: 'EN_PROCESO', hallazgoId: 'hallazgo_1' };
+      const enProceso = {
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+        hallazgoId: 'hallazgo_1',
+      };
       ordenTrabajoFindUnique.mockResolvedValue(enProceso);
-      ordenTrabajoUpdate.mockResolvedValue({ ...enProceso, estado: 'COMPLETADA' });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...enProceso,
+        estado: 'COMPLETADA',
+      });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
       await service.update('orden_1', { estado: 'COMPLETADA' });
@@ -771,9 +834,16 @@ describe('OrdenesService', () => {
     });
 
     it('update a CANCELADA devuelve el hallazgo a ABIERTO (vuelve a la bandeja)', async () => {
-      const enProceso = { ...MOCK_ORDEN, estado: 'EN_PROCESO', hallazgoId: 'hallazgo_1' };
+      const enProceso = {
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+        hallazgoId: 'hallazgo_1',
+      };
       ordenTrabajoFindUnique.mockResolvedValue(enProceso);
-      ordenTrabajoUpdate.mockResolvedValue({ ...enProceso, estado: 'CANCELADA' });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...enProceso,
+        estado: 'CANCELADA',
+      });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
       await service.update('orden_1', { estado: 'CANCELADA' });
@@ -785,9 +855,16 @@ describe('OrdenesService', () => {
     });
 
     it('update sin cruce de estado no toca el hallazgo', async () => {
-      const enProceso = { ...MOCK_ORDEN, estado: 'EN_PROCESO', hallazgoId: 'hallazgo_1' };
+      const enProceso = {
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+        hallazgoId: 'hallazgo_1',
+      };
       ordenTrabajoFindUnique.mockResolvedValue(enProceso);
-      ordenTrabajoUpdate.mockResolvedValue({ ...enProceso, titulo: 'Otro título' });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...enProceso,
+        titulo: 'Otro título',
+      });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
       await service.update('orden_1', { titulo: 'Otro título' });

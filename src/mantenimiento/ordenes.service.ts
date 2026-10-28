@@ -16,7 +16,10 @@ import {
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { createOrReturn } from '../common/idempotency/create-or-return';
 import { PrismaService } from '../common/prisma/prisma.service';
-import { StockService, type PendingStockEvents } from '../inventory/stock.service';
+import {
+  StockService,
+  type PendingStockEvents,
+} from '../inventory/stock.service';
 import { StorageService } from '../storage/storage.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type {
@@ -434,7 +437,13 @@ export class OrdenesService {
           );
         }
 
-        await this.syncRegistroCiclo(tx, ordenAnterior, tarea, dto.hecha, editor);
+        await this.syncRegistroCiclo(
+          tx,
+          ordenAnterior,
+          tarea,
+          dto.hecha,
+          editor,
+        );
 
         // Transición automática SOLO en las órdenes de la pauta: en las
         // demás, el estado lo maneja quien trabaja la orden.
@@ -483,7 +492,9 @@ export class OrdenesService {
       hecha: updated.hecha,
       posicion: updated.posicion,
       notas: updated.notas,
-      fotoUrl: updated.fotoKey ? await this.storage.sign(updated.fotoKey) : null,
+      fotoUrl: updated.fotoKey
+        ? await this.storage.sign(updated.fotoKey)
+        : null,
       hechaPorNombre: updated.hechaPorNombre,
       hechaAt: updated.hechaAt ? updated.hechaAt.toISOString() : null,
     };
@@ -540,7 +551,11 @@ export class OrdenesService {
     });
     const equipo = await tx.equipment.findUnique({
       where: { id: orden.equipoId },
-      select: { controlUnit: true, currentHourmeter: true, currentMileage: true },
+      select: {
+        controlUnit: true,
+        currentHourmeter: true,
+        currentMileage: true,
+      },
     });
     const counterAt =
       equipo?.controlUnit === 'KM'

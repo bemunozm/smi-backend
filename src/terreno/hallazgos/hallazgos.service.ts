@@ -208,7 +208,9 @@ export class HallazgosService {
       include: HALLAZGO_INCLUDE,
     });
     if (!reg) throw new NotFoundException('Hallazgo no encontrado');
-    const nombres = await resolveNombresUsuarios(this.prisma, [reg.createdById]);
+    const nombres = await resolveNombresUsuarios(this.prisma, [
+      reg.createdById,
+    ]);
     return this.shape(reg, nombres);
   }
 

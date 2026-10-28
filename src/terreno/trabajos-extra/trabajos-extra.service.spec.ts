@@ -87,7 +87,9 @@ describe('TrabajosExtraService', () => {
     };
 
     it('al crear expone el nombre de quien lo registró, nunca createdById', async () => {
-      prisma.user.findMany.mockResolvedValue([{ id: USER_ID, name: 'Ana Soto' }]);
+      prisma.user.findMany.mockResolvedValue([
+        { id: USER_ID, name: 'Ana Soto' },
+      ]);
 
       const res = await createAs(base);
 
@@ -107,7 +109,10 @@ describe('TrabajosExtraService', () => {
 
       const res = await service.findAll();
 
-      expect(res.map((r) => r.registradoPor)).toEqual(['Ana Soto', 'Pedro Pérez']);
+      expect(res.map((r) => r.registradoPor)).toEqual([
+        'Ana Soto',
+        'Pedro Pérez',
+      ]);
       expect(res.every((r) => !('createdById' in r))).toBe(true);
       expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
     });
@@ -439,7 +444,11 @@ describe('TrabajosExtraService', () => {
 
       // `registradoPor: null`: el reintento igual pasa por `findOne`, que
       // resuelve el nombre (acá el mock de `user.findMany` devuelve vacío).
-      expect(res).toEqual({ id: ID, operador: 'Juan Rojas', registradoPor: null });
+      expect(res).toEqual({
+        id: ID,
+        operador: 'Juan Rojas',
+        registradoPor: null,
+      });
       expect(prisma.equipment.findUnique).not.toHaveBeenCalled();
       expect(assertActive).not.toHaveBeenCalled();
       expect(prisma.registroHorometro.findFirst).not.toHaveBeenCalled();
@@ -490,7 +499,10 @@ describe('TrabajosExtraService', () => {
         .mockResolvedValueOnce(winner);
       prisma.trabajoExtraordinario.create.mockRejectedValueOnce(p2002());
 
-      await expect(createAs(payload)).resolves.toEqual({ id: ID, registradoPor: null });
+      await expect(createAs(payload)).resolves.toEqual({
+        id: ID,
+        registradoPor: null,
+      });
     });
 
     it('carrera P2002 contra otro usuario -> 409 ID_CONFLICT', async () => {

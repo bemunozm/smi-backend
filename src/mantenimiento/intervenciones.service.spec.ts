@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
 import { PrismaService } from '../common/prisma/prisma.service';
@@ -82,7 +86,9 @@ describe('IntervencionesService', () => {
     intervencionFindUnique.mockResolvedValue(null);
     equipmentFindUnique.mockResolvedValue(null);
     stockIssue.mockResolvedValue({});
-    userFindMany.mockReset().mockResolvedValue([{ id: 'user_1', name: 'Marco Díaz' }]);
+    userFindMany
+      .mockReset()
+      .mockResolvedValue([{ id: 'user_1', name: 'Marco Díaz' }]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -127,7 +133,10 @@ describe('IntervencionesService', () => {
   });
 
   it('findAllByOrden serializa `fecha` a ISO y expone fotoUrl (null sin foto)', async () => {
-    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'EQ-1' });
+    ordenTrabajoFindUnique.mockResolvedValue({
+      id: 'orden_1',
+      equipoId: 'EQ-1',
+    });
     intervencionFindMany.mockResolvedValue([MOCK_INTERVENCION]);
 
     const result = await service.findAllByOrden('orden_1');
@@ -136,17 +145,28 @@ describe('IntervencionesService', () => {
   });
 
   it('findAllByOrden resuelve realizadaPor en UN solo query; cuenta borrada queda null', async () => {
-    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'EQ-1' });
+    ordenTrabajoFindUnique.mockResolvedValue({
+      id: 'orden_1',
+      equipoId: 'EQ-1',
+    });
     intervencionFindMany.mockResolvedValue([
       MOCK_INTERVENCION,
-      { ...MOCK_INTERVENCION, id: 'intervencion_2', realizadaPorId: 'u-borrado' },
+      {
+        ...MOCK_INTERVENCION,
+        id: 'intervencion_2',
+        realizadaPorId: 'u-borrado',
+      },
       // Fila anterior al campo: sin autor registrado.
       { ...MOCK_INTERVENCION, id: 'intervencion_3', realizadaPorId: null },
     ]);
 
     const result = await service.findAllByOrden('orden_1');
 
-    expect(result.map((r) => r.realizadaPor)).toEqual(['Marco Díaz', null, null]);
+    expect(result.map((r) => r.realizadaPor)).toEqual([
+      'Marco Díaz',
+      null,
+      null,
+    ]);
     expect(userFindMany).toHaveBeenCalledTimes(1);
   });
 
@@ -160,10 +180,16 @@ describe('IntervencionesService', () => {
   });
 
   it('create con insumos descuenta stock EN LA MISMA transacción (reason INTERVENTION, reference = orden)', async () => {
-    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'EQ-1' });
+    ordenTrabajoFindUnique.mockResolvedValue({
+      id: 'orden_1',
+      equipoId: 'EQ-1',
+    });
     // `EQ-1` no es un id de equipo pero sí un código interno.
-    equipmentFindUnique.mockImplementation((args: { where: Record<string, string> }) =>
-      Promise.resolve('internalCode' in args.where ? { id: 'equip_1' } : null),
+    equipmentFindUnique.mockImplementation(
+      (args: { where: Record<string, string> }) =>
+        Promise.resolve(
+          'internalCode' in args.where ? { id: 'equip_1' } : null,
+        ),
     );
     txIntervencionCreate.mockResolvedValue(MOCK_INTERVENCION);
 
@@ -190,7 +216,10 @@ describe('IntervencionesService', () => {
   });
 
   it('insumos sin bodega: 400 y no se crea ni descuenta nada', async () => {
-    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'EQ-1' });
+    ordenTrabajoFindUnique.mockResolvedValue({
+      id: 'orden_1',
+      equipoId: 'EQ-1',
+    });
 
     await expect(
       service.create(
@@ -204,7 +233,10 @@ describe('IntervencionesService', () => {
   });
 
   it('equipo del orden no resoluble: el descuento sale igual, con equipmentId null', async () => {
-    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'ZZ-999' });
+    ordenTrabajoFindUnique.mockResolvedValue({
+      id: 'orden_1',
+      equipoId: 'ZZ-999',
+    });
     txIntervencionCreate.mockResolvedValue(MOCK_INTERVENCION);
 
     await service.create('orden_1', DTO_CON_INSUMOS, 'user_1');
@@ -214,10 +246,15 @@ describe('IntervencionesService', () => {
   });
 
   it('si el descuento falla (sin stock), no queda intervención y la foto reclamada se suelta', async () => {
-    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'EQ-1' });
+    ordenTrabajoFindUnique.mockResolvedValue({
+      id: 'orden_1',
+      equipoId: 'EQ-1',
+    });
     storageClaimTmp.mockResolvedValue('intervencion-photos/final.jpg');
     txIntervencionCreate.mockResolvedValue(MOCK_INTERVENCION);
-    stockIssue.mockRejectedValue(new ConflictException('Existencia insuficiente'));
+    stockIssue.mockRejectedValue(
+      new ConflictException('Existencia insuficiente'),
+    );
 
     await expect(
       service.create(
@@ -226,12 +263,17 @@ describe('IntervencionesService', () => {
         'user_1',
       ),
     ).rejects.toBeInstanceOf(ConflictException);
-    expect(storageDiscard).toHaveBeenCalledWith('intervencion-photos/final.jpg');
+    expect(storageDiscard).toHaveBeenCalledWith(
+      'intervencion-photos/final.jpg',
+    );
     expect(stockEmitPending).not.toHaveBeenCalled();
   });
 
   it('la foto se reclama y la respuesta expone fotoUrl firmada, nunca la key', async () => {
-    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'EQ-1' });
+    ordenTrabajoFindUnique.mockResolvedValue({
+      id: 'orden_1',
+      equipoId: 'EQ-1',
+    });
     storageClaimTmp.mockResolvedValue('intervencion-photos/final.jpg');
     storageSign.mockResolvedValue('https://signed.example/foto.jpg');
     txIntervencionCreate.mockResolvedValue({
@@ -256,7 +298,10 @@ describe('IntervencionesService', () => {
   });
 
   it('reintento con el mismo id del mismo usuario: devuelve la fila y NO vuelve a descontar', async () => {
-    ordenTrabajoFindUnique.mockResolvedValue({ id: 'orden_1', equipoId: 'EQ-1' });
+    ordenTrabajoFindUnique.mockResolvedValue({
+      id: 'orden_1',
+      equipoId: 'EQ-1',
+    });
     intervencionFindUnique.mockResolvedValue({
       ...MOCK_INTERVENCION,
       createdById: 'user_1',

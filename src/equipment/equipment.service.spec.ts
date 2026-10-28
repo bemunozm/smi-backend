@@ -1139,7 +1139,9 @@ describe('EquipmentService', () => {
         currentSupervisorId: 'user_mant',
         horometros: [],
       });
-      userFindMany.mockResolvedValue([{ id: 'user_mant', name: 'Mario Mantenedor' }]);
+      userFindMany.mockResolvedValue([
+        { id: 'user_mant', name: 'Mario Mantenedor' },
+      ]);
 
       const result = await service.updateAssignment('eq_1', {
         supervisorId: 'user_mant',

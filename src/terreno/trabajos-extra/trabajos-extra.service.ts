@@ -207,7 +207,9 @@ export class TrabajosExtraService {
       include: TRABAJO_EXTRA_INCLUDE,
     });
     if (!reg) throw new NotFoundException('Registro no encontrado');
-    const nombres = await resolveNombresUsuarios(this.prisma, [reg.createdById]);
+    const nombres = await resolveNombresUsuarios(this.prisma, [
+      reg.createdById,
+    ]);
     return this.shape(reg, nombres);
   }
 

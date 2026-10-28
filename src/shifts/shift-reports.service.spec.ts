@@ -152,7 +152,10 @@ describe('ShiftReportsService', () => {
     });
 
     it('lista cada reporte con la fecha/turno del shift y el supervisor resuelto en UN query', async () => {
-      prisma.shiftExitReport.findMany.mockResolvedValue([fila('r2', 'u1'), fila('r1', 'u-borrado')]);
+      prisma.shiftExitReport.findMany.mockResolvedValue([
+        fila('r2', 'u1'),
+        fila('r1', 'u-borrado'),
+      ]);
       prisma.user.findMany.mockResolvedValue([{ id: 'u1', name: 'Ana Soto' }]);
 
       const res = await service.list();
