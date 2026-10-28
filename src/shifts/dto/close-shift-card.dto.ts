@@ -40,7 +40,8 @@ export class CloseShiftCardDto {
   @IsNumber()
   @Min(0, { message: 'Los litros no pueden ser negativos.' })
   @Max(10_000, {
-    message: 'Los litros no pueden superar 10.000 L: revisa que no sea el kilometraje u horómetro.',
+    message:
+      'Los litros no pueden superar 10.000 L: revisa que no sea el kilometraje u horómetro.',
   })
   fuelLiters!: number;
 

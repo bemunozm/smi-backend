@@ -39,6 +39,9 @@ export interface AppEnv {
   shiftReportExtraRecipients: readonly string[];
   authRateLimitEnabled: boolean;
   authIpAddressHeaders: readonly string[];
+  vapidPublicKey: string | undefined;
+  vapidPrivateKey: string | undefined;
+  vapidSubject: string;
 }
 
 const MIN_SECRET_LENGTH = 32;
@@ -273,6 +276,56 @@ export function parseEmailList(
   return emails;
 }
 
+/**
+ * Claves VAPID de Web Push: el par es todo-o-nada — una sola configurada es
+ * casi seguro un typo, y fallar rápido al arrancar evita descubrirlo recién
+ * cuando los pushes "se envían" pero nunca llegan. Obligatorias en producción;
+ * fuera de ella, sin claves el push queda deshabilitado (ver PushService).
+ */
+export function parseVapidKeys(
+  publicKey: string | undefined,
+  privateKey: string | undefined,
+  isProd: boolean,
+): { publicKey: string; privateKey: string } | undefined {
+  if (publicKey !== undefined && privateKey !== undefined) {
+    return { publicKey, privateKey };
+  }
+  if (publicKey === undefined && privateKey === undefined) {
+    if (isProd) {
+      throw new Error(
+        'Missing required env vars: VAPID_PUBLIC_KEY y VAPID_PRIVATE_KEY (obligatorias en producción). Genera el par con: npx web-push generate-vapid-keys',
+      );
+    }
+    return undefined;
+  }
+  throw new Error(
+    'VAPID_PUBLIC_KEY y VAPID_PRIVATE_KEY van juntas: configura ambas o ninguna. Genera el par con: npx web-push generate-vapid-keys',
+  );
+}
+
+// Contacto que exige el protocolo Web Push (RFC 8292): el push service lo usa
+// para avisar de problemas con los envíos. Solo tiene sentido como default de
+// desarrollo — en producción se configura uno real.
+const DEFAULT_DEV_VAPID_SUBJECT = 'mailto:dev@localhost';
+
+export function parseVapidSubject(rawValue: string | undefined): string {
+  if (rawValue === undefined || rawValue.trim().length === 0) {
+    return DEFAULT_DEV_VAPID_SUBJECT;
+  }
+  if (!rawValue.startsWith('mailto:') && !rawValue.startsWith('https://')) {
+    throw new Error(
+      `Invalid VAPID_SUBJECT env var: "${rawValue}" (debe partir con "mailto:" o "https://")`,
+    );
+  }
+  return rawValue;
+}
+
+const vapidKeys = parseVapidKeys(
+  optional('VAPID_PUBLIC_KEY'),
+  optional('VAPID_PRIVATE_KEY'),
+  isProduction,
+);
+
 export const env: AppEnv = {
   databaseUrl: required('DATABASE_URL'),
   betterAuthSecret: validateSecret(required('BETTER_AUTH_SECRET')),
@@ -339,4 +392,8 @@ export const env: AppEnv = {
   authIpAddressHeaders: parseAuthIpAddressHeaders(
     process.env.AUTH_IP_ADDRESS_HEADERS,
   ),
+  // Web Push (ver PushService): sin claves, el canal push queda deshabilitado.
+  vapidPublicKey: vapidKeys?.publicKey,
+  vapidPrivateKey: vapidKeys?.privateKey,
+  vapidSubject: parseVapidSubject(optional('VAPID_SUBJECT')),
 };

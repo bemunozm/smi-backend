@@ -712,10 +712,16 @@ describe('HorometroService', () => {
     });
 
     it('un liviano no se cierra por la SALIDA de Flota, ni siquiera el ADMIN', async () => {
-      tx.equipment.findUnique.mockResolvedValueOnce({ equipmentClass: 'LIGHT' });
+      tx.equipment.findUnique.mockResolvedValueOnce({
+        equipmentClass: 'LIGHT',
+      });
 
       await expect(
-        service.salida('r1', { valorFinal: 130 }, buildSession('admin_1', 'ADMIN')),
+        service.salida(
+          'r1',
+          { valorFinal: 130 },
+          buildSession('admin_1', 'ADMIN'),
+        ),
       ).rejects.toMatchObject({
         response: { code: 'SHIFT_CARD_CLOSE_ELSEWHERE' },
       });

@@ -218,7 +218,9 @@ export class TrabajosExtraService {
       omit: CON_DUENO,
     });
     if (!reg) throw new NotFoundException('Registro no encontrado');
-    const nombres = await resolveNombresUsuarios(this.prisma, [reg.createdById]);
+    const nombres = await resolveNombresUsuarios(this.prisma, [
+      reg.createdById,
+    ]);
     return this.shape(reg, nombres);
   }
 

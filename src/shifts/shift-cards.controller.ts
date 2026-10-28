@@ -57,7 +57,6 @@ export class ShiftCardsController {
   // También el MANTENEDOR: registra el km de la camioneta que usa para
   // moverse en faena (solo livianos, lo valida el service).
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.MANTENEDOR])
-
   async close(
     @Param('id') id: string,
     @Body() dto: CloseShiftCardDto,

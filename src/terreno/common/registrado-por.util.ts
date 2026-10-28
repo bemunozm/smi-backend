@@ -12,7 +12,9 @@ export async function resolveNombresUsuarios(
   prisma: PrismaService,
   userIds: ReadonlyArray<string | null | undefined>,
 ): Promise<Map<string, string>> {
-  const ids = Array.from(new Set(userIds.filter((id): id is string => Boolean(id))));
+  const ids = Array.from(
+    new Set(userIds.filter((id): id is string => Boolean(id))),
+  );
   if (ids.length === 0) return new Map();
 
   const users = await prisma.user.findMany({

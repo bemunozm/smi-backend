@@ -219,7 +219,9 @@ export class HallazgosService {
       omit: CON_DUENO,
     });
     if (!reg) throw new NotFoundException('Hallazgo no encontrado');
-    const nombres = await resolveNombresUsuarios(this.prisma, [reg.createdById]);
+    const nombres = await resolveNombresUsuarios(this.prisma, [
+      reg.createdById,
+    ]);
     return this.shape(reg, nombres);
   }
 

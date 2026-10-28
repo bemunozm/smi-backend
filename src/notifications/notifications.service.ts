@@ -11,6 +11,7 @@ import { escapeHtml } from '../mail/html-escape.util';
 import { MailService } from '../mail/mail.service';
 import type { MailAttachment } from '../mail/mail.service';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { PushService } from './push.service';
 import type { UserResponseDto } from '../users/dto/user-response.dto';
 import { UsersService } from '../users/users.service';
 
@@ -35,6 +36,7 @@ export class NotificationsService {
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
     private readonly users: UsersService,
+    private readonly push: PushService,
   ) {}
 
   listForUser(userId: string): Promise<Notification[]> {
@@ -216,12 +218,14 @@ export class NotificationsService {
 
   /** Único punto de escritura de una fila `Notification` — reusado por los 3
    * caminos que crean una (`createForUser`, `notifyRolesWithAttachment`,
-   * `notifyRecipient`), para no repetir el mismo `data` en cada uno. */
-  private createNotificationRow(
+   * `notifyRecipient`), para no repetir el mismo `data` en cada uno. Por eso
+   * el push se dispara ACÁ: toda fila creada sale también como Web Push, sin
+   * que cada camino tenga que acordarse. */
+  private async createNotificationRow(
     userId: string,
     input: CreateNotificationInput,
   ): Promise<Notification> {
-    return this.prisma.notification.create({
+    const notification = await this.prisma.notification.create({
       data: {
         userId,
         tipo: input.tipo,
@@ -230,6 +234,25 @@ export class NotificationsService {
         data: input.data,
       },
     });
+
+    // Fire-and-forget: `sendToUser` ya absorbe sus errores, y el `.catch`
+    // extra cubre cualquier rechazo imprevisto para que un push caído jamás
+    // afecte la creación de la notificación ni al caller.
+    this.push
+      .sendToUser(userId, {
+        notificationId: notification.id,
+        tipo: input.tipo,
+        titulo: input.titulo,
+        cuerpo: input.cuerpo,
+        data: input.data,
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `Push de la notificación "${notification.id}" falló: ${String(error)}`,
+        );
+      });
+
+    return notification;
   }
 
   private buildEmailHtml(titulo: string, cuerpo: string): string {
