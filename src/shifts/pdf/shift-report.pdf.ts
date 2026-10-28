@@ -12,7 +12,13 @@ import { formatBusinessDateTime } from '../../common/dates/business-time';
  * su logo. Si un segundo cliente aparece, esto se mueve a config (por ahora
  * un único cliente, no vale la pena la indirección). */
 export const SHIFT_REPORT_MASTHEAD = 'SIMA SPA';
-const REPORT_TITLE = 'Reporte de salida de turno';
+
+/** Título del PDF: lleva la fecha del TURNO reportado (no la de generación,
+ * que ya se muestra aparte en "Generado el" — un reporte puede generarse al
+ * día siguiente del turno). */
+function reportTitle(shiftDate: string): string {
+  return `Equipos en terreno — ${formatShiftDateEs(shiftDate)}`;
+}
 
 export interface ShiftReportCardInput {
   readonly equipoInternalCode: string;
@@ -169,7 +175,7 @@ export function buildShiftExitReportDocDefinition(
     },
     content: [
       { text: SHIFT_REPORT_MASTHEAD, style: 'masthead' },
-      { text: REPORT_TITLE, style: 'title' },
+      { text: reportTitle(input.shiftDate), style: 'title' },
       {
         columns: [
           [

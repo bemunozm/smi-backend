@@ -60,7 +60,7 @@ describe('buildShiftExitReportDocDefinition', () => {
     expect({ ...a, footer: undefined }).toEqual({ ...b, footer: undefined });
   });
 
-  it('incluye el masthead y el título del reporte', () => {
+  it('incluye el masthead y el título con la fecha del turno reportado', () => {
     const doc = buildShiftExitReportDocDefinition({
       shiftDate: '2026-09-28',
       shiftType: 'DIURNO',
@@ -72,7 +72,7 @@ describe('buildShiftExitReportDocDefinition', () => {
 
     const content = doc.content as Content[];
     expect(content[0]).toMatchObject({ text: 'SIMA SPA' });
-    expect(content[1]).toMatchObject({ text: 'Reporte de salida de turno' });
+    expect(content[1]).toMatchObject({ text: 'Equipos en terreno — 28-09-2026' });
   });
 
   it('fija defaultStyle.font en Helvetica (sin esto pdfmake usaría Roboto, que no existe en el diccionario del renderer)', () => {
