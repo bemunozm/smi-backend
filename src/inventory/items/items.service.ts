@@ -3,7 +3,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { MovementReason, Prisma } from '@prisma/client';
+import {
+  ItemType,
+  MovementReason,
+  Prisma,
+  UnitOfMeasure,
+} from '@prisma/client';
 
 import {
   assertExpectedLocked,
@@ -45,6 +50,8 @@ const CAMPO_LABEL: Record<string, string> = {
   name: 'Nombre',
   description: 'Descripción',
   unit: 'Unidad',
+  contentPerUnit: 'Contenido por unidad',
+  contentUnit: 'Unidad del contenido',
   type: 'Tipo',
   categoryId: 'Categoría',
   partNumber: 'N.° de parte',
@@ -57,6 +64,8 @@ const UPDATE_FIELDS = {
   name: true,
   description: true,
   unit: true,
+  contentPerUnit: true,
+  contentUnit: true,
   type: true,
   categoryId: true,
   partNumber: true,
@@ -64,6 +73,30 @@ const UPDATE_FIELDS = {
   isCritical: true,
   isActive: true,
 } satisfies Prisma.InventoryItemSelect;
+
+/** Prefijo del SKU generado: suministros `SUM-`, repuestos `REP-`. */
+const PREFIJO_SKU: Record<ItemType, string> = {
+  [ItemType.SUPPLY]: 'SUM',
+  [ItemType.PART]: 'REP',
+};
+
+/** Intentos si dos altas simultáneas generan el mismo SKU. */
+const INTENTOS_SKU = 3;
+
+/**
+ * El contenido por unidad solo tiene sentido en un ítem contado en unidades:
+ * con litros, kilos o metros se limpia. Sin unidad del contenido, litros.
+ */
+function contenido(
+  unit: UnitOfMeasure,
+  contentPerUnit: number | null | undefined,
+  contentUnit: UnitOfMeasure | null | undefined,
+): { contentPerUnit: number | null; contentUnit: UnitOfMeasure | null } {
+  if (unit !== UnitOfMeasure.UNIT || contentPerUnit == null) {
+    return { contentPerUnit: null, contentUnit: null };
+  }
+  return { contentPerUnit, contentUnit: contentUnit ?? UnitOfMeasure.LITER };
+}
 
 @Injectable()
 export class ItemsService {
@@ -131,7 +164,33 @@ export class ItemsService {
   }
 
   private async createFresh(dto: CreateItemDto, performedById: string) {
-    const { id, initialQuantity, branchId, ...card } = dto;
+    // Sin SKU se genera uno; si otra alta simultánea tomó el mismo número, se
+    // reintenta con el siguiente. Un SKU que mandó el cliente no se reintenta:
+    // repetido es un error suyo.
+    for (let intento = 1; ; intento++) {
+      try {
+        return await this.createOnce(dto, performedById);
+      } catch (error: unknown) {
+        const choqueSku =
+          !dto.sku &&
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002' &&
+          !isPrimaryKeyViolation(error);
+        if (!choqueSku || intento >= INTENTOS_SKU) throw error;
+      }
+    }
+  }
+
+  private async createOnce(dto: CreateItemDto, performedById: string) {
+    const {
+      id,
+      initialQuantity,
+      branchId,
+      sku,
+      contentPerUnit,
+      contentUnit,
+      ...card
+    } = dto;
     const events: PendingStockEvents = [];
 
     try {
@@ -143,6 +202,12 @@ export class ItemsService {
           data: {
             ...(id ? { id } : {}),
             ...card,
+            sku: sku ?? (await this.siguienteSku(tx, card.type)),
+            ...contenido(
+              card.unit ?? UnitOfMeasure.UNIT,
+              contentPerUnit,
+              contentUnit,
+            ),
             createdById: performedById,
           },
         });
@@ -172,8 +237,37 @@ export class ItemsService {
       // Un choque con la PK es la carrera de dos reintentos con el mismo id:
       // lo resuelve `createOrReturn`, no es un SKU repetido.
       if (isPrimaryKeyViolation(error)) throw error;
+      // Un SKU generado que chocó se reintenta arriba (`createFresh`).
+      if (
+        !dto.sku &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw error;
+      }
       throw this.translateKnownErrors(error, dto);
     }
+  }
+
+  /**
+   * El siguiente SKU libre del tipo: `SUM-0001`, `SUM-0002`… Se calcula sobre
+   * los que ya existen con ese prefijo (los cargados a mano con otro formato
+   * no cuentan).
+   */
+  private async siguienteSku(
+    tx: Prisma.TransactionClient,
+    type: ItemType = ItemType.SUPPLY,
+  ): Promise<string> {
+    const prefijo = PREFIJO_SKU[type];
+    const existentes = await tx.inventoryItem.findMany({
+      where: { sku: { startsWith: `${prefijo}-` } },
+      select: { sku: true },
+    });
+    const mayor = existentes.reduce((max, { sku }) => {
+      const n = Number(sku.slice(prefijo.length + 1));
+      return Number.isInteger(n) && n > max ? n : max;
+    }, 0);
+    return `${prefijo}-${String(mayor + 1).padStart(4, '0')}`;
   }
 
   async update(id: string, dto: UpdateItemDto, expected?: ExpectedValues) {
@@ -181,7 +275,11 @@ export class ItemsService {
     const write = (db: Prisma.TransactionClient) =>
       db.inventoryItem.update({
         where: { id },
-        data: dto,
+        // Pasar a litros, kilos o metros borra el contenido por unidad.
+        data:
+          dto.unit && dto.unit !== UnitOfMeasure.UNIT
+            ? { ...dto, contentPerUnit: null, contentUnit: null }
+            : dto,
         include: STOCK_INCLUDE,
       });
     try {

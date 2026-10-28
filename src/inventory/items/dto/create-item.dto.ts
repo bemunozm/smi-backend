@@ -3,7 +3,9 @@ import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
+  IsIn,
   IsNumber,
+  Max,
   IsOptional,
   IsString,
   IsUUID,
@@ -16,6 +18,13 @@ import {
 const normalizeSku = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toUpperCase() : value;
 
+/** Unidades en que se puede medir el contenido de una unidad (no «unidades»). */
+export const CONTENT_UNITS: UnitOfMeasure[] = [
+  UnitOfMeasure.LITER,
+  UnitOfMeasure.KILOGRAM,
+  UnitOfMeasure.METER,
+];
+
 export class CreateItemDto {
   /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
    * offline. Opcional para no romper a un cliente que no lo manda. */
@@ -23,11 +32,13 @@ export class CreateItemDto {
   @IsUUID('4')
   id?: string;
 
+  /** Código interno. Opcional: sin él, el servicio genera uno (`SUM-0001`). */
+  @IsOptional()
   @Transform(normalizeSku)
   @IsString()
   @MinLength(1)
   @MaxLength(20)
-  sku!: string;
+  sku?: string;
 
   @IsString()
   @MinLength(1)
@@ -42,6 +53,26 @@ export class CreateItemDto {
   @IsOptional()
   @IsEnum(UnitOfMeasure)
   unit?: UnitOfMeasure;
+
+  /**
+   * Contenido de cada unidad (ej. 10 para un bidón de 10 L). Solo aplica si el
+   * ítem se cuenta en unidades; con litros, kilos o metros se ignora.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({}, { message: 'El contenido por unidad tiene que ser un número.' })
+  @Min(0.001, { message: 'El contenido por unidad tiene que ser mayor a 0.' })
+  @Max(100_000, {
+    message: 'El contenido por unidad no puede superar 100.000.',
+  })
+  contentPerUnit?: number;
+
+  /** En qué se mide ese contenido: litros, kilos o metros. */
+  @IsOptional()
+  @IsIn(CONTENT_UNITS, {
+    message: 'El contenido se mide en litros, kilos o metros.',
+  })
+  contentUnit?: UnitOfMeasure;
 
   /** Suministro (consumible) o repuesto (pieza). Por defecto, suministro. */
   @IsOptional()

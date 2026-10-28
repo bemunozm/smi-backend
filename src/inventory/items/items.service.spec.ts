@@ -1,6 +1,11 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { MovementReason, Prisma } from '@prisma/client';
+import {
+  ItemType,
+  MovementReason,
+  Prisma,
+  UnitOfMeasure,
+} from '@prisma/client';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
@@ -210,6 +215,98 @@ describe('ItemsService', () => {
       await expect(service.create(dto, 'u1')).rejects.toThrow(
         ConflictException,
       );
+    });
+
+    describe('SKU generado (el formulario ya no lo pide)', () => {
+      const datosDe = (n: number) =>
+        (create.mock.calls[n] as [{ data: Record<string, unknown> }])[0].data;
+
+      it('sin SKU, toma el siguiente número del prefijo (SUM- para suministros)', async () => {
+        findMany.mockResolvedValueOnce([
+          { sku: 'SUM-0001' },
+          { sku: 'SUM-0002' },
+          { sku: 'SUM-ABC' },
+        ]);
+        create.mockResolvedValue({ id: 'i1' });
+        findUniqueOrThrow.mockResolvedValue({ id: 'i1' });
+
+        await service.create({ name: 'AdBlue' }, 'u1');
+
+        expect(findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ where: { sku: { startsWith: 'SUM-' } } }),
+        );
+        expect(datosDe(0).sku).toBe('SUM-0003');
+      });
+
+      it('un repuesto usa REP-', async () => {
+        findMany.mockResolvedValueOnce([]);
+        create.mockResolvedValue({ id: 'i1' });
+        findUniqueOrThrow.mockResolvedValue({ id: 'i1' });
+
+        await service.create({ name: 'Filtro', type: ItemType.PART }, 'u1');
+
+        expect(datosDe(0).sku).toBe('REP-0001');
+      });
+
+      it('si otra alta tomó el mismo número, reintenta con el siguiente', async () => {
+        findMany
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([{ sku: 'SUM-0001' }]);
+        create
+          .mockRejectedValueOnce(prismaError('P2002'))
+          .mockResolvedValueOnce({ id: 'i1' });
+        findUniqueOrThrow.mockResolvedValue({ id: 'i1' });
+
+        await service.create({ name: 'AdBlue' }, 'u1');
+
+        expect(create).toHaveBeenCalledTimes(2);
+        expect(datosDe(1).sku).toBe('SUM-0002');
+      });
+    });
+
+    describe('contenido por unidad', () => {
+      const datos = () =>
+        (create.mock.calls[0] as [{ data: Record<string, unknown> }])[0].data;
+
+      it('en unidades se guarda (bidón de 10 L); sin unidad del contenido, litros', async () => {
+        create.mockResolvedValue({ id: 'i1' });
+        findUniqueOrThrow.mockResolvedValue({ id: 'i1' });
+
+        await service.create(
+          {
+            sku: 'ADB-10',
+            name: 'AdBlue bidón',
+            unit: UnitOfMeasure.UNIT,
+            contentPerUnit: 10,
+          },
+          'u1',
+        );
+
+        expect(datos()).toMatchObject({
+          contentPerUnit: 10,
+          contentUnit: UnitOfMeasure.LITER,
+        });
+      });
+
+      it('en litros no aplica: se guarda vacío', async () => {
+        create.mockResolvedValue({ id: 'i1' });
+        findUniqueOrThrow.mockResolvedValue({ id: 'i1' });
+
+        await service.create(
+          {
+            sku: 'ADB-L',
+            name: 'AdBlue granel',
+            unit: UnitOfMeasure.LITER,
+            contentPerUnit: 10,
+          },
+          'u1',
+        );
+
+        expect(datos()).toMatchObject({
+          contentPerUnit: null,
+          contentUnit: null,
+        });
+      });
     });
 
     it('explica que la categoría no existe cuando falla la FK', async () => {

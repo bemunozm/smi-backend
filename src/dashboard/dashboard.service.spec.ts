@@ -844,6 +844,24 @@ describe('DashboardService.resumenDia', () => {
       nombre: 'AdBlue 20L',
       stock: 150.5,
       unidad: 'LITER',
+      stockLitros: null,
+    });
+  });
+
+  it('adBlue en bidones: el saldo también en litros (12 u × 10 L = 120 L)', async () => {
+    prisma.inventoryItem.findFirst.mockReset();
+    prisma.inventoryItem.findFirst.mockResolvedValue({
+      id: 'i3',
+      name: 'AdBlue bidón 10 L',
+      unit: 'UNIT',
+      contentPerUnit: 10,
+      contentUnit: 'LITER',
+      stocks: [{ quantity: 12 }],
+    });
+    expect((await service.resumenDia()).adBlue).toMatchObject({
+      stock: 12,
+      unidad: 'UNIT',
+      stockLitros: 120,
     });
   });
 
