@@ -41,6 +41,14 @@ const TRABAJO_EXTRA_INCLUDE = {
   equipo: { select: { internalCode: true } },
 } satisfies Prisma.TrabajoExtraordinarioInclude;
 
+/**
+ * El cliente omite `createdById` en TODAS las consultas (`PrismaService`,
+ * para que nunca salga crudo en una respuesta). `registradoPor` se resuelve
+ * desde ese id, así que las consultas que arman la respuesta lo piden explícito:
+ * sin esto, «Registrado por» salía vacío siempre, también en los registros nuevos.
+ */
+const CON_DUENO = { createdById: false } as const;
+
 /** Un trabajo tal como sale a la API: sin `createdById` crudo — en su lugar
  * va `registradoPor`, el nombre resuelto de quien lo registró (null si la
  * cuenta ya no existe). */
@@ -184,6 +192,7 @@ export class TrabajosExtraService {
         ...datos,
       },
       include: TRABAJO_EXTRA_INCLUDE,
+      omit: CON_DUENO,
     });
     const nombres = await resolveNombresUsuarios(this.prisma, [userId]);
     return this.shape(creado, nombres);
@@ -193,6 +202,7 @@ export class TrabajosExtraService {
     const registros = await this.prisma.trabajoExtraordinario.findMany({
       orderBy: { fecha: 'desc' },
       include: TRABAJO_EXTRA_INCLUDE,
+      omit: CON_DUENO,
     });
     const nombres = await resolveNombresUsuarios(
       this.prisma,
@@ -205,6 +215,7 @@ export class TrabajosExtraService {
     const reg = await this.prisma.trabajoExtraordinario.findUnique({
       where: { id },
       include: TRABAJO_EXTRA_INCLUDE,
+      omit: CON_DUENO,
     });
     if (!reg) throw new NotFoundException('Registro no encontrado');
     const nombres = await resolveNombresUsuarios(this.prisma, [reg.createdById]);
@@ -278,6 +289,7 @@ export class TrabajosExtraService {
             t.trabajoExtraordinario.findUnique({
               where: { id },
               include: TRABAJO_EXTRA_INCLUDE,
+              omit: CON_DUENO,
             }),
           comparable: datosDe,
           desired: async (actual) => ({ ...(await montar(actual)) }),
@@ -323,6 +335,7 @@ export class TrabajosExtraService {
           where: { id },
           data: nuevo,
           include: TRABAJO_EXTRA_INCLUDE,
+          omit: CON_DUENO,
         });
         await this.changeLog.record(tx, 'trabajo_extra', id, editor, diff);
         return { registro: editado, cambios: diff, codigo: codigoNuevo };

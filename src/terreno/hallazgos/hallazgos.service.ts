@@ -85,6 +85,14 @@ const HALLAZGO_INCLUDE = {
   equipo: { select: { internalCode: true } },
 } satisfies Prisma.HallazgoInclude;
 
+/**
+ * El cliente omite `createdById` en TODAS las consultas (`PrismaService`,
+ * para que nunca salga crudo en una respuesta). `registradoPor` se resuelve
+ * desde ese id, así que las consultas que arman la respuesta lo piden explícito:
+ * sin esto, «Registrado por» salía vacío siempre, también en los registros nuevos.
+ */
+const CON_DUENO = { createdById: false } as const;
+
 /** La fila completa con su equipo — `shape` la convierte en la forma de la API. */
 type HallazgoWithEquipo = Prisma.HallazgoGetPayload<{
   include: typeof HALLAZGO_INCLUDE;
@@ -165,6 +173,7 @@ export class HallazgosService {
           fecha,
         },
         include: HALLAZGO_INCLUDE,
+        omit: CON_DUENO,
       });
     } catch (error: unknown) {
       // El objeto ya está reclamado en el bucket: si la fila no se escribe,
@@ -194,6 +203,7 @@ export class HallazgosService {
     const registros = await this.prisma.hallazgo.findMany({
       orderBy: { fecha: 'desc' },
       include: HALLAZGO_INCLUDE,
+      omit: CON_DUENO,
     });
     const nombres = await resolveNombresUsuarios(
       this.prisma,
@@ -206,6 +216,7 @@ export class HallazgosService {
     const reg = await this.prisma.hallazgo.findUnique({
       where: { id },
       include: HALLAZGO_INCLUDE,
+      omit: CON_DUENO,
     });
     if (!reg) throw new NotFoundException('Hallazgo no encontrado');
     const nombres = await resolveNombresUsuarios(this.prisma, [reg.createdById]);
@@ -249,6 +260,7 @@ export class HallazgosService {
             t.hallazgo.findUnique({
               where: { id },
               include: HALLAZGO_INCLUDE,
+              omit: CON_DUENO,
             }),
           comparable: datosDe,
           desired: (actual) => ({ ...mergeDatos(actual, dto) }),
@@ -289,6 +301,7 @@ export class HallazgosService {
           where: { id },
           data: nuevo,
           include: HALLAZGO_INCLUDE,
+          omit: CON_DUENO,
         });
         await this.changeLog.record(tx, 'hallazgo', id, editor, diff);
         return { registro: editado, cambios: diff, codigo: codigoNuevo };
