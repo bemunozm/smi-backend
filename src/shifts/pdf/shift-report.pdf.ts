@@ -11,7 +11,7 @@ import { formatBusinessDateTime } from '../../common/dates/business-time';
 /** Encabezado de texto del PDF — la razón social del cliente hasta que llegue
  * su logo. Si un segundo cliente aparece, esto se mueve a config (por ahora
  * un único cliente, no vale la pena la indirección). */
-export const SHIFT_REPORT_MASTHEAD = 'TRANSPORTES OPTIMIZA SPA';
+export const SHIFT_REPORT_MASTHEAD = 'SIMA SPA';
 const REPORT_TITLE = 'Reporte de salida de turno';
 
 export interface ShiftReportCardInput {

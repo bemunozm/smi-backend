@@ -71,7 +71,7 @@ describe('buildShiftExitReportDocDefinition', () => {
     });
 
     const content = doc.content as Content[];
-    expect(content[0]).toMatchObject({ text: 'TRANSPORTES OPTIMIZA SPA' });
+    expect(content[0]).toMatchObject({ text: 'SIMA SPA' });
     expect(content[1]).toMatchObject({ text: 'Reporte de salida de turno' });
   });
 
