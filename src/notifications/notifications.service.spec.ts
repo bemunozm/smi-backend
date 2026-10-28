@@ -6,6 +6,7 @@ import { PrismaService } from '../common/prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import { UsersService } from '../users/users.service';
 import { NotificationsService } from './notifications.service';
+import { PushService } from './push.service';
 
 describe('NotificationsService', () => {
   let service: NotificationsService;
@@ -17,8 +18,11 @@ describe('NotificationsService', () => {
   const findUniqueUser = jest.fn();
   const sendMail = jest.fn();
   const findByRole = jest.fn();
+  const sendToUser = jest.fn();
 
   beforeEach(async () => {
+    sendToUser.mockReset();
+    sendToUser.mockResolvedValue(undefined);
     findMany.mockReset();
     count.mockReset();
     updateMany.mockReset();
@@ -39,6 +43,7 @@ describe('NotificationsService', () => {
         },
         { provide: MailService, useValue: { sendMail } },
         { provide: UsersService, useValue: { findByRole } },
+        { provide: PushService, useValue: { sendToUser } },
       ],
     }).compile();
 
@@ -276,5 +281,102 @@ describe('NotificationsService', () => {
         data: { leida: true },
       });
     });
+  });
+});
+
+/**
+ * Canal push: cuelga de `createNotificationRow` (único punto de escritura),
+ * así que TODO camino que crea una fila dispara `PushService.sendToUser`.
+ */
+describe('NotificationsService — push', () => {
+  // Redeclarado acá (el describe de arriba cierra su scope): mismo módulo de
+  // testing, con `sendToUser` como protagonista.
+  const findMany = jest.fn();
+  const count = jest.fn();
+  const updateMany = jest.fn();
+  const create = jest.fn();
+  const findUniqueUser = jest.fn();
+  const sendMail = jest.fn();
+  const findByRole = jest.fn();
+  const sendToUser = jest.fn();
+
+  let service: NotificationsService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    sendToUser.mockResolvedValue(undefined);
+    findUniqueUser.mockResolvedValue({ email: 'u1@smi.local' });
+    sendMail.mockResolvedValue(true);
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        NotificationsService,
+        {
+          provide: PrismaService,
+          useValue: {
+            notification: { findMany, count, updateMany, create },
+            user: { findUnique: findUniqueUser },
+          },
+        },
+        { provide: MailService, useValue: { sendMail } },
+        { provide: UsersService, useValue: { findByRole } },
+        { provide: PushService, useValue: { sendToUser } },
+      ],
+    }).compile();
+
+    service = module.get<NotificationsService>(NotificationsService);
+  });
+
+  it('createForUser dispara push.sendToUser con { notificationId, tipo, titulo, cuerpo, data }', async () => {
+    create.mockResolvedValue({ id: 'n1', userId: 'u1' });
+
+    await service.createForUser('u1', {
+      tipo: 'orden.assigned',
+      titulo: 'Orden asignada',
+      cuerpo: 'detalle',
+      data: { equipoId: 'e1' },
+    });
+
+    expect(sendToUser).toHaveBeenCalledWith('u1', {
+      notificationId: 'n1',
+      tipo: 'orden.assigned',
+      titulo: 'Orden asignada',
+      cuerpo: 'detalle',
+      data: { equipoId: 'e1' },
+    });
+  });
+
+  it('createForRoles dispara un push por cada destinatario del fan-out', async () => {
+    findByRole.mockImplementation((role: string) =>
+      role === ROLES.ADMIN
+        ? Promise.resolve([{ id: 'u1', email: 'a@smi.local', name: 'A' }])
+        : Promise.resolve([{ id: 'u2', email: 'b@smi.local', name: 'B' }]),
+    );
+    create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+      Promise.resolve({ id: `n-${data.userId as string}`, ...data }),
+    );
+
+    await service.createForRoles([ROLES.ADMIN, ROLES.SUPERVISOR], {
+      tipo: 'hallazgo.created',
+      titulo: 'Nuevo hallazgo',
+      cuerpo: 'desc',
+    });
+
+    expect(sendToUser).toHaveBeenCalledTimes(2);
+    expect(sendToUser).toHaveBeenCalledWith('u1', expect.objectContaining({ notificationId: 'n-u1' }));
+    expect(sendToUser).toHaveBeenCalledWith('u2', expect.objectContaining({ notificationId: 'n-u2' }));
+  });
+
+  it('un push.sendToUser que rechaza no afecta el resultado de createForUser', async () => {
+    create.mockResolvedValue({ id: 'n1', userId: 'u1' });
+    sendToUser.mockRejectedValue(new Error('push caído'));
+
+    const result = await service.createForUser('u1', {
+      tipo: 'orden.assigned',
+      titulo: 'Orden asignada',
+      cuerpo: 'detalle',
+    });
+
+    expect(result).toEqual({ id: 'n1', userId: 'u1' });
   });
 });
