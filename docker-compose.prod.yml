@@ -45,6 +45,12 @@ x-backend-env: &backend-env
   SMTP_SECURE: ${SMTP_SECURE:-}
   SHIFT_REPORT_EXTRA_RECIPIENTS: ${SHIFT_REPORT_EXTRA_RECIPIENTS:-}
   OCR_WORKER_URL: http://ocr-worker:8010
+  # Web Push (src/common/config/env.ts): con NODE_ENV=production las claves son
+  # obligatorias y el backend NO arranca sin ellas — el guard `:?` hace que el
+  # deploy falle con un mensaje claro en vez de un contenedor en crash-loop.
+  VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?define VAPID_PUBLIC_KEY en .env (npx web-push generate-vapid-keys)}
+  VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?define VAPID_PRIVATE_KEY en .env (npx web-push generate-vapid-keys)}
+  VAPID_SUBJECT: ${VAPID_SUBJECT:-}
 
 services:
   postgres:
