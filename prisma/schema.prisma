@@ -124,6 +124,22 @@ model Notification {
   @@map("notification")
 }
 
+/// Suscripción Web Push de UN dispositivo (navegador instalado). `userId` es
+/// el dueño ACTUAL: en una tablet compartida, el upsert reasigna el endpoint
+/// a quien está logueado (ver PushService.saveSubscription).
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String // soft ref → user.id, mismo criterio que Notification
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("push_subscription")
+}
+
 /// Historial de quién cambió qué en un registro ya enviado.
 ///
 /// Editar un reporte o un trabajo extraordinario no pide autorización previa,
