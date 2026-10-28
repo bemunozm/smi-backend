@@ -2,12 +2,18 @@ import { ItemType, UnitOfMeasure } from '@prisma/client';
 import {
   IsBoolean,
   IsEnum,
+  IsIn,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateIf,
 } from 'class-validator';
+
+import { CONTENT_UNITS } from './create-item.dto';
 
 /**
  * Edición de la ficha del ítem. **No incluye existencias a propósito**: el
@@ -63,6 +69,23 @@ export class UpdateItemDto {
   @IsOptional()
   @IsBoolean()
   isCritical?: boolean;
+
+  /** Contenido de cada unidad; `null` lo borra. Ver `CreateItemDto`. */
+  @IsOptional()
+  @ValidateIf((dto: UpdateItemDto) => dto.contentPerUnit !== null)
+  @IsNumber({}, { message: 'El contenido por unidad tiene que ser un número.' })
+  @Min(0.001, { message: 'El contenido por unidad tiene que ser mayor a 0.' })
+  @Max(100_000, {
+    message: 'El contenido por unidad no puede superar 100.000.',
+  })
+  contentPerUnit?: number | null;
+
+  @IsOptional()
+  @ValidateIf((dto: UpdateItemDto) => dto.contentUnit !== null)
+  @IsIn(CONTENT_UNITS, {
+    message: 'El contenido se mide en litros, kilos o metros.',
+  })
+  contentUnit?: UnitOfMeasure | null;
 
   /** Baja lógica: lo saca de los selectores sin perder su kardex. */
   @IsOptional()

@@ -93,6 +93,8 @@ export type ResumenDia = {
     nombre: string;
     stock: number;
     unidad: string;
+    /** El saldo en litros cuando el ítem se cuenta en bidones (12 u × 10 L = 120). */
+    stockLitros: number | null;
   } | null;
   operacionPorEquipo: {
     equipmentId: string;
@@ -715,15 +717,25 @@ export class DashboardService {
           id: true,
           name: true,
           unit: true,
+          contentPerUnit: true,
+          contentUnit: true,
           stocks: { select: { quantity: true } },
         },
       });
       if (item) {
+        const stock = round2(item.stocks.reduce((a, s) => a + s.quantity, 0));
+        const enBidones =
+          item.unit === 'UNIT' &&
+          item.contentPerUnit != null &&
+          (item.contentUnit ?? 'LITER') === 'LITER';
         return {
           itemId: item.id,
           nombre: item.name,
-          stock: round2(item.stocks.reduce((a, s) => a + s.quantity, 0)),
+          stock,
           unidad: item.unit,
+          stockLitros: enBidones
+            ? round2(stock * (item.contentPerUnit as number))
+            : null,
         };
       }
     }

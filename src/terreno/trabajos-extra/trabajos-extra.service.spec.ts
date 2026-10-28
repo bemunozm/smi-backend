@@ -865,8 +865,11 @@ describe('TrabajosExtraService', () => {
         { include: unknown; omit: unknown },
       ];
       expect(args.include).toEqual(INCLUDE);
-      // El `createdById` lo omite el cliente de Prisma, no cada consulta.
-      expect(args.omit).toBeUndefined();
+      // El cliente de Prisma omite `createdById` siempre; estas consultas lo
+      // piden explícito porque de ahí sale `registradoPor`. Sin esto, «Registrado
+      // por» salía vacío en todos los registros (el mock no aplica el omit global,
+      // por eso los tests de `registradoPor` pasaban igual).
+      expect(args.omit).toEqual({ createdById: false });
     }
 
     it('create y findAll piden el mismo include; la respuesta lleva equipo', async () => {

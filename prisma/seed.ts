@@ -543,7 +543,14 @@ async function seedFlotaEInventario(
 // Operación en Terreno — cuelga de los equipos de Flota
 // ============================================================================
 
-async function seedTerreno(equipos: Equipment[]): Promise<void> {
+/**
+ * `supervisorId`: quién registró los hallazgos y trabajos extra de prueba. Sin
+ * él, «Registrado por» sale vacío en los datos de desarrollo.
+ */
+async function seedTerreno(
+  equipos: Equipment[],
+  supervisorId: string | null,
+): Promise<void> {
   await prismaClient.registroCombustible.createMany({
     data: [
       { equipoId: equipos[0].id, litros: 120, tipo: 'PETROLEO' },
@@ -635,7 +642,7 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
         descripcion: 'Limpieza de cancha de acopio.',
         observaciones: null,
       },
-    ],
+    ].map((registro) => ({ ...registro, createdById: supervisorId })),
   });
 
   await prismaClient.hallazgo.createMany({
@@ -658,7 +665,7 @@ async function seedTerreno(equipos: Equipment[]): Promise<void> {
         prioridad: 'CRITICA',
         estado: 'ABIERTO',
       },
-    ],
+    ].map((registro) => ({ ...registro, createdById: supervisorId })),
   });
 
   logger.log(
@@ -819,7 +826,7 @@ async function seed(): Promise<void> {
   // `seedOperators()` ANTES que `seedTerreno(equipos)`: los trabajos extra
   // sembrados referencian operadores del catálogo, así que el catálogo tiene que existir primero.
   await seedOperators();
-  await seedTerreno(equipos);
+  await seedTerreno(equipos, supervisor?.id ?? null);
 
   // Primer nombre de `OPERATOR_NAMES` — cualquiera del catálogo sirve para
   // el estado "en uso" de Flota.

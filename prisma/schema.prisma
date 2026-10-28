@@ -423,12 +423,19 @@ model ItemCategory {
 
 model InventoryItem {
   id          String        @id @default(cuid())
-  /// Código interno del catálogo (ex `Insumo.codigo`).
+  /// Código interno del catálogo (ex `Insumo.codigo`). Si al crear no se
+  /// manda, el servicio lo genera (`SUM-0001`, `REP-0001`).
   sku         String        @unique
   name        String
   description String?
   unit        UnitOfMeasure @default(UNIT)
   type        ItemType      @default(SUPPLY)
+
+  /// Cuánto trae cada unidad, solo cuando el ítem se cuenta en unidades: un
+  /// bidón de AdBlue de 10 L → `contentPerUnit = 10`, `contentUnit = LITER`.
+  /// Así 12 unidades se leen como 120 L. Nulo en los ítems por litro, kilo o metro.
+  contentPerUnit Float?         @map("content_per_unit")
+  contentUnit    UnitOfMeasure? @map("content_unit")
 
   categoryId String?       @map("category_id")
   category   ItemCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
