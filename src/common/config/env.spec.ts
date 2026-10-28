@@ -5,6 +5,8 @@ import {
   parseAuthRateLimitEnabled,
   parseOcrWorkerUrl,
   parseStorageSignedUrlTtlSeconds,
+  parseVapidKeys,
+  parseVapidSubject,
 } from './env';
 
 /**
@@ -171,5 +173,46 @@ describe('parseOcrWorkerUrl', () => {
     expect(() => parseOcrWorkerUrl('ftp://ocr-worker:8010')).toThrow(
       /OCR_WORKER_URL/,
     );
+  });
+});
+
+/**
+ * VAPID: el par de claves es todo-o-nada (una sola configurada es un typo
+ * seguro), obligatorio en producción y opcional fuera (push deshabilitado).
+ */
+describe('parseVapidKeys', () => {
+  it('devuelve undefined sin claves fuera de producción', () => {
+    expect(parseVapidKeys(undefined, undefined, false)).toBeUndefined();
+  });
+
+  it('lanza en producción sin claves', () => {
+    expect(() => parseVapidKeys(undefined, undefined, true)).toThrow(/VAPID/);
+  });
+
+  it('lanza con solo una de las dos claves, en cualquier ambiente', () => {
+    expect(() => parseVapidKeys('pub', undefined, false)).toThrow(/VAPID/);
+    expect(() => parseVapidKeys(undefined, 'priv', true)).toThrow(/VAPID/);
+  });
+
+  it('devuelve el par cuando vienen ambas', () => {
+    expect(parseVapidKeys('pub', 'priv', true)).toEqual({
+      publicKey: 'pub',
+      privateKey: 'priv',
+    });
+  });
+});
+
+describe('parseVapidSubject', () => {
+  it('default dev cuando no viene', () => {
+    expect(parseVapidSubject(undefined)).toBe('mailto:dev@localhost');
+  });
+
+  it('acepta mailto: y https:', () => {
+    expect(parseVapidSubject('mailto:a@b.cl')).toBe('mailto:a@b.cl');
+    expect(parseVapidSubject('https://smi.evonova.cl')).toBe('https://smi.evonova.cl');
+  });
+
+  it('lanza con cualquier otra forma', () => {
+    expect(() => parseVapidSubject('a@b.cl')).toThrow(/VAPID_SUBJECT/);
   });
 });
