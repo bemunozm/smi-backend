@@ -363,8 +363,14 @@ describe('NotificationsService — push', () => {
     });
 
     expect(sendToUser).toHaveBeenCalledTimes(2);
-    expect(sendToUser).toHaveBeenCalledWith('u1', expect.objectContaining({ notificationId: 'n-u1' }));
-    expect(sendToUser).toHaveBeenCalledWith('u2', expect.objectContaining({ notificationId: 'n-u2' }));
+    expect(sendToUser).toHaveBeenCalledWith(
+      'u1',
+      expect.objectContaining({ notificationId: 'n-u1' }),
+    );
+    expect(sendToUser).toHaveBeenCalledWith(
+      'u2',
+      expect.objectContaining({ notificationId: 'n-u2' }),
+    );
   });
 
   it('un push.sendToUser que rechaza no afecta el resultado de createForUser', async () => {

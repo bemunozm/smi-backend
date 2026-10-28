@@ -209,7 +209,9 @@ describe('parseVapidSubject', () => {
 
   it('acepta mailto: y https:', () => {
     expect(parseVapidSubject('mailto:a@b.cl')).toBe('mailto:a@b.cl');
-    expect(parseVapidSubject('https://smi.evonova.cl')).toBe('https://smi.evonova.cl');
+    expect(parseVapidSubject('https://smi.evonova.cl')).toBe(
+      'https://smi.evonova.cl',
+    );
   });
 
   it('lanza con cualquier otra forma', () => {

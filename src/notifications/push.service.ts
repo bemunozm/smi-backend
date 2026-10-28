@@ -42,7 +42,7 @@ interface SubscriptionRow {
 
 function statusCodeOf(error: unknown): number | undefined {
   if (typeof error === 'object' && error !== null && 'statusCode' in error) {
-    const code = (error as { statusCode: unknown }).statusCode;
+    const code = error.statusCode;
     return typeof code === 'number' ? code : undefined;
   }
   return undefined;

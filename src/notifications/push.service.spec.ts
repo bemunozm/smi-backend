@@ -39,6 +39,10 @@ describe('PushService', () => {
     cuerpo: 'detalle',
   };
 
+  // Como `WebPushError` real: un Error con `statusCode` del push service.
+  const webPushError = (statusCode: number) =>
+    Object.assign(new Error(`push ${statusCode}`), { statusCode });
+
   const sub = (endpoint: string) => ({
     id: `id-${endpoint}`,
     userId: 'u1',
@@ -111,17 +115,20 @@ describe('PushService', () => {
 
     await service.sendToUser('u1', { ...payload, cuerpo: 'x'.repeat(1500) });
 
-    const body = sendNotification.mock.calls[0][1] as string;
-    const parsed = JSON.parse(body) as { cuerpo: string };
+    const calls = sendNotification.mock.calls as [unknown, string][];
+    const parsed = JSON.parse(calls[0][1]) as { cuerpo: string };
     expect(parsed.cuerpo.length).toBe(1000);
     expect(parsed.cuerpo.endsWith('…')).toBe(true);
   });
 
   it('un rechazo con statusCode 410 borra ESA suscripción y las demás se envían igual', async () => {
-    findMany.mockResolvedValue([sub('https://push/muerta'), sub('https://push/viva')]);
+    findMany.mockResolvedValue([
+      sub('https://push/muerta'),
+      sub('https://push/viva'),
+    ]);
     sendNotification.mockImplementation((target: { endpoint: string }) =>
       target.endpoint === 'https://push/muerta'
-        ? Promise.reject({ statusCode: 410 })
+        ? Promise.reject(webPushError(410))
         : Promise.resolve({ statusCode: 201 }),
     );
     const service = await makeService();
@@ -137,7 +144,7 @@ describe('PushService', () => {
 
   it('un rechazo con statusCode 404 borra la suscripción', async () => {
     findMany.mockResolvedValue([sub('https://push/a')]);
-    sendNotification.mockRejectedValue({ statusCode: 404 });
+    sendNotification.mockRejectedValue(webPushError(404));
     const service = await makeService();
 
     await service.sendToUser('u1', payload);
@@ -149,7 +156,7 @@ describe('PushService', () => {
 
   it('un rechazo con otro statusCode (403) NO borra la suscripción y no lanza', async () => {
     findMany.mockResolvedValue([sub('https://push/a')]);
-    sendNotification.mockRejectedValue({ statusCode: 403 });
+    sendNotification.mockRejectedValue(webPushError(403));
     const service = await makeService();
 
     await expect(service.sendToUser('u1', payload)).resolves.toBeUndefined();
@@ -179,7 +186,12 @@ describe('PushService', () => {
 
     expect(upsert).toHaveBeenCalledWith({
       where: { endpoint: 'https://push/a' },
-      update: { userId: 'u2', p256dh: 'p', auth: 'a', userAgent: 'Mozilla/5.0' },
+      update: {
+        userId: 'u2',
+        p256dh: 'p',
+        auth: 'a',
+        userAgent: 'Mozilla/5.0',
+      },
       create: {
         userId: 'u2',
         endpoint: 'https://push/a',
