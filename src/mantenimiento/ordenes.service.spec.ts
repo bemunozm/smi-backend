@@ -88,6 +88,7 @@ describe('OrdenesService', () => {
   const recordDeleteMany = jest.fn();
   const planItemFindUnique = jest.fn();
   const equipmentFindUnique = jest.fn();
+  const equipmentUpdate = jest.fn();
   const claimTmp = jest.fn();
   const sign = jest.fn();
   const discard = jest.fn();
@@ -122,6 +123,7 @@ describe('OrdenesService', () => {
       currentHourmeter: 245,
       currentMileage: null,
     });
+    equipmentUpdate.mockReset();
     stockIssue.mockReset();
     emitPending.mockReset();
     claimTmp.mockReset();
@@ -166,7 +168,10 @@ describe('OrdenesService', () => {
             },
             user: { findMany: userFindMany },
             // `resolveEquipmentId` corre fuera de la transacción.
-            equipment: { findUnique: equipmentFindUnique },
+            equipment: {
+              findUnique: equipmentFindUnique,
+              update: equipmentUpdate,
+            },
             // Con `X-Expected` la escritura va en una transacción que bloquea
             // la fila: el mock ejecuta el callback con el mismo cliente.
             $queryRaw: queryRaw,
@@ -191,7 +196,10 @@ describe('OrdenesService', () => {
                   deleteMany: recordDeleteMany,
                 },
                 maintenancePlanItem: { findUnique: planItemFindUnique },
-                equipment: { findUnique: equipmentFindUnique },
+                equipment: {
+                  findUnique: equipmentFindUnique,
+                  update: equipmentUpdate,
+                },
                 $queryRaw: queryRaw,
               }),
           },
@@ -739,6 +747,90 @@ describe('OrdenesService', () => {
         ),
       ).rejects.toThrow('boom');
       expect(emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('update — estado del equipo al completar ("Finalizar tarea")', () => {
+    const enProceso = { ...MOCK_ORDEN, estado: 'EN_PROCESO' };
+
+    beforeEach(() => {
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+    });
+
+    it('a COMPLETADA con equipmentStatus: deja el equipo en ese estado dentro de la transacción', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(enProceso);
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...enProceso,
+        estado: 'COMPLETADA',
+      });
+
+      await service.update('orden_1', {
+        estado: 'COMPLETADA',
+        equipmentStatus: 'OUT_OF_SERVICE',
+      });
+
+      // `equipoId` de la OT ('CM-003') resuelto contra Flota, como en insumos.
+      expect(equipmentUpdate).toHaveBeenCalledWith({
+        where: { id: 'eq_flota_1' },
+        data: { status: 'OUT_OF_SERVICE' },
+      });
+    });
+
+    it('equipmentStatus sin pasar a COMPLETADA: 400 y no escribe nada', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(enProceso);
+
+      await expect(
+        service.update('orden_1', {
+          titulo: 'Otro título',
+          equipmentStatus: 'OPERATIONAL',
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
+      expect(equipmentUpdate).not.toHaveBeenCalled();
+    });
+
+    it('equipo no resoluble (texto libre): completa la orden sin tocar Flota', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(enProceso);
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...enProceso,
+        estado: 'COMPLETADA',
+      });
+      equipmentFindUnique.mockResolvedValue(null);
+
+      await service.update('orden_1', {
+        estado: 'COMPLETADA',
+        equipmentStatus: 'OPERATIONAL',
+      });
+
+      expect(ordenTrabajoUpdate).toHaveBeenCalled();
+      expect(equipmentUpdate).not.toHaveBeenCalled();
+    });
+
+    it('con X-Expected el equipo también se actualiza (misma transacción del cierre)', async () => {
+      queryRaw.mockResolvedValue([{ id: 'orden_1' }]);
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce(enProceso)
+        .mockResolvedValueOnce({
+          estado: 'EN_PROCESO',
+          asignadoAId: 'user_mantenedor',
+          prioridad: 'CRITICA',
+          titulo: 'Frenos con baja respuesta',
+        });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...enProceso,
+        estado: 'COMPLETADA',
+      });
+
+      await service.update(
+        'orden_1',
+        { estado: 'COMPLETADA', equipmentStatus: 'OPERATIONAL' },
+        { estado: 'EN_PROCESO' },
+      );
+
+      expect(equipmentUpdate).toHaveBeenCalledWith({
+        where: { id: 'eq_flota_1' },
+        data: { status: 'OPERATIONAL' },
+      });
     });
   });
 
