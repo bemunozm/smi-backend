@@ -225,6 +225,26 @@ export class OrdenesService {
   ): Promise<OrdenResponseDto> {
     const ordenAnterior = await this.findOrdenOrThrow(id);
 
+    // "Finalizar tarea" del taller: el mantenedor declara cómo queda la
+    // unidad SOLO al completar la orden — fuera de ese cruce sería un canal
+    // paralelo al PATCH de Flota, que tiene su propio gate de roles.
+    if (dto.equipmentStatus && dto.estado !== EstadoOT.COMPLETADA) {
+      throw new BadRequestException(
+        'El estado del equipo solo puede cambiarse al completar la orden',
+      );
+    }
+    // `equipoId` de la OT es texto libre (suele ser el código interno): se
+    // resuelve contra Flota igual que en los insumos. Si no resuelve, el
+    // cierre NO se bloquea — no hay unidad que actualizar.
+    const equipmentId = dto.equipmentStatus
+      ? await this.resolveEquipmentId(ordenAnterior.equipoId)
+      : null;
+    if (dto.equipmentStatus && !equipmentId) {
+      this.logger.warn(
+        `Orden ${id}: equipo "${ordenAnterior.equipoId}" no resuelto en Flota — su estado no se actualiza`,
+      );
+    }
+
     const write = (db: Prisma.TransactionClient) =>
       db.ordenTrabajo.update({
         where: { id },
@@ -237,6 +257,16 @@ export class OrdenesService {
         select: ORDEN_SELECT,
       });
 
+    // En la MISMA transacción que el cierre: una orden completada con el
+    // equipo a medio actualizar contaría dos historias.
+    const applyEquipmentStatus = async (tx: Prisma.TransactionClient) => {
+      if (!dto.equipmentStatus || !equipmentId) return;
+      await tx.equipment.update({
+        where: { id: equipmentId },
+        data: { status: dto.equipmentStatus },
+      });
+    };
+
     let orden: SelectedOrden;
     let estadoAnterior = ordenAnterior.estado;
     if (!expected) {
@@ -245,6 +275,7 @@ export class OrdenesService {
       orden = await this.prisma.$transaction(async (tx) => {
         const actualizada = await write(tx);
         await this.syncHallazgoEstado(tx, actualizada, estadoAnterior);
+        await applyEquipmentStatus(tx);
         return actualizada;
       });
     } else {
@@ -267,12 +298,20 @@ export class OrdenesService {
                   titulo: true,
                 },
               }),
-            desired: definedFields(dto),
+            // Solo los campos de la ORDEN: `equipmentStatus` no es columna de
+            // la fila y no participa de la precondición.
+            desired: definedFields({
+              estado: dto.estado,
+              asignadoAId: dto.asignadoAId,
+              prioridad: dto.prioridad,
+              titulo: dto.titulo,
+            }),
             labels: CAMPO_LABEL,
             notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
           });
           const actualizada = await write(tx);
           await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
+          await applyEquipmentStatus(tx);
           return { orden: actualizada, estadoAnterior: vigente.estado };
         },
       ));
