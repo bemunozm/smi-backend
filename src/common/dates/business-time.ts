@@ -57,3 +57,31 @@ export function formatBusinessDateTime(date: Date): string {
 export function businessDayKey(fecha: Date): string {
   return todayInBusinessTimeZone(fecha);
 }
+
+/**
+ * Instante DENTRO del día de calendario chileno `dateOnly` (`YYYY-MM-DD`),
+ * para fechar registros cargados a posteriori (días pasados): el dashboard y
+ * las fichas agrupan por `businessDayKey(fecha)`, así que lo que importa es
+ * que el instante caiga en ese día, no la hora exacta. Con el offset fijo −3,
+ * en invierno chileno (UTC-4) el instante queda una hora antes en el reloj
+ * local (11:00 / 19:30) pero siempre dentro del mismo día.
+ */
+export function businessDayInstant(
+  dateOnly: string,
+  time: '12:00' | '20:30' = '12:00',
+): Date {
+  return new Date(`${dateOnly}T${time}:00-03:00`);
+}
+
+/**
+ * ¿`dateOnly` es estrictamente anterior al día de calendario chileno de
+ * `now`? Comparación de strings ISO (`YYYY-MM-DD` ordena igual que la fecha).
+ * Es el criterio de "turno de un día pasado" que relaja validaciones de
+ * backfill (equipo no operativo) y activa el fechado histórico.
+ */
+export function isPastBusinessDay(
+  dateOnly: string,
+  now: Date = new Date(),
+): boolean {
+  return dateOnly < todayInBusinessTimeZone(now);
+}
