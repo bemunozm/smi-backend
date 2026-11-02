@@ -591,6 +591,81 @@ describe('ShiftsService', () => {
           service.openCard({ ...dto, shiftDate: pasado }, session),
         ).rejects.toMatchObject({ response: { code: 'EQUIPMENT_BUSY' } });
       });
+
+      /**
+       * Antes de las 08:00 el frontend VIVO manda `shiftDate` de ayer
+       * (`fechaDeTurno`): el NOCTURNO que corre desde anoche NO es carga
+       * histórica aunque su día de negocio ya haya pasado. Sin esta
+       * distinción, un equipo agregado al turno a las 02:00 se saltaría el
+       * guard de "no operativo" y quedaría fechado sintético a las 20:30 de
+       * ayer (y su cierre de las 07:00, también).
+       */
+      describe('madrugada: el NOCTURNO vivo de anoche no es carga histórica', () => {
+        // 05:00Z del 02-11 = 02:00 en Chile (UTC-3 en noviembre) → el
+        // nocturno vigente es el del 2026-11-01.
+        const MADRUGADA = new Date('2026-11-02T05:00:00.000Z');
+        const NOCTURNO_ANOCHE = {
+          shiftDate: '2026-11-01',
+          shiftType: 'NOCTURNO' as const,
+        };
+
+        beforeEach(() => {
+          jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+          jest.setSystemTime(MADRUGADA);
+        });
+        afterEach(() => jest.useRealTimers());
+
+        it('a las 02:00, equipo no operativo → sigue 409 (flujo vivo)', async () => {
+          prisma.equipment.findUnique.mockResolvedValue({
+            status: 'IN_WORKSHOP',
+          });
+
+          await expect(
+            service.openCard(
+              { ...dto, ...NOCTURNO_ANOCHE, capturedAt: iso() },
+              session,
+            ),
+          ).rejects.toMatchObject({
+            response: { code: 'EQUIPMENT_NOT_OPERATIONAL' },
+          });
+        });
+
+        it('a las 02:00, la tarjeta se fecha con la hora REAL de captura, no sintética', async () => {
+          const capturedAt = iso();
+          await service.openCard(
+            { ...dto, ...NOCTURNO_ANOCHE, capturedAt },
+            session,
+          );
+
+          const data = lastCallData(tx.registroHorometro.create);
+          expect((data.fecha as Date).toISOString()).toBe(
+            new Date(capturedAt).toISOString(),
+          );
+        });
+
+        it('a las 10:00 ese nocturno YA terminó: vuelve a ser carga histórica (fecha sintética)', async () => {
+          jest.setSystemTime(new Date('2026-11-02T13:00:00.000Z')); // 10:00 Chile
+          prisma.equipment.findUnique.mockResolvedValue({
+            status: 'IN_WORKSHOP',
+          });
+          tx.equipment.findUnique.mockResolvedValue({
+            status: 'IN_WORKSHOP',
+            controlUnit: 'HOURS',
+            currentHourmeter: null,
+            currentMileage: null,
+          });
+
+          await service.openCard(
+            { ...dto, ...NOCTURNO_ANOCHE, capturedAt: iso() },
+            session,
+          );
+
+          const data = lastCallData(tx.registroHorometro.create);
+          expect((data.fecha as Date).toISOString()).toBe(
+            '2026-11-01T23:30:00.000Z',
+          );
+        });
+      });
     });
 
     describe('ventana de shiftDate', () => {

@@ -16,7 +16,11 @@ import {
   type ValidationOptions,
 } from 'class-validator';
 
-import { todayInBusinessTimeZone } from '../common/dates/business-time';
+import {
+  businessHour,
+  isPastBusinessDay,
+  todayInBusinessTimeZone,
+} from '../common/dates/business-time';
 import { ERROR_CODES } from '../common/errors/error-codes';
 
 export const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
@@ -51,6 +55,31 @@ export function isValidDateOnly(value: string): boolean {
   const parsed = parseDateOnlyUtc(value);
   if (Number.isNaN(parsed.getTime())) return false;
   return formatDateOnly(parsed) === value;
+}
+
+/**
+ * ¿El par (shiftDate, shiftType) es un turno YA TERMINADO de un día de
+ * negocio pasado — es decir, carga histórica y no flujo vivo?
+ *
+ * La trampa es el NOCTURNO: corre de 20:00 a 08:00 del día siguiente, y
+ * antes de las 08:00 el frontend vivo manda el `shiftDate` de AYER
+ * (`fechaDeTurno`). Ese turno tiene día de negocio pasado pero sigue
+ * corriendo: tratarlo como backfill saltaría el guard de equipo no
+ * operativo y fecharía sintético un registro vivo. El espejo frontend es
+ * `lib/turno.ts#esTurnoPasado`.
+ */
+export function isPastShift(
+  shiftDate: string,
+  shiftType: string,
+  now: Date = new Date(),
+): boolean {
+  if (!isPastBusinessDay(shiftDate, now)) return false;
+  if (shiftType !== 'NOCTURNO') return true;
+  const ayer = parseDateOnlyUtc(todayInBusinessTimeZone(now));
+  ayer.setUTCDate(ayer.getUTCDate() - 1);
+  const esNocturnoDeAnoche = shiftDate === formatDateOnly(ayer);
+  // Hasta las 08:00 en Chile, el nocturno de anoche sigue vivo.
+  return !(esNocturnoDeAnoche && businessHour(now) < 8);
 }
 
 /**

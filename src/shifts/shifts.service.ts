@@ -67,6 +67,7 @@ import {
 import {
   assertShiftDateWithinWindow,
   formatDateOnly,
+  isPastShift,
   parseDateOnlyUtc,
 } from './date-only';
 import { adBlueError } from './adblue';
@@ -323,13 +324,14 @@ export class ShiftsService {
     // Ventana razonable de `shiftDate` — antes de tocar cualquier estado
     // (ni el operador, ni menos el `Shift`, que sí escribe).
     assertShiftDateWithinWindow(dto.shiftDate, now);
-    // Carga histórica (turno de un día ya pasado): el estado ACTUAL del
-    // equipo no dice nada de ese día (hoy puede estar en taller y la semana
-    // pasada haber trabajado), así que no bloquea la apertura; y la tarjeta
-    // se fecha DENTRO de ese día de negocio, que es por donde agrupan el
-    // dashboard y las fichas (`createdAt` conserva cuándo se cargó de
-    // verdad).
-    const pastShift = isPastBusinessDay(dto.shiftDate, now);
+    // Carga histórica (turno YA TERMINADO de un día pasado — `isPastShift`
+    // exceptúa al nocturno de anoche que sigue corriendo de madrugada): el
+    // estado ACTUAL del equipo no dice nada de ese día (hoy puede estar en
+    // taller y la semana pasada haber trabajado), así que no bloquea la
+    // apertura; y la tarjeta se fecha DENTRO de ese día de negocio, que es
+    // por donde agrupan el dashboard y las fichas (`createdAt` conserva
+    // cuándo se cargó de verdad).
+    const pastShift = isPastShift(dto.shiftDate, dto.shiftType, now);
     const clientClockSkewMs =
       computeClientClockSkewMs(clientTimeHeader, now) ?? discardedSkewMs;
 

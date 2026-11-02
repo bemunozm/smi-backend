@@ -74,10 +74,24 @@ export function businessDayInstant(
 }
 
 /**
+ * Hora (0–23) del reloj chileno para el instante `now`. `hourCycle: 'h23'`
+ * evita el "24" de medianoche que da `hour12: false` en algunos ICU.
+ */
+export function businessHour(now: Date = new Date()): number {
+  return Number(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: BUSINESS_TIME_ZONE,
+      hour: '2-digit',
+      hourCycle: 'h23',
+    }).format(now),
+  );
+}
+
+/**
  * ¿`dateOnly` es estrictamente anterior al día de calendario chileno de
  * `now`? Comparación de strings ISO (`YYYY-MM-DD` ordena igual que la fecha).
- * Es el criterio de "turno de un día pasado" que relaja validaciones de
- * backfill (equipo no operativo) y activa el fechado histórico.
+ * Criterio de DÍA pasado — para el criterio de TURNO pasado (que exceptúa al
+ * nocturno de anoche todavía corriendo) ver `shifts/date-only.ts#isPastShift`.
  */
 export function isPastBusinessDay(
   dateOnly: string,
