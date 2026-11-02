@@ -752,6 +752,61 @@ describe('ShiftsService', () => {
       expect(result.pumpPhotoUrl).toBe('https://signed/fuel-photos/final.jpg');
     });
 
+    describe('cierre de una tarjeta de carga histórica (día pasado)', () => {
+      const pasado = todayShiftDate(-2);
+      // 12:00 −03 de ese día — el instante que dejó la apertura backfilleada.
+      const fechaHistorica = new Date(`${pasado}T15:00:00.000Z`);
+      const cardBase = {
+        id: 'card_1',
+        equipoId: 'e1',
+        valorInicial: 100,
+        valorFinal: null,
+        supervisorId: 'sup_1',
+        closeClientId: null,
+        closedAt: null,
+        clientClockSkewMs: null,
+        belowPreviousReading: false,
+      };
+
+      it('fechaSalida y el combustible caen en el día histórico de la tarjeta', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          ...cardBase,
+          fecha: fechaHistorica,
+          createdAt: new Date(), // abierta HOY para un día pasado: backfill
+        });
+
+        await service.closeCard('card_1', dto, session);
+
+        const update = lastCallData(tx.registroHorometro.updateMany);
+        expect((update.fechaSalida as Date).toISOString()).toBe(
+          fechaHistorica.toISOString(),
+        );
+        const fuel = lastCallData(tx.registroCombustible.create);
+        expect((fuel.fecha as Date).toISOString()).toBe(
+          fechaHistorica.toISOString(),
+        );
+      });
+
+      it('un NOCTURNO vivo de anoche cerrado en la mañana NO se re-fecha', async () => {
+        // Apertura real hace 11 h: según la hora en que corra Jest cae en
+        // ayer (día pasado, pero createdAt de ayer) o en hoy — en ambos
+        // casos el cierre es VIVO y conserva la hora real.
+        const apertura = new Date(Date.now() - 11 * 3_600_000);
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          ...cardBase,
+          fecha: apertura,
+          createdAt: apertura,
+        });
+
+        await service.closeCard('card_1', dto, session);
+
+        const update = lastCallData(tx.registroHorometro.updateMany);
+        expect((update.fechaSalida as Date).toISOString()).toBe(
+          new Date(dto.capturedAt).toISOString(),
+        );
+      });
+    });
+
     it('un capturedAt fuera de ventana no rechaza el cierre: fechaSalida es la hora del servidor y se audita el desfase', async () => {
       prisma.registroHorometro.findUnique.mockResolvedValue({
         id: 'card_1',

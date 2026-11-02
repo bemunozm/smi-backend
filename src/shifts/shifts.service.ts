@@ -53,9 +53,11 @@ import { formatNumber } from '../common/format/number';
 import { assertChecklistNotPending } from '../mantenimiento/daily-checklists/checklist-gate';
 import {
   businessDayInstant,
+  businessDayKey,
   formatBusinessDate,
   formatBusinessDateTime,
   isPastBusinessDay,
+  todayInBusinessTimeZone,
 } from '../common/dates/business-time';
 import {
   computeClientClockSkewMs,
@@ -598,6 +600,19 @@ export class ShiftsService {
       now,
     );
 
+    // Carga histórica: tarjeta de un día de negocio PASADO que se abrió HOY
+    // (backfill). Su cierre se fecha en ese día histórico (reusando el
+    // instante sintético que dejó la apertura) para que el dashboard y las
+    // fichas agrupen la salida y el combustible donde corresponden. La doble
+    // condición deja fuera al NOCTURNO vivo cerrado de madrugada y a la
+    // tarjeta olvidada de hace días (createdAt viejo): esos cierres siguen
+    // con la hora real.
+    const esCargaHistorica =
+      card.fecha != null &&
+      card.createdAt != null &&
+      isPastBusinessDay(businessDayKey(card.fecha), now) &&
+      businessDayKey(card.createdAt) === todayInBusinessTimeZone(now);
+
     // Reclama la foto ANTES de la transacción (mismo patrón que
     // `CombustibleService.create`): si `claimTmp` falla (tmp vencido/ajeno),
     // todavía no hay nada que descartar. `claimTmp` traduce un tmp
@@ -625,7 +640,7 @@ export class ShiftsService {
           where: { id, valorFinal: null },
           data: {
             valorFinal: dto.valorFinal,
-            fechaSalida: capturedAt,
+            fechaSalida: esCargaHistorica ? card.fecha : capturedAt,
             closedAt: now,
             closeClientId: dto.closeClientId,
             closedById: session.user.id,
@@ -698,7 +713,7 @@ export class ShiftsService {
               // sola en la ficha y en el historial de combustible sin
               // duplicar la foto.
               fotoKey: pumpPhotoKey,
-              fecha: photoCapturedAt,
+              fecha: esCargaHistorica ? card.fecha : photoCapturedAt,
               registroHorometroId: id,
             },
           });
