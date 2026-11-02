@@ -52,8 +52,10 @@ import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
 import { formatNumber } from '../common/format/number';
 import { assertChecklistNotPending } from '../mantenimiento/daily-checklists/checklist-gate';
 import {
+  businessDayInstant,
   formatBusinessDate,
   formatBusinessDateTime,
+  isPastBusinessDay,
 } from '../common/dates/business-time';
 import {
   computeClientClockSkewMs,
@@ -316,6 +318,13 @@ export class ShiftsService {
     // Ventana razonable de `shiftDate` — antes de tocar cualquier estado
     // (ni el operador, ni menos el `Shift`, que sí escribe).
     assertShiftDateWithinWindow(dto.shiftDate, now);
+    // Carga histórica (turno de un día ya pasado): el estado ACTUAL del
+    // equipo no dice nada de ese día (hoy puede estar en taller y la semana
+    // pasada haber trabajado), así que no bloquea la apertura; y la tarjeta
+    // se fecha DENTRO de ese día de negocio, que es por donde agrupan el
+    // dashboard y las fichas (`createdAt` conserva cuándo se cargó de
+    // verdad).
+    const pastShift = isPastBusinessDay(dto.shiftDate, now);
     const clientClockSkewMs =
       computeClientClockSkewMs(clientTimeHeader, now) ?? discardedSkewMs;
 
@@ -348,7 +357,7 @@ export class ShiftsService {
     if (!operator && equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT) {
       throw new BadRequestException('Elige el operador del equipo.');
     }
-    if (equipoPrecheck.status !== EquipmentStatus.OPERATIONAL) {
+    if (!pastShift && equipoPrecheck.status !== EquipmentStatus.OPERATIONAL) {
       throw new ConflictException({
         message: 'El equipo no está operativo',
         code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
@@ -408,8 +417,9 @@ export class ShiftsService {
         });
         if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
-        // Un equipo fuera de servicio o en taller no puede abrir turno.
-        if (equipo.status !== EquipmentStatus.OPERATIONAL) {
+        // Un equipo fuera de servicio o en taller no puede abrir turno —
+        // salvo en la carga histórica de un día pasado (ver `pastShift`).
+        if (!pastShift && equipo.status !== EquipmentStatus.OPERATIONAL) {
           throw new ConflictException({
             message: 'El equipo no está operativo',
             code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
@@ -463,7 +473,12 @@ export class ShiftsService {
               operatorId: operator?.id ?? null,
               supervisorId,
               shiftId: shift.id,
-              fecha: capturedAt,
+              fecha: pastShift
+                ? businessDayInstant(
+                    dto.shiftDate,
+                    dto.shiftType === 'NOCTURNO' ? '20:30' : '12:00',
+                  )
+                : capturedAt,
               clientClockSkewMs: clientClockSkewMs ?? null,
               belowPreviousReading: belowPrevious,
             },

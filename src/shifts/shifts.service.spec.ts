@@ -15,6 +15,7 @@ import { StorageService } from '../storage/storage.service';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { ShiftsService } from './shifts.service';
+import { businessDayKey } from '../common/dates/business-time';
 
 /**
  * Captura el `data` de la ÚLTIMA llamada a un mock `jest.fn()` sin tipar.
@@ -524,6 +525,71 @@ describe('ShiftsService', () => {
         }
         expect(prisma.shift.upsert).not.toHaveBeenCalled();
         expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('turno de un día pasado (carga histórica)', () => {
+      // −2 días: estrictamente anterior al día de negocio chileno sin
+      // importar el huso de la máquina que corre Jest (−1 es ambiguo entre
+      // ~21:00 y medianoche de Chile).
+      const pasado = todayShiftDate(-2);
+
+      it('equipo no operativo NO bloquea la apertura de un día pasado', async () => {
+        prisma.equipment.findUnique.mockResolvedValue({
+          status: 'IN_WORKSHOP',
+        });
+        tx.equipment.findUnique.mockResolvedValue({
+          status: 'IN_WORKSHOP',
+          controlUnit: 'HOURS',
+          currentHourmeter: null,
+          currentMileage: null,
+        });
+
+        await service.openCard({ ...dto, shiftDate: pasado }, session);
+
+        expect(tx.registroHorometro.create).toHaveBeenCalled();
+      });
+
+      it('la tarjeta de un día pasado se fecha dentro de ese día de negocio', async () => {
+        await service.openCard({ ...dto, shiftDate: pasado }, session);
+
+        const data = lastCallData(tx.registroHorometro.create);
+        expect(businessDayKey(data.fecha as Date)).toBe(pasado);
+      });
+
+      it('NOCTURNO pasado: el instante cae en la tarde de ese día (20:30 −03)', async () => {
+        await service.openCard(
+          { ...dto, shiftDate: pasado, shiftType: 'NOCTURNO' },
+          session,
+        );
+
+        const data = lastCallData(tx.registroHorometro.create);
+        expect(businessDayKey(data.fecha as Date)).toBe(pasado);
+        expect((data.fecha as Date).toISOString()).toBe(
+          `${pasado}T23:30:00.000Z`,
+        );
+      });
+
+      it('shiftDate de HOY: el equipo no operativo sigue bloqueando (409)', async () => {
+        prisma.equipment.findUnique.mockResolvedValue({
+          status: 'IN_WORKSHOP',
+        });
+
+        await expect(service.openCard(dto, session)).rejects.toMatchObject({
+          response: { code: 'EQUIPMENT_NOT_OPERATIONAL' },
+        });
+      });
+
+      it('día pasado + tarjeta abierta del equipo → sigue 409 EQUIPMENT_BUSY', async () => {
+        tx.registroHorometro.findFirst.mockResolvedValue({
+          supervisorId: 'otro_sup',
+          fecha: new Date('2026-09-28T06:00:00.000Z'),
+        });
+        tx.user.findUnique.mockResolvedValue({ name: 'Ana Torres' });
+
+        await expect(
+          service.openCard({ ...dto, shiftDate: pasado }, session),
+        ).rejects.toMatchObject({ response: { code: 'EQUIPMENT_BUSY' } });
       });
     });
 
