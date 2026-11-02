@@ -2024,6 +2024,7 @@ describe('ShiftsService', () => {
           type: 'DIURNO',
           supervisorId: 'sup_1',
           cards: [],
+          exitReports: [],
         },
       ]);
 
@@ -2033,6 +2034,34 @@ describe('ShiftsService', () => {
       );
 
       expect(shift.date).toBe('2026-09-28');
+    });
+
+    it('incluye los reportes de salida ya enviados del turno', async () => {
+      const requestedAt = new Date('2026-09-28T20:05:00.000Z');
+      prisma.shift.findMany.mockResolvedValue([
+        {
+          id: 'shift_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'DIURNO',
+          supervisorId: 'sup_1',
+          cards: [],
+          exitReports: [{ id: 'rep_1', requestedAt, cardCount: 4 }],
+        },
+      ]);
+
+      const [shift] = await service.findShifts(
+        { date: '2026-09-28', type: 'DIURNO' },
+        buildSession('sup_1'),
+      );
+
+      expect(shift.exitReports).toEqual([
+        { id: 'rep_1', requestedAt, cardCount: 4 },
+      ]);
+      // El include pide exitReports junto con las tarjetas.
+      const [args] = prisma.shift.findMany.mock.calls[0] as [
+        { include: Record<string, unknown> },
+      ];
+      expect(args.include).toHaveProperty('exitReports');
     });
   });
 });

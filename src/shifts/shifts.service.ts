@@ -199,6 +199,9 @@ export interface ShiftWithCardsResponse {
   type: string;
   supervisorId: string;
   cards: ShiftCardSummaryResponse[];
+  /** Reportes de salida ya enviados del turno — la carga histórica avisa con
+   * esto que el turno elegido ya fue reportado. */
+  exitReports: { id: string; requestedAt: Date; cardCount: number }[];
 }
 
 function round2(value: number): number {
@@ -1101,6 +1104,12 @@ export class ShiftsService {
           },
           orderBy: { fecha: 'desc' },
         },
+        // Para la carga histórica: el frontend avisa si el turno elegido ya
+        // tiene su reporte de salida enviado (campo aditivo — el Módulo B
+        // ignora claves extra).
+        exitReports: {
+          select: { id: true, requestedAt: true, cardCount: true },
+        },
       },
     });
 
@@ -1109,6 +1118,7 @@ export class ShiftsService {
       date: formatDateOnly(shift.date),
       type: shift.type,
       supervisorId: shift.supervisorId,
+      exitReports: shift.exitReports,
       cards: shift.cards.map((card) => ({
         id: card.id,
         equipoId: card.equipoId,
