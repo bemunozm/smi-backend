@@ -81,14 +81,18 @@ describe('HallazgosService', () => {
     /** `YYYY-MM-DD` del día de negocio chileno de hace `days` días. */
     const dateOnlyDaysAgo = (days: number) =>
       todayInBusinessTimeZone(new Date(Date.now() - days * 86_400_000));
+    /** `data` de la primera llamada al `create` mockeado, sin `any`. */
+    const createData = (): { fecha: Date } =>
+      (
+        prisma.hallazgo.create.mock.calls as unknown as Array<
+          [{ data: { fecha: Date } }]
+        >
+      )[0][0].data;
 
     it('con fecha: guarda un instante dentro de ese día de negocio', async () => {
       const fecha = dateOnlyDaysAgo(5);
       await service.create({ ...base, fecha }, 'u1');
-      const { data } = prisma.hallazgo.create.mock.calls[0][0] as {
-        data: { fecha: Date };
-      };
-      expect(businessDayKey(data.fecha)).toBe(fecha);
+      expect(businessDayKey(createData().fecha)).toBe(fecha);
     });
 
     it('fecha fuera de la ventana de 30 días → 400 INVALID_SHIFT_DATE', async () => {
@@ -102,10 +106,7 @@ describe('HallazgosService', () => {
 
     it('sin fecha: se fecha con la hora de captura, como siempre', async () => {
       await service.create(base, 'u1');
-      const { data } = prisma.hallazgo.create.mock.calls[0][0] as {
-        data: { fecha: Date };
-      };
-      expect(businessDayKey(data.fecha)).toBe(dateOnlyDaysAgo(0));
+      expect(businessDayKey(createData().fecha)).toBe(dateOnlyDaysAgo(0));
     });
   });
 

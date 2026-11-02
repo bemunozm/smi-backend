@@ -72,7 +72,9 @@ describe('buildShiftExitReportDocDefinition', () => {
 
     const content = doc.content as Content[];
     expect(content[0]).toMatchObject({ text: 'SIMA SPA' });
-    expect(content[1]).toMatchObject({ text: 'Equipos en terreno — 28-09-2026' });
+    expect(content[1]).toMatchObject({
+      text: 'Equipos en terreno — 28-09-2026',
+    });
   });
 
   it('fija defaultStyle.font en Helvetica (sin esto pdfmake usaría Roboto, que no existe en el diccionario del renderer)', () => {
