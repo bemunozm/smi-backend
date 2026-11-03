@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EquipmentStatus, Prisma } from '@prisma/client';
+import { EquipmentStatus, EstadoOT, Prisma } from '@prisma/client';
 
 import { ROLES } from '../auth/roles';
 import {
@@ -278,8 +278,37 @@ export class EquipmentService {
     if (!equipment) {
       throw new NotFoundException(`Equipo "${id}" no encontrado`);
     }
+
+    // Última mantención registrada: la OT COMPLETADA más reciente del equipo,
+    // con la misma fecha que muestra el registro «Mantenciones» del admin (la
+    // última tarea completada manda; sin `hechaAt` cae al `updatedAt`).
+    // `OrdenTrabajo.equipoId` es soft ref (sin relación Prisma), por eso va en
+    // consulta aparte y no en el `include` de arriba.
+    const ultimaOrden = await this.prisma.ordenTrabajo.findFirst({
+      where: { equipoId: id, estado: EstadoOT.COMPLETADA },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        titulo: true,
+        tipo: true,
+        updatedAt: true,
+        tareas: { select: { hechaAt: true } },
+      },
+    });
+    const ultimaMantencion = ultimaOrden
+      ? {
+          titulo: ultimaOrden.titulo,
+          tipo: ultimaOrden.tipo,
+          fecha:
+            ultimaOrden.tareas
+              .map((t) => t.hechaAt)
+              .filter((v): v is Date => v != null)
+              .sort((a, b) => b.getTime() - a.getTime())[0] ??
+            ultimaOrden.updatedAt,
+        }
+      : null;
+
     const [shaped] = await this.withUsageFields([equipment]);
-    return shaped;
+    return { ...shaped, ultimaMantencion };
   }
 
   /**

@@ -49,6 +49,7 @@ describe('EquipmentService', () => {
   const userFindUnique = jest.fn();
   const registroHorometroFindMany = jest.fn();
   const equipmentDocumentFindMany = jest.fn();
+  const ordenTrabajoFindFirst = jest.fn();
   const claimTmp = jest.fn();
   const discard = jest.fn();
   const deleteBestEffort = jest.fn();
@@ -69,6 +70,7 @@ describe('EquipmentService', () => {
       userFindUnique,
       registroHorometroFindMany,
       equipmentDocumentFindMany,
+      ordenTrabajoFindFirst,
       claimTmp,
       discard,
       deleteBestEffort,
@@ -82,6 +84,9 @@ describe('EquipmentService', () => {
     // Sin documentos vencidos/por vencer por defecto — los tests de
     // `documentsAlert` lo sobreescriben.
     equipmentDocumentFindMany.mockResolvedValue([]);
+    // Sin mantenciones registradas por defecto — los tests de
+    // `ultimaMantencion` lo sobreescriben.
+    ordenTrabajoFindFirst.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -107,6 +112,9 @@ describe('EquipmentService', () => {
             },
             equipmentDocument: {
               findMany: equipmentDocumentFindMany,
+            },
+            ordenTrabajo: {
+              findFirst: ordenTrabajoFindFirst,
             },
             // Con `X-Expected` la escritura va en una transacción que bloquea
             // la fila: el mock ejecuta el callback con el mismo cliente.
@@ -1394,6 +1402,78 @@ describe('EquipmentService', () => {
 
       expect(sign).not.toHaveBeenCalled();
       expect(result).toMatchObject({ photoUrl: null });
+    });
+
+    it('ultimaMantencion es null cuando el equipo no tiene OT completadas', async () => {
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      const result = await service.findOne('eq_1');
+
+      expect(ordenTrabajoFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { equipoId: 'eq_1', estado: 'COMPLETADA' },
+        }),
+      );
+      expect(result).toMatchObject({ ultimaMantencion: null });
+    });
+
+    it('ultimaMantencion toma la última tarea completada de la última OT COMPLETADA', async () => {
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+      ordenTrabajoFindFirst.mockResolvedValue({
+        titulo: 'Mantención 10.000 km',
+        tipo: 'PREVENTIVA',
+        updatedAt: new Date('2026-10-20T12:00:00Z'),
+        tareas: [
+          { hechaAt: new Date('2026-10-18T10:00:00Z') },
+          { hechaAt: new Date('2026-10-19T16:30:00Z') },
+          { hechaAt: null },
+        ],
+      });
+
+      const result = await service.findOne('eq_1');
+
+      expect(result).toMatchObject({
+        ultimaMantencion: {
+          titulo: 'Mantención 10.000 km',
+          tipo: 'PREVENTIVA',
+          fecha: new Date('2026-10-19T16:30:00Z'),
+        },
+      });
+    });
+
+    it('ultimaMantencion cae al updatedAt de la orden cuando sus tareas no tienen hechaAt', async () => {
+      findUnique.mockResolvedValue({
+        id: 'eq_1',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+      ordenTrabajoFindFirst.mockResolvedValue({
+        titulo: 'Cambio de aceite',
+        tipo: 'CORRECTIVA',
+        updatedAt: new Date('2026-09-01T08:00:00Z'),
+        tareas: [{ hechaAt: null }],
+      });
+
+      const result = await service.findOne('eq_1');
+
+      expect(result).toMatchObject({
+        ultimaMantencion: {
+          titulo: 'Cambio de aceite',
+          tipo: 'CORRECTIVA',
+          fecha: new Date('2026-09-01T08:00:00Z'),
+        },
+      });
     });
   });
 
