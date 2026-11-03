@@ -282,10 +282,15 @@ export class EquipmentService {
     // Última mantención registrada: la OT COMPLETADA más reciente del equipo,
     // con la misma fecha que muestra el registro «Mantenciones» del admin (la
     // última tarea completada manda; sin `hechaAt` cae al `updatedAt`).
-    // `OrdenTrabajo.equipoId` es soft ref (sin relación Prisma), por eso va en
-    // consulta aparte y no en el `include` de arriba.
+    // `OrdenTrabajo.equipoId` es soft ref SIN relación Prisma y de texto
+    // libre: el taller suele guardar el CÓDIGO INTERNO, no el id (ver
+    // `OrdenesService.resolveEquipmentId`) — se aceptan ambos, si no las
+    // mantenciones del taller no aparecerían nunca en la ficha.
     const ultimaOrden = await this.prisma.ordenTrabajo.findFirst({
-      where: { equipoId: id, estado: EstadoOT.COMPLETADA },
+      where: {
+        equipoId: { in: [id, equipment.internalCode] },
+        estado: EstadoOT.COMPLETADA,
+      },
       orderBy: { updatedAt: 'desc' },
       select: {
         titulo: true,

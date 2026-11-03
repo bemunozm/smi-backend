@@ -1407,6 +1407,7 @@ describe('EquipmentService', () => {
     it('ultimaMantencion es null cuando el equipo no tiene OT completadas', async () => {
       findUnique.mockResolvedValue({
         id: 'eq_1',
+        internalCode: 'EX-001',
         currentOperatorId: null,
         currentSupervisorId: null,
         horometros: [],
@@ -1414,9 +1415,14 @@ describe('EquipmentService', () => {
 
       const result = await service.findOne('eq_1');
 
+      // `equipoId` de la OT es texto libre: el taller suele guardar el código
+      // interno — la búsqueda acepta id Y código.
       expect(ordenTrabajoFindFirst).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { equipoId: 'eq_1', estado: 'COMPLETADA' },
+          where: {
+            equipoId: { in: ['eq_1', 'EX-001'] },
+            estado: 'COMPLETADA',
+          },
         }),
       );
       expect(result).toMatchObject({ ultimaMantencion: null });
@@ -1425,6 +1431,7 @@ describe('EquipmentService', () => {
     it('ultimaMantencion toma la última tarea completada de la última OT COMPLETADA', async () => {
       findUnique.mockResolvedValue({
         id: 'eq_1',
+        internalCode: 'EX-001',
         currentOperatorId: null,
         currentSupervisorId: null,
         horometros: [],
@@ -1454,6 +1461,7 @@ describe('EquipmentService', () => {
     it('ultimaMantencion cae al updatedAt de la orden cuando sus tareas no tienen hechaAt', async () => {
       findUnique.mockResolvedValue({
         id: 'eq_1',
+        internalCode: 'EX-001',
         currentOperatorId: null,
         currentSupervisorId: null,
         horometros: [],
