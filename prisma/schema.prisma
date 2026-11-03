@@ -898,7 +898,8 @@ model TrabajoExtraordinario {
   /// multi-selección, porque una misma salida suele mezclar tareas — soltar
   /// material y después limpiar la cancha es un trabajo, no dos.
   /// Valores: REGULACION_CARGA | LIMPIEZA_CANCHA | SOLTAR_MATERIAL |
-  /// LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA.
+  /// LIMPIEZA_SILOS | HACER_PETRIL | ARREGLO_CANCHA | LIMPIEZA_PECAS |
+  /// BARRIDO_CANCHA | LIMPIEZA_ROMANA | LIMPIEZA_RUTA.
   actividades      String[]
   /// Texto libre de la opción «Otro», para la tarea que no estaba en la lista.
   /// Null cuando no se eligió «Otro». Es la válvula de escape mientras no exista

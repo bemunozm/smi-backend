@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EquipmentStatus, Prisma } from '@prisma/client';
+import { EquipmentStatus, EstadoOT, Prisma } from '@prisma/client';
 
 import { ROLES } from '../auth/roles';
 import {
@@ -278,8 +278,55 @@ export class EquipmentService {
     if (!equipment) {
       throw new NotFoundException(`Equipo "${id}" no encontrado`);
     }
+
+    // Última mantención registrada: la OT COMPLETADA más reciente del equipo,
+    // con la misma fecha que muestra el registro «Mantenciones» del admin (la
+    // última tarea completada manda; sin `hechaAt` cae al `updatedAt`).
+    // `OrdenTrabajo.equipoId` es soft ref SIN relación Prisma y de texto
+    // libre: el taller suele guardar el CÓDIGO INTERNO, no el id (ver
+    // `OrdenesService.resolveEquipmentId`) — se aceptan ambos, si no las
+    // mantenciones del taller no aparecerían nunca en la ficha.
+    const ultimaOrden = await this.prisma.ordenTrabajo.findFirst({
+      where: {
+        equipoId: { in: [id, equipment.internalCode] },
+        estado: EstadoOT.COMPLETADA,
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        titulo: true,
+        tipo: true,
+        updatedAt: true,
+        tareas: { select: { hechaAt: true, hechaPorNombre: true } },
+      },
+    });
+    // Quién la hizo: nombres únicos de las tareas completadas, en orden de
+    // aparición — el mismo criterio que la columna «Mantenedor» del registro
+    // de mantenciones del admin. Null si nadie quedó registrado.
+    const nombres = ultimaOrden
+      ? [
+          ...new Set(
+            ultimaOrden.tareas
+              .map((t) => t.hechaPorNombre)
+              .filter((v): v is string => Boolean(v)),
+          ),
+        ]
+      : [];
+    const ultimaMantencion = ultimaOrden
+      ? {
+          titulo: ultimaOrden.titulo,
+          tipo: ultimaOrden.tipo,
+          fecha:
+            ultimaOrden.tareas
+              .map((t) => t.hechaAt)
+              .filter((v): v is Date => v != null)
+              .sort((a, b) => b.getTime() - a.getTime())[0] ??
+            ultimaOrden.updatedAt,
+          realizadaPor: nombres.length > 0 ? nombres.join(', ') : null,
+        }
+      : null;
+
     const [shaped] = await this.withUsageFields([equipment]);
-    return shaped;
+    return { ...shaped, ultimaMantencion };
   }
 
   /**

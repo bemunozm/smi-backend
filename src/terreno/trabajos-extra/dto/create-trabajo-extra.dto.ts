@@ -24,6 +24,10 @@ export const ACTIVIDADES = [
   'LIMPIEZA_SILOS',
   'HACER_PETRIL',
   'ARREGLO_CANCHA',
+  'LIMPIEZA_PECAS',
+  'BARRIDO_CANCHA',
+  'LIMPIEZA_ROMANA',
+  'LIMPIEZA_RUTA',
   // Válvula de escape para la tarea que no estaba en la lista. Viaja junto a
   // `otraActividad`, que es donde va el texto.
   'OTRO',
@@ -41,6 +45,10 @@ export const ACTIVIDAD_LABEL: Record<string, string> = {
   LIMPIEZA_SILOS: 'Limpieza de silos',
   HACER_PETRIL: 'Hacer pretil',
   ARREGLO_CANCHA: 'Arreglo cancha',
+  LIMPIEZA_PECAS: 'Limpieza de pecas',
+  BARRIDO_CANCHA: 'Barrido de cancha',
+  LIMPIEZA_ROMANA: 'Limpieza de romana',
+  LIMPIEZA_RUTA: 'Limpieza de ruta',
   OTRO: 'Otro',
 };
 
