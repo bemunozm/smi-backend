@@ -35,7 +35,7 @@ export class HallazgosController {
   }
 
   @Post()
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async create(
     @Body() dto: CreateHallazgoDto,
     @Session() session: UserSession,
@@ -53,7 +53,7 @@ export class HallazgosController {
    * sale de la sesión, nunca del body: es la firma del cambio en el registro.
    */
   @Patch(':id')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateHallazgoDto,

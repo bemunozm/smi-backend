@@ -33,7 +33,7 @@ export class ReporteDiarioController {
   }
 
   @Post()
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async create(
     @Body() dto: CreateReporteDiarioDto,
     @Session() session: UserSession,
@@ -46,7 +46,7 @@ export class ReporteDiarioController {
 
   /** Corrección post-envío. Quién edita sale de la sesión, nunca del body. */
   @Patch(':id')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateReporteDiarioDto,

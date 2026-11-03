@@ -64,6 +64,14 @@ export class CreateTrabajoExtraDto {
   @IsDateString()
   capturedAt?: string;
 
+  /**
+   * Fecha y hora elegidas en el panel, para cargar el trabajo que se olvidó
+   * (`resolveRecordDate`): gana sobre `capturedAt` y no puede ser futura.
+   */
+  @IsOptional()
+  @IsDateString()
+  fecha?: string;
+
   @IsString()
   equipoId!: string;
 

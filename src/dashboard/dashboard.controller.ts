@@ -7,7 +7,7 @@ import { DashboardRangeDto } from './dto/dashboard-range.dto';
 import { ResumenDiaQueryDto } from './dto/resumen-dia-query.dto';
 
 @Controller('dashboard')
-@Roles([ROLES.ADMIN])
+@Roles([ROLES.ADMIN, ROLES.SECRETARIA])
 export class DashboardController {
   constructor(private readonly service: DashboardService) {}
 

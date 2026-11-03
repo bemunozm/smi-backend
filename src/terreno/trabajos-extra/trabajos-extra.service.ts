@@ -14,7 +14,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { formatNumber } from '../../common/format/number';
 import { OperatorsService } from '../../operators/operators.service';
 import { resolveNombresUsuarios } from '../common/registrado-por.util';
-import { resolveCapturedAt } from '../../common/dates/capture-time';
+import { resolveRecordDate } from '../../common/dates/capture-time';
 import { formatBusinessDate } from '../../common/dates/business-time';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type { RecordEditedEvent } from '../../common/events/domain-events';
@@ -146,7 +146,7 @@ export class TrabajosExtraService {
   }
 
   private async createFresh(dto: CreateTrabajoExtraDto, userId: string) {
-    const { at: fecha } = resolveCapturedAt(dto.capturedAt);
+    const fecha = resolveRecordDate(dto.fecha, dto.capturedAt);
 
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },

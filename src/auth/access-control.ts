@@ -60,8 +60,15 @@ const mantenedorRole = ac.newRole({
   session: [],
 });
 
+/** SECRETARIA: igual que los anteriores, sin permisos del plugin admin. */
+const secretariaRole = ac.newRole({
+  user: [],
+  session: [],
+});
+
 export const roles = {
   [ROLES.ADMIN]: adminRole,
   [ROLES.SUPERVISOR]: supervisorRole,
   [ROLES.MANTENEDOR]: mantenedorRole,
+  [ROLES.SECRETARIA]: secretariaRole,
 };
