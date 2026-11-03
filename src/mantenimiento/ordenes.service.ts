@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { EstadoOT, MovementReason } from '@prisma/client';
+import { EstadoOT, MovementReason, OrigenOT, TipoOT } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 
 import {
@@ -26,8 +26,10 @@ import type {
   OrdenAssignedEvent,
   OrdenCompletedEvent,
 } from '../common/events/domain-events';
+import { todayInBusinessTimeZone } from '../common/dates/business-time';
 import { resolveAsignadosMap } from './common/asignado.util';
 import type { AsignadoResponseDto } from './dto/asignado-response.dto';
+import type { CreateMantencionHistoricaDto } from './dto/create-mantencion-historica.dto';
 import type { CreateOrdenDto } from './dto/create-orden.dto';
 import type { OrdenResponseDto } from './dto/orden-response.dto';
 import type { TareaResponseDto } from './dto/tarea-response.dto';
@@ -211,6 +213,81 @@ export class OrdenesService {
     }
 
     this.logger.log(`Orden de trabajo creada: ${orden.id}`);
+
+    const asignados = await resolveAsignadosMap(this.prisma, [
+      orden.asignadoAId,
+    ]);
+    return this.toResponseDto(orden, asignados);
+  }
+
+  /**
+   * Mantención hecha ANTES de usar la aplicación (equipos antiguos que entran
+   * a Flota con historia previa): una OT que nace COMPLETADA, con una única
+   * tarea hecha cuyo `hechaAt` es la fecha declarada. Así la ficha del equipo
+   * (`ultimaMantencion`) y el registro «Mantenciones» la fechan con la MISMA
+   * regla que una mantención real del taller (la última tarea completada
+   * manda), sin un modelo paralelo. Nace completada, así que no emite avisos
+   * de transición ni toca hallazgos/estado del equipo.
+   */
+  async createHistorica(
+    dto: CreateMantencionHistoricaDto,
+    userId: string,
+  ): Promise<OrdenResponseDto> {
+    // Futuro no: una mantención "histórica" de la próxima semana es un error
+    // de tipeo. Hoy (en horario de faena) sí — cargar lo de esta mañana vale.
+    const hoy = todayInBusinessTimeZone(new Date());
+    if (dto.fecha > hoy) {
+      throw new BadRequestException(
+        'La fecha de una mantención anterior no puede ser futura',
+      );
+    }
+
+    // Acepta id de Flota o código interno (misma tolerancia que
+    // `resolveEquipmentId`) y guarda el CÓDIGO, como las OT del taller. A
+    // diferencia del cierre de una OT (donde un equipo no resuelto solo se
+    // loguea), acá se exige que exista: el único sentido de este registro es
+    // colgarle historia a una unidad concreta.
+    const equipment =
+      (await this.prisma.equipment.findUnique({
+        where: { id: dto.equipoId },
+        select: { internalCode: true },
+      })) ??
+      (await this.prisma.equipment.findUnique({
+        where: { internalCode: dto.equipoId },
+        select: { internalCode: true },
+      }));
+    if (!equipment) {
+      throw new NotFoundException(
+        `Equipo "${dto.equipoId}" no encontrado en Flota`,
+      );
+    }
+
+    // Mediodía UTC, no medianoche: la UI formatea `hechaAt` en hora local de
+    // Chile (UTC-3/-4), y una medianoche UTC se mostraría como el día
+    // anterior.
+    const hechaAt = new Date(`${dto.fecha}T12:00:00.000Z`);
+
+    const orden = await this.prisma.ordenTrabajo.create({
+      data: {
+        createdById: userId,
+        equipoId: equipment.internalCode,
+        titulo: dto.titulo,
+        estado: EstadoOT.COMPLETADA,
+        tipo: dto.tipo ?? TipoOT.PREVENTIVA,
+        origen: OrigenOT.MANUAL,
+        origenDetalle: dto.observaciones
+          ? `Mantención anterior (registro histórico): ${dto.observaciones}`
+          : 'Mantención anterior (registro histórico)',
+        tareas: {
+          create: [{ texto: dto.titulo, hecha: true, posicion: 0, hechaAt }],
+        },
+      },
+      select: ORDEN_SELECT,
+    });
+
+    this.logger.log(
+      `Mantención histórica registrada: ${orden.id} (${equipment.internalCode}, ${dto.fecha})`,
+    );
 
     const asignados = await resolveAsignadosMap(this.prisma, [
       orden.asignadoAId,

@@ -15,6 +15,7 @@ import { ROLES } from '../auth/roles';
 import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
+import { CreateMantencionHistoricaDto } from './dto/create-mantencion-historica.dto';
 import { CreateOrdenDto } from './dto/create-orden.dto';
 import { FindOrdenesQueryDto } from './dto/find-ordenes-query.dto';
 import type { OrdenResponseDto } from './dto/orden-response.dto';
@@ -69,6 +70,22 @@ export class OrdenesController {
   ): Promise<OrdenDetailResponse> {
     const data = await this.ordenesService.create(dto, session.user.id);
     return { data, message: 'Orden de trabajo creada' };
+  }
+
+  // Solo ADMIN: es carga de datos (historia previa de equipos antiguos), no
+  // operación del taller. Va ANTES de `@Get(':id')` en la URL pero como POST
+  // no choca con esa ruta.
+  @Post('historica')
+  @Roles([ROLES.ADMIN])
+  async createHistorica(
+    @Body() dto: CreateMantencionHistoricaDto,
+    @Session() session: UserSession,
+  ): Promise<OrdenDetailResponse> {
+    const data = await this.ordenesService.createHistorica(
+      dto,
+      session.user.id,
+    );
+    return { data, message: 'Mantención anterior registrada' };
   }
 
   @Patch(':id')

@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -647,6 +647,95 @@ describe('OrdenesService', () => {
         { data: Record<string, unknown> },
       ];
       expect(data).toMatchObject({ id: ID, createdById: 'u1' });
+    });
+  });
+
+  describe('createHistorica (mantención anterior)', () => {
+    const DTO = {
+      equipoId: 'eq_1',
+      fecha: '2025-06-15',
+      titulo: 'Mantención 10.000 km',
+    };
+    const MOCK_HISTORICA = {
+      ...MOCK_ORDEN,
+      id: 'orden_hist',
+      estado: 'COMPLETADA',
+      tipo: 'PREVENTIVA',
+      origen: 'MANUAL',
+      titulo: DTO.titulo,
+      asignadoAId: null,
+      tareas: [
+        {
+          ...MOCK_ORDEN.tareas[0],
+          texto: DTO.titulo,
+          hecha: true,
+          hechaAt: new Date('2025-06-15T12:00:00.000Z'),
+        },
+      ],
+    };
+
+    it('crea una OT COMPLETADA con la tarea hecha en la fecha declarada y el código interno del equipo', async () => {
+      equipmentFindUnique.mockResolvedValueOnce({ internalCode: 'CM-003' });
+      ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
+      userFindMany.mockResolvedValue([]);
+
+      const result = await service.createHistorica(DTO, 'u_admin');
+
+      const [{ data }] = ordenTrabajoCreate.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({
+        createdById: 'u_admin',
+        equipoId: 'CM-003',
+        titulo: DTO.titulo,
+        estado: 'COMPLETADA',
+        tipo: 'PREVENTIVA',
+        origen: 'MANUAL',
+      });
+      // Mediodía UTC, no medianoche: en hora de Chile una medianoche UTC se
+      // mostraría como el día anterior.
+      expect(data.tareas).toEqual({
+        create: [
+          {
+            texto: DTO.titulo,
+            hecha: true,
+            posicion: 0,
+            hechaAt: new Date('2025-06-15T12:00:00.000Z'),
+          },
+        ],
+      });
+      expect(result.estado).toBe('COMPLETADA');
+    });
+
+    it('acepta el código interno como equipoId (segunda búsqueda)', async () => {
+      equipmentFindUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ internalCode: 'CM-003' });
+      ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
+      userFindMany.mockResolvedValue([]);
+
+      await service.createHistorica({ ...DTO, equipoId: 'CM-003' }, 'u_admin');
+
+      const [{ data }] = ordenTrabajoCreate.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({ equipoId: 'CM-003' });
+    });
+
+    it('rechaza una fecha futura', async () => {
+      await expect(
+        service.createHistorica({ ...DTO, fecha: '2999-01-01' }, 'u_admin'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+    });
+
+    it('404 si el equipo no existe ni por id ni por código', async () => {
+      equipmentFindUnique.mockResolvedValue(null);
+
+      await expect(
+        service.createHistorica(DTO, 'u_admin'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(ordenTrabajoCreate).not.toHaveBeenCalled();
     });
   });
 
