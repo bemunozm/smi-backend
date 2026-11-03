@@ -24,8 +24,10 @@ import {
   type ComparableField,
   type Editor,
 } from '../../change-log/change-log.service';
+import { StorageService } from '../../storage/storage.service';
 import {
   ACTIVIDAD_LABEL,
+  DESTINO_LABEL,
   CreateTrabajoExtraDto,
 } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
@@ -51,13 +53,14 @@ const CON_DUENO = { createdById: false } as const;
 
 /** Un trabajo tal como sale a la API: sin `createdById` crudo — en su lugar
  * va `registradoPor`, el nombre resuelto de quien lo registró (null si la
- * cuenta ya no existe). */
+ * cuenta ya no existe) — y sin `fotoKey`: la foto del report sale solo como
+ * `fotoUrl` firmada (mismo criterio que `HallazgoResponse`). */
 export type TrabajoExtraResponse = Omit<
   Prisma.TrabajoExtraordinarioGetPayload<{
     include: typeof TRABAJO_EXTRA_INCLUDE;
   }>,
-  'createdById'
-> & { registradoPor: string | null };
+  'createdById' | 'fotoKey'
+> & { registradoPor: string | null; fotoUrl: string | null };
 
 /** Los datos de un trabajo que se pueden escribir, al crear o al editar. */
 type DatosTrabajo = Pick<
@@ -74,6 +77,9 @@ type DatosTrabajo = Pick<
   | 'otraActividad'
   | 'descripcion'
   | 'observaciones'
+  | 'reportNumero'
+  | 'destino'
+  | 'planta'
 >;
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
@@ -90,6 +96,9 @@ const CAMPO_LABEL: Record<keyof DatosTrabajo, string> = {
   otraActividad: 'Otra actividad',
   descripcion: 'Descripción',
   observaciones: 'Observaciones',
+  reportNumero: 'N° de report',
+  destino: 'Dónde se hizo',
+  planta: 'Planta',
 };
 
 /** Solo los campos que admiten precondición `X-Expected`. */
@@ -107,6 +116,9 @@ function datosDe(t: DatosTrabajo): DatosTrabajo {
     otraActividad: t.otraActividad,
     descripcion: t.descripcion,
     observaciones: t.observaciones,
+    reportNumero: t.reportNumero,
+    destino: t.destino,
+    planta: t.planta,
   };
 }
 
@@ -119,6 +131,7 @@ export class TrabajosExtraService {
     private readonly operators: OperatorsService,
     private eventEmitter: EventEmitter2,
     private changeLog: ChangeLogService,
+    private readonly storage: StorageService,
   ) {}
 
   async create(dto: CreateTrabajoExtraDto, userId: string) {
@@ -182,13 +195,23 @@ export class TrabajosExtraService {
       otraActividad: dto.otraActividad ?? null,
       descripcion: dto.descripcion,
       observaciones: dto.observaciones ?? null,
+      reportNumero: dto.reportNumero,
+      destino: dto.destino,
+      planta: dto.planta ?? null,
     });
+
+    // La foto del report se reclama DESPUÉS de validar: una key tmp reclamada
+    // por un create que luego rebota quedaría huérfana en el bucket.
+    const fotoKey = dto.fotoKey
+      ? await this.storage.claimTmp(dto.fotoKey, userId, 'trabajo-extra-photo')
+      : null;
 
     const creado = await this.prisma.trabajoExtraordinario.create({
       data: {
         ...(dto.id ? { id: dto.id } : {}),
         createdById: userId,
         fecha,
+        fotoKey,
         ...datos,
       },
       include: TRABAJO_EXTRA_INCLUDE,
@@ -208,7 +231,7 @@ export class TrabajosExtraService {
       this.prisma,
       registros.map((r) => r.createdById),
     );
-    return registros.map((r) => this.shape(r, nombres));
+    return Promise.all(registros.map((r) => this.shape(r, nombres)));
   }
 
   async findOne(id: string): Promise<TrabajoExtraResponse> {
@@ -327,6 +350,13 @@ export class TrabajosExtraService {
           { field: 'otraActividad', label: 'Otra actividad' },
           { field: 'descripcion', label: 'Descripción' },
           { field: 'observaciones', label: 'Observaciones' },
+          { field: 'reportNumero', label: 'N° de report' },
+          {
+            field: 'destino',
+            label: 'Dónde se hizo',
+            format: (v) => DESTINO_LABEL[v as string] ?? String(v ?? '—'),
+          },
+          { field: 'planta', label: 'Planta' },
         ];
         const diff = diffFields<DatosTrabajo>(vigente, nuevo, CAMPOS);
         if (diff.length === 0) {
@@ -365,15 +395,24 @@ export class TrabajosExtraService {
     return this.shape(registro, nombres);
   }
 
-  /** Cambia el `createdById` crudo por `registradoPor` (el nombre resuelto). */
-  private shape<T extends { createdById: string | null }>(
+  /** Cambia el `createdById` crudo por `registradoPor` (el nombre resuelto) y
+   * `fotoKey` por la URL firmada — la key del bucket nunca sale a la API. */
+  private async shape<
+    T extends { createdById: string | null; fotoKey: string | null },
+  >(
     registro: T,
     nombres: Map<string, string>,
-  ): Omit<T, 'createdById'> & { registradoPor: string | null } {
-    const { createdById, ...resto } = registro;
+  ): Promise<
+    Omit<T, 'createdById' | 'fotoKey'> & {
+      registradoPor: string | null;
+      fotoUrl: string | null;
+    }
+  > {
+    const { createdById, fotoKey, ...resto } = registro;
     return {
       ...resto,
       registradoPor: (createdById && nombres.get(createdById)) || null,
+      fotoUrl: fotoKey ? await this.storage.sign(fotoKey) : null,
     };
   }
 
@@ -405,6 +444,9 @@ export class TrabajosExtraService {
         dto.observaciones !== undefined
           ? dto.observaciones
           : actual.observaciones,
+      reportNumero: dto.reportNumero ?? actual.reportNumero,
+      destino: dto.destino ?? actual.destino,
+      planta: dto.planta !== undefined ? dto.planta : actual.planta,
     });
   }
 
@@ -450,10 +492,32 @@ export class TrabajosExtraService {
       );
     }
 
+    /**
+     * Dónde se hizo (regla del cliente): solo una limpieza de silos puede
+     * hacerse EN PLANTA, y entonces hay que decir en cuál; el resto es
+     * Transporte o Variado. `destino` nulo se tolera por las filas legacy
+     * (editar una sin tocar el destino no puede rebotar), pero un destino
+     * PLANTA siempre llega con su planta y su actividad que lo justifica.
+     */
+    const planta = datos.planta?.trim();
+    if (datos.destino === 'PLANTA') {
+      if (!datos.actividades.includes('LIMPIEZA_SILOS')) {
+        throw new BadRequestException(
+          'Solo una limpieza de silos puede hacerse en planta: para el resto usá Transporte o Variado.',
+        );
+      }
+      if (!planta) {
+        throw new BadRequestException('Indicá en qué planta se hizo.');
+      }
+    }
+
     return {
       ...datos,
       otraActividad: eligioOtro ? (otraActividad ?? null) : null,
       observaciones: datos.observaciones?.trim() || null,
+      // La planta solo acompaña a un destino PLANTA: en el resto se descarta
+      // para que no quede un nombre huérfano contradiciendo el destino.
+      planta: datos.destino === 'PLANTA' ? (planta ?? null) : null,
       totalHoras: Number(
         (datos.horometroFinal - datos.horometroInicial).toFixed(2),
       ),

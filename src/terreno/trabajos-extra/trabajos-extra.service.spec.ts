@@ -13,13 +13,24 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { ChangeLogService } from '../../change-log/change-log.service';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import { OperatorsService } from '../../operators/operators.service';
+import { StorageService } from '../../storage/storage.service';
 import { CreateTrabajoExtraDto } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
 
 describe('TrabajosExtraService', () => {
   let service: TrabajosExtraService;
   const USER_ID = 'u1';
-  const createAs = (dto: CreateTrabajoExtraDto) => service.create(dto, USER_ID);
+  /** Los campos del report (obligatorios en el DTO) con valores por defecto:
+   * los tests que no son de report no tienen por qué repetirlos. */
+  const DTO_REPORT = {
+    reportNumero: '4509',
+    destino: 'TRANSPORTE',
+    fotoKey: 'tmp/u1/report.jpg',
+  } as const;
+  type DtoSinReport = Omit<CreateTrabajoExtraDto, keyof typeof DTO_REPORT> &
+    Partial<CreateTrabajoExtraDto>;
+  const createAs = (dto: DtoSinReport) =>
+    service.create({ ...DTO_REPORT, ...dto }, USER_ID);
   const prisma = {
     equipment: { findUnique: jest.fn() },
     trabajoExtraordinario: {
@@ -41,6 +52,10 @@ describe('TrabajosExtraService', () => {
   const assertActive = jest.fn();
   const eventEmitter = { emit: jest.fn() };
   const changeLog = { record: jest.fn(), findFor: jest.fn() };
+  // La foto del report: el create reclama la key tmp y las respuestas firman
+  // la URL (nunca exponen la key).
+  const claimTmp = jest.fn();
+  const sign = jest.fn();
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
@@ -50,6 +65,7 @@ describe('TrabajosExtraService', () => {
         { provide: OperatorsService, useValue: { assertActive } },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: ChangeLogService, useValue: changeLog },
+        { provide: StorageService, useValue: { claimTmp, sign } },
       ],
     }).compile();
     service = mod.get(TrabajosExtraService);
@@ -72,10 +88,12 @@ describe('TrabajosExtraService', () => {
       name: 'Juan Rojas',
       isActive: true,
     });
+    claimTmp.mockResolvedValue('trabajo-extra-photo/u1/report.jpg');
+    sign.mockResolvedValue('https://storage.local/signed/report.jpg');
   });
 
   describe('registradoPor — quién registró el trabajo', () => {
-    const base: CreateTrabajoExtraDto = {
+    const base: DtoSinReport = {
       equipoId: 'e1',
       operatorId: 'op_1',
       faena: 'Rajo Norte',
@@ -118,6 +136,69 @@ describe('TrabajosExtraService', () => {
     });
   });
 
+  describe('report — destino, planta y foto', () => {
+    const base: DtoSinReport = {
+      equipoId: 'e1',
+      operatorId: 'op_1',
+      faena: 'Sima',
+      turno: 'DIURNO',
+      horometroInicial: 4395,
+      horometroFinal: 4396,
+      actividades: ['LIMPIEZA_SILOS'],
+      descripcion: 'Limpieza silo P4',
+    };
+
+    it('destino PLANTA exige que las actividades incluyan limpieza de silos', async () => {
+      await expect(
+        createAs({
+          ...base,
+          actividades: ['REGULACION_CARGA'],
+          destino: 'PLANTA',
+          planta: 'Planta 4',
+        }),
+      ).rejects.toThrow(/limpieza de silos/i);
+      expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    });
+
+    it('destino PLANTA exige decir en cuál planta', async () => {
+      await expect(
+        createAs({ ...base, destino: 'PLANTA', planta: '   ' }),
+      ).rejects.toThrow(/en qué planta/i);
+    });
+
+    it('guarda la planta con destino PLANTA, reclama la foto y firma la URL', async () => {
+      const res = await createAs({
+        ...base,
+        destino: 'PLANTA',
+        planta: 'Planta 4',
+        fotoKey: 'tmp/u1/report-4509.jpg',
+      });
+
+      expect(claimTmp).toHaveBeenCalledWith(
+        'tmp/u1/report-4509.jpg',
+        USER_ID,
+        'trabajo-extra-photo',
+      );
+      expect(res).toMatchObject({
+        destino: 'PLANTA',
+        planta: 'Planta 4',
+        reportNumero: '4509',
+        fotoUrl: 'https://storage.local/signed/report.jpg',
+      });
+      expect('fotoKey' in res).toBe(false);
+    });
+
+    it('la planta se descarta cuando el destino no es PLANTA', async () => {
+      const res = await createAs({
+        ...base,
+        destino: 'VARIADO',
+        planta: 'Planta 1',
+      });
+      expect(res.planta).toBeNull();
+      expect(res.destino).toBe('VARIADO');
+    });
+  });
+
   it('calcula totalHoras = horometroFinal - horometroInicial', async () => {
     const res = await createAs({
       equipoId: 'e1',
@@ -139,7 +220,7 @@ describe('TrabajosExtraService', () => {
    * fallar, no inventar un cero.
    */
   it('rechaza el horómetro final menor que el inicial en vez de guardar cero', async () => {
-    const invertido: CreateTrabajoExtraDto = {
+    const invertido: DtoSinReport = {
       equipoId: 'e1',
       operatorId: 'op_1',
       faena: 'Patillo',
@@ -350,7 +431,7 @@ describe('TrabajosExtraService', () => {
 
   describe('idempotencia (reenvío offline)', () => {
     const ID = 'b3b6a1f2-6c5e-4d0e-9a55-0f4f0a7d2c11';
-    const payload: CreateTrabajoExtraDto = {
+    const payload: DtoSinReport = {
       id: ID,
       equipoId: 'e1',
       operatorId: 'op_1',
@@ -448,6 +529,7 @@ describe('TrabajosExtraService', () => {
         id: ID,
         operador: 'Juan Rojas',
         registradoPor: null,
+        fotoUrl: null,
       });
       expect(prisma.equipment.findUnique).not.toHaveBeenCalled();
       expect(assertActive).not.toHaveBeenCalled();
@@ -466,7 +548,7 @@ describe('TrabajosExtraService', () => {
         capturedAt: '2001-01-01T00:00:00.000Z',
       });
 
-      expect(res).toEqual({ id: ID, registradoPor: null });
+      expect(res).toEqual({ id: ID, registradoPor: null, fotoUrl: null });
     });
 
     it('otro usuario con el mismo id -> 409 ID_CONFLICT', async () => {
@@ -502,6 +584,7 @@ describe('TrabajosExtraService', () => {
       await expect(createAs(payload)).resolves.toEqual({
         id: ID,
         registradoPor: null,
+        fotoUrl: null,
       });
     });
 
@@ -854,7 +937,7 @@ describe('TrabajosExtraService', () => {
   describe('forma de la respuesta (equipo incluido)', () => {
     const ID = 'b3b6a1f2-6c5e-4d0e-9a55-0f4f0a7d2c11';
     const INCLUDE = { equipo: { select: { internalCode: true } } };
-    const payload: CreateTrabajoExtraDto = {
+    const payload: DtoSinReport = {
       id: ID,
       equipoId: 'e1',
       operatorId: 'op_1',
@@ -966,6 +1049,9 @@ describe('CreateTrabajoExtraDto — operatorId obligatorio, operador fuera del D
     horometroFinal: 1212,
     actividades: ['REGULACION_CARGA'],
     descripcion: 'Carga de material',
+    reportNumero: '4509',
+    destino: 'TRANSPORTE',
+    fotoKey: 'tmp/u1/report.jpg',
   };
 
   it('acepta el body con operatorId', async () => {

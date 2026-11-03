@@ -14,7 +14,7 @@ import {
 
 import { normalizeObservaciones } from '../../../common/normalize-observaciones';
 import { SHIFT_TYPES, type ShiftType } from '../../../shifts/shift-type';
-import { ACTIVIDADES } from './create-trabajo-extra.dto';
+import { ACTIVIDADES, DESTINOS } from './create-trabajo-extra.dto';
 
 /**
  * Edición de un trabajo ya registrado: se puede cambiar
@@ -75,6 +75,25 @@ export class UpdateTrabajoExtraDto {
   @IsString()
   @MaxLength(1000)
   descripcion?: string;
+
+  /** N° del report en papel. Editable (corregir un folio mal tipeado); no se
+   * puede dejar vacío. */
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty({ message: 'Indicá el número del report' })
+  @MaxLength(30)
+  reportNumero?: string;
+
+  /** Dónde se hizo. Las reglas cruzadas (PLANTA ⇒ limpieza de silos y
+   * `planta` con nombre) las aplica el servicio sobre el registro combinado. */
+  @IsOptional()
+  @IsIn(DESTINOS)
+  destino?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  planta?: string;
 
   @IsOptional()
   @Transform(({ value }: { value: unknown }) => normalizeObservaciones(value))

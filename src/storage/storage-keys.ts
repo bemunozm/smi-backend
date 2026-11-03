@@ -62,6 +62,11 @@ export const FILE_KINDS = {
     prefix: 'checklist-photos/',
     allowedExtensions: IMAGE_EXTENSIONS,
   },
+  /** Foto del report en papel que respalda un trabajo extraordinario. */
+  'trabajo-extra-photo': {
+    prefix: 'trabajo-extra-photos/',
+    allowedExtensions: IMAGE_EXTENSIONS,
+  },
 } satisfies Record<string, FileKindConfig>;
 
 export type FileKind = keyof typeof FILE_KINDS;

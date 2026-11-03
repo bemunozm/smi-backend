@@ -907,6 +907,20 @@ model TrabajoExtraordinario {
   otraActividad    String?   @map("otra_actividad")
   descripcion      String
   observaciones    String?
+  /// N° del report en papel que respalda el trabajo (pedido del cliente:
+  /// cada trabajo extra sale de un report foliado). Obligatorio para filas
+  /// nuevas a nivel de DTO; null en las legacy.
+  reportNumero     String?   @map("report_numero")
+  /// Dónde se hizo: TRANSPORTE | PLANTA | VARIADO. Solo una limpieza de
+  /// silos puede ser PLANTA (regla del cliente); null en filas legacy.
+  destino          String?
+  /// En cuál planta (snapshot del nombre del catálogo `Planta`) cuando
+  /// `destino` es PLANTA; null en el resto.
+  planta           String?
+  /// Key de la foto del report en el bucket (R2/MinIO) — mismo patrón que
+  /// `Hallazgo.fotoKey`: sube por `POST /api/files` y el create la reclama.
+  /// La API solo expone la URL firmada. Null en filas legacy.
+  fotoKey          String?   @map("foto_key")
   /// Hora de captura del dispositivo cuando el cliente la manda (registro
   /// offline); si no, la del servidor. `createdAt` es siempre la del servidor.
   fecha            DateTime  @default(now())

@@ -13,6 +13,9 @@ function base(overrides: Record<string, unknown> = {}) {
     horometroFinal: 108.5,
     actividades: ['LIMPIEZA_CANCHA'],
     descripcion: 'Limpieza de cancha tras turno',
+    reportNumero: '4509',
+    destino: 'TRANSPORTE',
+    fotoKey: 'tmp/u1/report.jpg',
     ...overrides,
   };
 }

@@ -38,6 +38,20 @@ export const ACTIVIDADES = [
  * administrador. Repite las etiquetas de la pantalla (`types/trabajosExtra.ts`
  * en el frontend): un aviso que dijera `HACER_PETRIL` no lo entiende nadie.
  */
+/**
+ * Dónde se hizo el trabajo (pedido del cliente, espejo de la columna
+ * «Planta» de su planilla): TRANSPORTE, una PLANTA concreta (solo para
+ * limpieza de silos — la regla vive en `TrabajosExtraService.validar`) o
+ * VARIADO cuando mezcla destinos.
+ */
+export const DESTINOS = ['TRANSPORTE', 'PLANTA', 'VARIADO'] as const;
+
+export const DESTINO_LABEL: Record<string, string> = {
+  TRANSPORTE: 'Transporte',
+  PLANTA: 'Planta',
+  VARIADO: 'Variado',
+};
+
 export const ACTIVIDAD_LABEL: Record<string, string> = {
   REGULACION_CARGA: 'Regulación y carga',
   LIMPIEZA_CANCHA: 'Limpieza de cancha',
@@ -112,6 +126,35 @@ export class CreateTrabajoExtraDto {
   @IsString()
   @MaxLength(120)
   otraActividad?: string;
+
+  /** N° del report en papel que respalda el trabajo — obligatorio: el
+   * cliente folia cada report y el Excel que exporta el admin lo lleva. */
+  @IsString()
+  @IsNotEmpty({ message: 'Indicá el número del report' })
+  @MaxLength(30)
+  reportNumero!: string;
+
+  /** Dónde se hizo — obligatorio; lo declara el supervisor. PLANTA exige
+   * `planta` y que las actividades incluyan LIMPIEZA_SILOS (regla del
+   * servicio). */
+  @IsIn(DESTINOS, { message: 'Indicá dónde se hizo el trabajo' })
+  destino!: string;
+
+  /** Nombre de la planta (catálogo `Planta` del reporte diario) cuando
+   * `destino` es PLANTA; se ignora en el resto. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  planta?: string;
+
+  /**
+   * Foto del report en papel — OBLIGATORIA (pedido del cliente: el trabajo
+   * se cobra contra el report). Key `tmp/` subida por `POST /api/files`; el
+   * create la reclama (`claimTmp`), mismo patrón que `Hallazgo.fotoKey`.
+   */
+  @IsString()
+  @IsNotEmpty({ message: 'La foto del report es obligatoria' })
+  fotoKey!: string;
 
   @IsString()
   @MaxLength(1000)
