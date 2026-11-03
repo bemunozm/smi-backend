@@ -7,7 +7,7 @@ import { assertExpectedLocked } from '../../common/concurrency/assert-expected-l
 import { type ExpectedValues } from '../../common/concurrency/expected-fields';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { resolveCapturedAt } from '../../common/dates/capture-time';
+import { resolveRecordDate } from '../../common/dates/capture-time';
 import { formatBusinessDate } from '../../common/dates/business-time';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type {
@@ -144,7 +144,7 @@ export class HallazgosService {
   }
 
   private async createFresh(dto: CreateHallazgoDto, userId: string) {
-    const { at: fecha } = resolveCapturedAt(dto.capturedAt);
+    const fecha = resolveRecordDate(dto.fecha, dto.capturedAt);
 
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },

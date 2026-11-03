@@ -34,7 +34,7 @@ export class TrabajosExtraController {
   }
 
   @Post()
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async create(
     @Body() dto: CreateTrabajoExtraDto,
     @Session() session: UserSession,
@@ -50,7 +50,7 @@ export class TrabajosExtraController {
    * de la sesión, nunca del body: es la firma del cambio en el registro.
    */
   @Patch(':id')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateTrabajoExtraDto,

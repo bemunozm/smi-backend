@@ -28,9 +28,13 @@ const LECTORES = [ROLES.ADMIN, ROLES.MANTENEDOR, ROLES.SUPERVISOR];
 export class MaintenancePlansController {
   constructor(private readonly service: MaintenancePlansService) {}
 
-  /** Próxima mantención de cada equipo con pauta (columna de la tabla de Equipos). */
+  /**
+   * Próxima mantención de cada equipo con pauta (columna de la tabla de Equipos).
+   * SECRETARIA también: alimenta la tarjeta «Próximas mantenciones» del
+   * dashboard, que ella ve. Las pautas en sí siguen siendo de `LECTORES`.
+   */
   @Get('status')
-  @Roles(LECTORES)
+  @Roles([...LECTORES, ROLES.SECRETARIA])
   async statusForAll() {
     return { data: await this.service.statusForAll(), message: 'ok' };
   }

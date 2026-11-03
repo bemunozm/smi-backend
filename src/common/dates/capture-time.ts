@@ -71,6 +71,39 @@ export function resolveCapturedAt(
   };
 }
 
+/** Margen para «futura»: el reloj del navegador y el del servidor no calzan
+ * al segundo, y una fecha de «ahora» no debe rebotar por eso. */
+export const MAX_RECORD_DATE_FUTURE_MS = 5 * 60 * 1000; // 5 min
+
+/**
+ * Fecha de un registro cargado desde el panel (`fecha`): un hallazgo o un
+ * trabajo extra que el supervisor olvidó y se carga después. A diferencia de
+ * `capturedAt` no es la hora del dispositivo sino una elección explícita, así
+ * que no tiene ventana hacia atrás; solo no puede ser futura (400
+ * `INVALID_RECORD_DATE`). Sin `fecha`, manda `capturedAt` como siempre.
+ */
+export function resolveRecordDate(
+  fecha: string | undefined,
+  capturedAt: string | undefined,
+  now: Date = new Date(),
+): Date {
+  if (!fecha) return resolveCapturedAt(capturedAt, now).at;
+  const elegida = new Date(fecha);
+  if (Number.isNaN(elegida.getTime())) {
+    throw new BadRequestException({
+      message: 'La fecha no es válida',
+      code: ERROR_CODES.INVALID_RECORD_DATE,
+    });
+  }
+  if (elegida.getTime() - now.getTime() > MAX_RECORD_DATE_FUTURE_MS) {
+    throw new BadRequestException({
+      message: 'La fecha no puede ser futura',
+      code: ERROR_CODES.INVALID_RECORD_DATE,
+    });
+  }
+  return elegida;
+}
+
 /**
  * `serverNow − clientNow` a partir del header opcional `X-Client-Time` (ISO,
  * enviado por el dispositivo al abrir una tarjeta). Se audita

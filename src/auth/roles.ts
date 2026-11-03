@@ -42,6 +42,13 @@ export const ROLES = {
   ADMIN: 'ADMIN',
   SUPERVISOR: 'SUPERVISOR',
   MANTENEDOR: 'MANTENEDOR',
+  /**
+   * Oficina (pedido del cliente, 03/11): ve el dashboard y completa o corrige
+   * lo que los supervisores olvidan — hallazgos, trabajos extra y reportes
+   * diarios, incluido el estado de un hallazgo si el taller no lo movió.
+   * No elimina.
+   */
+  SECRETARIA: 'SECRETARIA',
 } as const;
 
 export type Role = (typeof ROLES)[keyof typeof ROLES];

@@ -6,6 +6,7 @@ import {
   MAX_PAST_CAPTURE_SKEW_MS,
   resolveCapturedAt,
   resolveCapturedAtWithFallback,
+  resolveRecordDate,
 } from './capture-time';
 
 const NOW = new Date('2026-09-28T12:00:00.000Z');
@@ -141,5 +142,41 @@ describe('resolveCapturedAtWithFallback', () => {
     expect(() =>
       resolveCapturedAtWithFallback('no-es-una-fecha', fallback, NOW),
     ).not.toThrow();
+  });
+});
+
+describe('resolveRecordDate', () => {
+  it('sin fecha elegida manda capturedAt, como siempre', () => {
+    const captured = new Date(NOW.getTime() - 60_000).toISOString();
+    expect(resolveRecordDate(undefined, captured, NOW).toISOString()).toBe(
+      captured,
+    );
+    expect(resolveRecordDate(undefined, undefined, NOW)).toBe(NOW);
+  });
+
+  it('usa la fecha elegida aunque sea de hace más de una semana', () => {
+    const vieja = new Date(
+      NOW.getTime() - MAX_PAST_CAPTURE_SKEW_MS * 3,
+    ).toISOString();
+    expect(resolveRecordDate(vieja, NOW.toISOString(), NOW).toISOString()).toBe(
+      vieja,
+    );
+  });
+
+  it('rechaza una fecha futura o inválida', () => {
+    const manana = new Date(NOW.getTime() + 24 * 3600_000).toISOString();
+    expect(() => resolveRecordDate(manana, undefined, NOW)).toThrow(
+      BadRequestException,
+    );
+    expect(() => resolveRecordDate('no-es-fecha', undefined, NOW)).toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('tolera unos minutos de desfase entre relojes', () => {
+    const enUnMinuto = new Date(NOW.getTime() + 60_000).toISOString();
+    expect(resolveRecordDate(enUnMinuto, undefined, NOW).toISOString()).toBe(
+      enUnMinuto,
+    );
   });
 });
