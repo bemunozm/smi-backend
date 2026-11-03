@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ChangeLogModule } from '../../change-log/change-log.module';
 import { OperatorsModule } from '../../operators/operators.module';
+import { StorageModule } from '../../storage/storage.module';
 import { TrabajosExtraController } from './trabajos-extra.controller';
 import { TrabajosExtraService } from './trabajos-extra.service';
 
 @Module({
-  imports: [OperatorsModule, ChangeLogModule],
+  imports: [OperatorsModule, ChangeLogModule, StorageModule],
   controllers: [TrabajosExtraController],
   providers: [TrabajosExtraService],
 })
