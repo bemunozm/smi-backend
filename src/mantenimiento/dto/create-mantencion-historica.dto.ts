@@ -2,9 +2,12 @@ import { TipoOT } from '@prisma/client';
 import {
   IsEnum,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 import { IsDateOnly } from '../../shifts/date-only';
@@ -39,6 +42,30 @@ export class CreateMantencionHistoricaDto {
   @IsNotEmpty()
   @MaxLength(200)
   titulo!: string;
+
+  /**
+   * Quién la hizo — texto libre (snapshot en `TareaOT.hechaPorNombre`, el
+   * mismo campo que llena el taller al completar una tarea): la hizo alguien
+   * que puede no ser usuario del sistema (un taller externo, un mecánico de
+   * antes). Alimenta la columna «Mantenedor» del registro y el «Realizada
+   * por» del detalle.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  realizadaPor?: string;
+
+  /**
+   * Lectura del equipo al momento de la mantención: kilometraje si es
+   * liviano, horómetro si es pesado (la unidad la decide el `controlUnit`
+   * del equipo; mismos topes que los horómetros de Terreno). Queda como nota
+   * de la tarea, visible en el detalle de la mantención.
+   */
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(1_000_000)
+  lectura?: number;
 
   @IsOptional()
   @IsString()

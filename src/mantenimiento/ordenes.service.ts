@@ -35,6 +35,10 @@ import type { OrdenResponseDto } from './dto/orden-response.dto';
 import type { TareaResponseDto } from './dto/tarea-response.dto';
 import type { UpdateOrdenDto } from './dto/update-orden.dto';
 
+/** Números como los lee el usuario (es-CL: miles con punto) — para la nota
+ * de lectura de una mantención histórica. */
+const NUM_CL = new Intl.NumberFormat('es-CL', { maximumFractionDigits: 1 });
+
 // `select` explícito (nunca el objeto Prisma crudo) — mismo criterio que
 // `users.service.ts`: el shape público no se desincroniza en silencio si el
 // modelo gana campos nuevos.
@@ -250,11 +254,11 @@ export class OrdenesService {
     const equipment =
       (await this.prisma.equipment.findUnique({
         where: { id: dto.equipoId },
-        select: { internalCode: true },
+        select: { internalCode: true, controlUnit: true },
       })) ??
       (await this.prisma.equipment.findUnique({
         where: { internalCode: dto.equipoId },
-        select: { internalCode: true },
+        select: { internalCode: true, controlUnit: true },
       }));
     if (!equipment) {
       throw new NotFoundException(
@@ -266,6 +270,16 @@ export class OrdenesService {
     // Chile (UTC-3/-4), y una medianoche UTC se mostraría como el día
     // anterior.
     const hechaAt = new Date(`${dto.fecha}T12:00:00.000Z`);
+
+    // La lectura queda como nota de la tarea (visible en el detalle de la
+    // mantención), con la unidad del equipo: kilometraje para un liviano
+    // (`controlUnit` KM), horómetro para un pesado (HOURS).
+    const notas =
+      dto.lectura != null
+        ? equipment.controlUnit === 'KM'
+          ? `Kilometraje al momento de la mantención: ${NUM_CL.format(dto.lectura)} km`
+          : `Horómetro al momento de la mantención: ${NUM_CL.format(dto.lectura)} h`
+        : null;
 
     const orden = await this.prisma.ordenTrabajo.create({
       data: {
@@ -279,7 +293,19 @@ export class OrdenesService {
           ? `Mantención anterior (registro histórico): ${dto.observaciones}`
           : 'Mantención anterior (registro histórico)',
         tareas: {
-          create: [{ texto: dto.titulo, hecha: true, posicion: 0, hechaAt }],
+          create: [
+            {
+              texto: dto.titulo,
+              hecha: true,
+              posicion: 0,
+              hechaAt,
+              // Mismo snapshot que llena el taller al completar una tarea —
+              // la columna «Mantenedor» del registro y el «Realizada por»
+              // del detalle salen de acá.
+              hechaPorNombre: dto.realizadaPor?.trim() || null,
+              notas,
+            },
+          ],
         },
       },
       select: ORDEN_SELECT,

@@ -675,7 +675,10 @@ describe('OrdenesService', () => {
     };
 
     it('crea una OT COMPLETADA con la tarea hecha en la fecha declarada y el código interno del equipo', async () => {
-      equipmentFindUnique.mockResolvedValueOnce({ internalCode: 'CM-003' });
+      equipmentFindUnique.mockResolvedValueOnce({
+        internalCode: 'CM-003',
+        controlUnit: 'HOURS',
+      });
       ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
       userFindMany.mockResolvedValue([]);
 
@@ -701,6 +704,8 @@ describe('OrdenesService', () => {
             hecha: true,
             posicion: 0,
             hechaAt: new Date('2025-06-15T12:00:00.000Z'),
+            hechaPorNombre: null,
+            notas: null,
           },
         ],
       });
@@ -710,7 +715,7 @@ describe('OrdenesService', () => {
     it('acepta el código interno como equipoId (segunda búsqueda)', async () => {
       equipmentFindUnique
         .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ internalCode: 'CM-003' });
+        .mockResolvedValueOnce({ internalCode: 'CM-003', controlUnit: 'HOURS' });
       ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
       userFindMany.mockResolvedValue([]);
 
@@ -720,6 +725,46 @@ describe('OrdenesService', () => {
         { data: Record<string, unknown> },
       ];
       expect(data).toMatchObject({ equipoId: 'CM-003' });
+    });
+
+    it('guarda quién la hizo y la lectura como nota, en km para un liviano', async () => {
+      equipmentFindUnique.mockResolvedValueOnce({
+        internalCode: 'TLRV40',
+        controlUnit: 'KM',
+      });
+      ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
+      userFindMany.mockResolvedValue([]);
+
+      await service.createHistorica(
+        { ...DTO, realizadaPor: '  Taller externo Díaz  ', lectura: 84306 },
+        'u_admin',
+      );
+
+      const [{ data }] = ordenTrabajoCreate.mock.calls[0] as [
+        { data: { tareas: { create: Record<string, unknown>[] } } },
+      ];
+      expect(data.tareas.create[0]).toMatchObject({
+        hechaPorNombre: 'Taller externo Díaz',
+        notas: 'Kilometraje al momento de la mantención: 84.306 km',
+      });
+    });
+
+    it('la lectura de un pesado queda como horómetro en horas', async () => {
+      equipmentFindUnique.mockResolvedValueOnce({
+        internalCode: 'CM-003',
+        controlUnit: 'HOURS',
+      });
+      ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
+      userFindMany.mockResolvedValue([]);
+
+      await service.createHistorica({ ...DTO, lectura: 1250.5 }, 'u_admin');
+
+      const [{ data }] = ordenTrabajoCreate.mock.calls[0] as [
+        { data: { tareas: { create: Record<string, unknown>[] } } },
+      ];
+      expect(data.tareas.create[0]).toMatchObject({
+        notas: 'Horómetro al momento de la mantención: 1.250,5 h',
+      });
     });
 
     it('rechaza una fecha futura', async () => {

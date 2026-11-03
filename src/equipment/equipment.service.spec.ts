@@ -1441,9 +1441,9 @@ describe('EquipmentService', () => {
         tipo: 'PREVENTIVA',
         updatedAt: new Date('2026-10-20T12:00:00Z'),
         tareas: [
-          { hechaAt: new Date('2026-10-18T10:00:00Z') },
-          { hechaAt: new Date('2026-10-19T16:30:00Z') },
-          { hechaAt: null },
+          { hechaAt: new Date('2026-10-18T10:00:00Z'), hechaPorNombre: 'Luis Vega' },
+          { hechaAt: new Date('2026-10-19T16:30:00Z'), hechaPorNombre: 'Pedro Soto' },
+          { hechaAt: null, hechaPorNombre: null },
         ],
       });
 
@@ -1454,6 +1454,9 @@ describe('EquipmentService', () => {
           titulo: 'Mantención 10.000 km',
           tipo: 'PREVENTIVA',
           fecha: new Date('2026-10-19T16:30:00Z'),
+          // Nombres únicos de las tareas completadas — mismo criterio que la
+          // columna «Mantenedor» del registro de mantenciones.
+          realizadaPor: 'Luis Vega, Pedro Soto',
         },
       });
     });
@@ -1470,7 +1473,7 @@ describe('EquipmentService', () => {
         titulo: 'Cambio de aceite',
         tipo: 'CORRECTIVA',
         updatedAt: new Date('2026-09-01T08:00:00Z'),
-        tareas: [{ hechaAt: null }],
+        tareas: [{ hechaAt: null, hechaPorNombre: null }],
       });
 
       const result = await service.findOne('eq_1');
@@ -1480,6 +1483,7 @@ describe('EquipmentService', () => {
           titulo: 'Cambio de aceite',
           tipo: 'CORRECTIVA',
           fecha: new Date('2026-09-01T08:00:00Z'),
+          realizadaPor: null,
         },
       });
     });
