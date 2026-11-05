@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
@@ -12,10 +13,9 @@ function base(overrides: Record<string, unknown> = {}) {
     turno: 'DIURNO',
     horometroInicial: 100,
     horometroFinal: 108.5,
-    actividades: ['LIMPIEZA_CANCHA'],
+    detalle: [{ actividad: 'LIMPIEZA_CANCHA', lugar: 'TRANSPORTE', horas: 2 }],
     descripcion: 'Limpieza de cancha tras turno',
     reportNumero: '4509',
-    destino: 'TRANSPORTE',
     fotoKey: 'tmp/u1/report.jpg',
     ...overrides,
   };
