@@ -886,6 +886,33 @@ describe('ShiftsService', () => {
         );
       });
 
+      it('cierre histórico SIN foto: cierra con pumpPhotoKey null y combustible sin fotoKey', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          ...cardBase,
+          fecha: fechaHistorica,
+          createdAt: new Date(), // abierta HOY para un día pasado: backfill
+        });
+        const { tmpPhotoKey: _omitida, ...sinFoto } = dto;
+
+        await service.closeCard('card_1', sinFoto as CloseShiftCardDto, session);
+
+        expect(claimTmp).not.toHaveBeenCalled();
+        const update = lastCallData(tx.registroHorometro.updateMany);
+        expect(update.pumpPhotoKey).toBeNull();
+        const fuel = lastCallData(tx.registroCombustible.create);
+        expect(fuel.fotoKey).toBeNull();
+      });
+
+      it('cierre VIVO sin foto → 400 PUMP_PHOTO_REQUIRED sin reclamar nada', async () => {
+        // Fixture del beforeEach: tarjeta viva (no es carga histórica).
+        const { tmpPhotoKey: _omitida, ...sinFoto } = dto;
+
+        await expect(
+          service.closeCard('card_1', sinFoto as CloseShiftCardDto, session),
+        ).rejects.toMatchObject({ response: { code: 'PUMP_PHOTO_REQUIRED' } });
+        expect(claimTmp).not.toHaveBeenCalled();
+      });
+
       it('un NOCTURNO vivo de anoche cerrado en la mañana NO se re-fecha', async () => {
         // Apertura real hace 11 h: según la hora en que corra Jest cae en
         // ayer (día pasado, pero createdAt de ayer) o en hoy — en ambos
