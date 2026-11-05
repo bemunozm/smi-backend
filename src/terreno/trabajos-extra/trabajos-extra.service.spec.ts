@@ -21,6 +21,10 @@ import {
   todayInBusinessTimeZone,
 } from '../../common/dates/business-time';
 
+/** El desglose por defecto de un fixture: cada actividad en VARIADO, 1 h. */
+const detalleDe = (actividades: string[]) =>
+  actividades.map((actividad) => ({ actividad, lugar: 'VARIADO', horas: 1 }));
+
 describe('TrabajosExtraService', () => {
   let service: TrabajosExtraService;
   const USER_ID = 'u1';
@@ -28,11 +32,13 @@ describe('TrabajosExtraService', () => {
    * los tests que no son de report no tienen por qué repetirlos. */
   const DTO_REPORT = {
     reportNumero: '4509',
-    destino: 'TRANSPORTE',
     fotoKey: 'tmp/u1/report.jpg',
   } as const;
+  /** El desglose por defecto de un fixture: cada actividad en VARIADO, 1 h. */
+  const detalleDe = (actividades: string[]) =>
+    actividades.map((actividad) => ({ actividad, lugar: 'VARIADO', horas: 1 }));
   type DtoSinReport = Omit<CreateTrabajoExtraDto, keyof typeof DTO_REPORT> &
-    Partial<CreateTrabajoExtraDto>;
+    Partial<CreateTrabajoExtraDto> & { actividades?: string[] };
   const createAs = (dto: DtoSinReport) =>
     service.create({ ...DTO_REPORT, ...dto }, USER_ID);
   const prisma = {
@@ -105,6 +111,7 @@ describe('TrabajosExtraService', () => {
       horometroInicial: 1200,
       horometroFinal: 1212,
       actividades: ['REGULACION_CARGA'],
+      detalle: detalleDe(['REGULACION_CARGA']),
       descripcion: 'Carga de material',
     };
 
@@ -149,6 +156,7 @@ describe('TrabajosExtraService', () => {
       horometroInicial: 1200,
       horometroFinal: 1212,
       actividades: ['REGULACION_CARGA'],
+      detalle: detalleDe(['REGULACION_CARGA']),
       descripcion: 'Carga de material',
       // Obligatorios desde el folio y la foto del report (#65).
       reportNumero: '4509',
@@ -187,7 +195,7 @@ describe('TrabajosExtraService', () => {
     });
   });
 
-  describe('report — destino, planta y foto', () => {
+  describe('report — desglose por actividad (lugar, planta, horas) y foto', () => {
     const base: DtoSinReport = {
       equipoId: 'e1',
       operatorId: 'op_1',
@@ -195,33 +203,55 @@ describe('TrabajosExtraService', () => {
       turno: 'DIURNO',
       horometroInicial: 4395,
       horometroFinal: 4396,
-      actividades: ['LIMPIEZA_SILOS'],
+      detalle: detalleDe(['LIMPIEZA_SILOS']),
       descripcion: 'Limpieza silo P4',
     };
 
-    it('destino PLANTA exige que las actividades incluyan limpieza de silos', async () => {
+    it('una fila en PLANTA exige que su actividad sea limpieza de silos', async () => {
       await expect(
         createAs({
           ...base,
-          actividades: ['REGULACION_CARGA'],
-          destino: 'PLANTA',
-          planta: 'Planta 4',
+          detalle: [
+            {
+              actividad: 'REGULACION_CARGA',
+              lugar: 'PLANTA',
+              planta: 'Planta 4',
+              horas: 2,
+            },
+          ],
         }),
       ).rejects.toThrow(/limpieza de silos/i);
       expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
     });
 
-    it('destino PLANTA exige decir en cuál planta', async () => {
+    it('una fila en PLANTA exige decir en cuál planta', async () => {
       await expect(
-        createAs({ ...base, destino: 'PLANTA', planta: '   ' }),
+        createAs({
+          ...base,
+          detalle: [
+            {
+              actividad: 'LIMPIEZA_SILOS',
+              lugar: 'PLANTA',
+              planta: '   ',
+              horas: 2,
+            },
+          ],
+        }),
       ).rejects.toThrow(/en qué planta/i);
     });
 
-    it('guarda la planta con destino PLANTA, reclama la foto y firma la URL', async () => {
+    it('guarda el desglose normalizado, deriva `actividades`, reclama la foto y firma la URL', async () => {
       const res = await createAs({
         ...base,
-        destino: 'PLANTA',
-        planta: 'Planta 4',
+        detalle: [
+          {
+            actividad: 'LIMPIEZA_SILOS',
+            lugar: 'PLANTA',
+            planta: 'Planta 4',
+            horas: 2.5,
+          },
+          { actividad: 'REGULACION_CARGA', lugar: 'TRANSPORTE', horas: 1 },
+        ],
         fotoKey: 'tmp/u1/report-4509.jpg',
       });
 
@@ -231,22 +261,47 @@ describe('TrabajosExtraService', () => {
         'trabajo-extra-photo',
       );
       expect(res).toMatchObject({
-        destino: 'PLANTA',
-        planta: 'Planta 4',
+        detalleActividades: [
+          {
+            actividad: 'LIMPIEZA_SILOS',
+            lugar: 'PLANTA',
+            planta: 'Planta 4',
+            horas: 2.5,
+          },
+          {
+            actividad: 'REGULACION_CARGA',
+            lugar: 'TRANSPORTE',
+            planta: null,
+            horas: 1,
+          },
+        ],
+        actividades: ['LIMPIEZA_SILOS', 'REGULACION_CARGA'],
         reportNumero: '4509',
         fotoUrl: 'https://storage.local/signed/report.jpg',
       });
       expect('fotoKey' in res).toBe(false);
     });
 
-    it('la planta se descarta cuando el destino no es PLANTA', async () => {
+    it('la planta de una fila se descarta cuando su lugar no es PLANTA', async () => {
       const res = await createAs({
         ...base,
-        destino: 'VARIADO',
-        planta: 'Planta 1',
+        detalle: [
+          {
+            actividad: 'LIMPIEZA_SILOS',
+            lugar: 'VARIADO',
+            planta: 'Planta 1',
+            horas: 1,
+          },
+        ],
       });
-      expect(res.planta).toBeNull();
-      expect(res.destino).toBe('VARIADO');
+      expect(res.detalleActividades).toEqual([
+        {
+          actividad: 'LIMPIEZA_SILOS',
+          lugar: 'VARIADO',
+          planta: null,
+          horas: 1,
+        },
+      ]);
     });
   });
 
@@ -259,6 +314,7 @@ describe('TrabajosExtraService', () => {
       horometroInicial: 1200,
       horometroFinal: 1212,
       actividades: ['REGULACION_CARGA'],
+      detalle: detalleDe(['REGULACION_CARGA']),
       descripcion: 'Carga de material',
     });
     expect(res.totalHoras).toBe(12);
@@ -279,6 +335,7 @@ describe('TrabajosExtraService', () => {
       horometroInicial: 5400,
       horometroFinal: 5388,
       actividades: ['HACER_PETRIL'],
+      detalle: detalleDe(['HACER_PETRIL']),
       descripcion: 'Horómetro tipeado al revés',
     };
 
@@ -296,6 +353,7 @@ describe('TrabajosExtraService', () => {
       horometroInicial: 900,
       horometroFinal: 900,
       actividades: ['LIMPIEZA_CANCHA'],
+      detalle: detalleDe(['LIMPIEZA_CANCHA']),
       descripcion: 'Se canceló antes de empezar',
     });
     expect(res.totalHoras).toBe(0);
@@ -316,6 +374,7 @@ describe('TrabajosExtraService', () => {
       const res = await createAs({
         ...trabajo,
         actividades: ['SOLTAR_MATERIAL', 'LIMPIEZA_CANCHA'],
+        detalle: detalleDe(['SOLTAR_MATERIAL', 'LIMPIEZA_CANCHA']),
       });
       expect(res.actividades).toEqual(['SOLTAR_MATERIAL', 'LIMPIEZA_CANCHA']);
       expect(res.otraActividad).toBeNull();
@@ -327,7 +386,7 @@ describe('TrabajosExtraService', () => {
      */
     it('exige el texto cuando se elige Otro', async () => {
       await expect(
-        createAs({ ...trabajo, actividades: ['OTRO'] }),
+        createAs({ ...trabajo, detalle: detalleDe(['OTRO']) }),
       ).rejects.toThrow(/describí cuál fue/);
       expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
     });
@@ -336,6 +395,7 @@ describe('TrabajosExtraService', () => {
       const res = await createAs({
         ...trabajo,
         actividades: ['HACER_PETRIL', 'OTRO'],
+        detalle: detalleDe(['HACER_PETRIL', 'OTRO']),
         otraActividad: '  Despeje de acceso a romana  ',
       });
       expect(res.otraActividad).toBe('Despeje de acceso a romana');
@@ -346,6 +406,7 @@ describe('TrabajosExtraService', () => {
       const res = await createAs({
         ...trabajo,
         actividades: ['HACER_PETRIL'],
+        detalle: detalleDe(['HACER_PETRIL']),
         otraActividad: 'texto huérfano',
       });
       expect(res.otraActividad).toBeNull();
@@ -367,6 +428,7 @@ describe('TrabajosExtraService', () => {
       horometroInicial: 1200,
       horometroFinal: 1212,
       actividades: ['REGULACION_CARGA'],
+      detalle: detalleDe(['REGULACION_CARGA']),
       descripcion: 'Carga de material',
     });
 
@@ -386,6 +448,7 @@ describe('TrabajosExtraService', () => {
         horometroInicial: 1200,
         horometroFinal: 1212,
         actividades: ['REGULACION_CARGA'],
+        detalle: detalleDe(['REGULACION_CARGA']),
         descripcion: 'Carga de material',
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
@@ -415,6 +478,7 @@ describe('TrabajosExtraService', () => {
         horometroInicial: 1200,
         horometroFinal: 1212,
         actividades: ['REGULACION_CARGA'],
+        detalle: detalleDe(['REGULACION_CARGA']),
         descripcion: 'Carga de material',
       });
 
@@ -440,6 +504,7 @@ describe('TrabajosExtraService', () => {
           horometroInicial: 1200,
           horometroFinal: 1212,
           actividades: ['REGULACION_CARGA'],
+          detalle: detalleDe(['REGULACION_CARGA']),
           descripcion: 'Carga de material',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
@@ -468,6 +533,7 @@ describe('TrabajosExtraService', () => {
           horometroInicial: 1200,
           horometroFinal: 1212,
           actividades: ['REGULACION_CARGA'],
+          detalle: detalleDe(['REGULACION_CARGA']),
           descripcion: 'Carga de material',
         });
       } catch (error: unknown) {
@@ -491,6 +557,7 @@ describe('TrabajosExtraService', () => {
       horometroInicial: 1200,
       horometroFinal: 1212,
       actividades: ['REGULACION_CARGA'],
+      detalle: detalleDe(['REGULACION_CARGA']),
       descripcion: 'Carga de material',
     };
 
@@ -669,6 +736,7 @@ describe('TrabajosExtraService', () => {
       horometroFinal: 1212,
       totalHoras: 12,
       actividades: ['REGULACION_CARGA'],
+      detalle: detalleDe(['REGULACION_CARGA']),
       otraActividad: null,
       descripcion: 'Carga de material',
       observaciones: null,
@@ -965,6 +1033,7 @@ describe('TrabajosExtraService', () => {
         await expect(
           service.update('t1', { faena: 'Kainita' }, editor, {
             actividades: ['REGULACION_CARGA'],
+            detalle: detalleDe(['REGULACION_CARGA']),
           }),
         ).resolves.toBeDefined();
       });
@@ -997,6 +1066,7 @@ describe('TrabajosExtraService', () => {
       horometroInicial: 1200,
       horometroFinal: 1212,
       actividades: ['REGULACION_CARGA'],
+      detalle: detalleDe(['REGULACION_CARGA']),
       descripcion: 'Carga de material',
     };
     const row = {
@@ -1099,6 +1169,7 @@ describe('CreateTrabajoExtraDto — operatorId obligatorio, operador fuera del D
     horometroInicial: 1200,
     horometroFinal: 1212,
     actividades: ['REGULACION_CARGA'],
+    detalle: detalleDe(['REGULACION_CARGA']),
     descripcion: 'Carga de material',
     reportNumero: '4509',
     destino: 'TRANSPORTE',

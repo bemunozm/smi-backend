@@ -1,5 +1,6 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
   IsDateString,
@@ -12,6 +13,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 import { normalizeObservaciones } from '../../../common/normalize-observaciones';
@@ -65,6 +67,29 @@ export const ACTIVIDAD_LABEL: Record<string, string> = {
   LIMPIEZA_RUTA: 'Limpieza de ruta',
   OTRO: 'Otro',
 };
+
+/** Una fila del desglose: actividad · dónde · horas máquina. */
+export class ActividadDetalleDto {
+  @IsIn(ACTIVIDADES)
+  actividad!: string;
+
+  @IsIn(DESTINOS, { message: 'Indicá dónde se hizo la actividad' })
+  lugar!: string;
+
+  /** Nombre de la planta (catálogo `Planta`) cuando `lugar` es PLANTA; se
+   * ignora en el resto. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  planta?: string;
+
+  /** Horas máquina de ESTA actividad (desglose; el total a cobrar sigue
+   * saliendo de los horómetros). */
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0.1, { message: 'Las horas de la actividad deben ser mayores a 0' })
+  @Max(24)
+  horas!: number;
+}
 
 export class CreateTrabajoExtraDto {
   /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
@@ -122,17 +147,22 @@ export class CreateTrabajoExtraDto {
   horometroFinal!: number;
 
   /**
-   * Una salida suele mezclar tareas, así que van varias. Al menos una: un
-   * trabajo extraordinario sin actividad no se puede cobrar ni justificar.
+   * El desglose del report, UNA FILA POR ACTIVIDAD (cliente, 05-11): qué se
+   * hizo, dónde (Transporte/Planta/Variado — PLANTA exige LIMPIEZA_SILOS y
+   * decir en cuál, regla del servicio) y cuántas horas máquina tomó. Al
+   * menos una: un trabajo sin actividad no se puede cobrar ni justificar.
+   * `actividades` ya no viaja: el servicio lo deriva de acá (resumen).
    */
   @IsArray()
-  @ArrayNotEmpty({ message: 'Elegí al menos una actividad' })
-  @IsIn(ACTIVIDADES, { each: true })
-  actividades!: string[];
+  @ArrayNotEmpty({ message: 'Agregá al menos una actividad' })
+  @ArrayMaxSize(12)
+  @ValidateNested({ each: true })
+  @Type(() => ActividadDetalleDto)
+  detalle!: ActividadDetalleDto[];
 
   /**
    * Texto libre para la tarea que no estaba en la lista. El servicio exige que
-   * venga cuando se eligió `OTRO`, y lo ignora cuando no.
+   * venga cuando alguna fila eligió `OTRO`, y lo ignora cuando no.
    */
   @IsOptional()
   @IsString()
@@ -145,19 +175,6 @@ export class CreateTrabajoExtraDto {
   @IsNotEmpty({ message: 'Indicá el número del report' })
   @MaxLength(30)
   reportNumero!: string;
-
-  /** Dónde se hizo — obligatorio; lo declara el supervisor. PLANTA exige
-   * `planta` y que las actividades incluyan LIMPIEZA_SILOS (regla del
-   * servicio). */
-  @IsIn(DESTINOS, { message: 'Indicá dónde se hizo el trabajo' })
-  destino!: string;
-
-  /** Nombre de la planta (catálogo `Planta` del reporte diario) cuando
-   * `destino` es PLANTA; se ignora en el resto. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  planta?: string;
 
   /**
    * Foto del report en papel — OBLIGATORIA (pedido del cliente: el trabajo

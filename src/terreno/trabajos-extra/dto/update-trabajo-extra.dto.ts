@@ -1,5 +1,6 @@
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
   IsIn,
@@ -10,11 +11,12 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 import { normalizeObservaciones } from '../../../common/normalize-observaciones';
 import { SHIFT_TYPES, type ShiftType } from '../../../shifts/shift-type';
-import { ACTIVIDADES, DESTINOS } from './create-trabajo-extra.dto';
+import { ACTIVIDADES, ActividadDetalleDto } from './create-trabajo-extra.dto';
 
 /**
  * Edición de un trabajo ya registrado: se puede cambiar
@@ -84,16 +86,16 @@ export class UpdateTrabajoExtraDto {
   @MaxLength(30)
   reportNumero?: string;
 
-  /** Dónde se hizo. Las reglas cruzadas (PLANTA ⇒ limpieza de silos y
-   * `planta` con nombre) las aplica el servicio sobre el registro combinado. */
+  /** Desglose por actividad (reemplaza COMPLETO al vigente cuando viene).
+   * Las reglas por fila (PLANTA ⇒ limpieza de silos y nombre de planta) las
+   * aplica el servicio; `actividades` se re-deriva de acá. */
   @IsOptional()
-  @IsIn(DESTINOS)
-  destino?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  planta?: string;
+  @IsArray()
+  @ArrayNotEmpty({ message: 'Agregá al menos una actividad' })
+  @ArrayMaxSize(12)
+  @ValidateNested({ each: true })
+  @Type(() => ActividadDetalleDto)
+  detalle?: ActividadDetalleDto[];
 
   @IsOptional()
   @Transform(({ value }: { value: unknown }) => normalizeObservaciones(value))

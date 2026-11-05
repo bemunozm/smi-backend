@@ -916,12 +916,13 @@ model TrabajoExtraordinario {
   /// cada trabajo extra sale de un report foliado). Obligatorio para filas
   /// nuevas a nivel de DTO; null en las legacy.
   reportNumero     String?   @map("report_numero")
-  /// Dónde se hizo: TRANSPORTE | PLANTA | VARIADO. Solo una limpieza de
-  /// silos puede ser PLANTA (regla del cliente); null en filas legacy.
-  destino          String?
-  /// En cuál planta (snapshot del nombre del catálogo `Planta`) cuando
-  /// `destino` es PLANTA; null en el resto.
-  planta           String?
+  /// Desglose POR ACTIVIDAD (cliente, 05-11): filas `{actividad, lugar:
+  /// TRANSPORTE|PLANTA|VARIADO, planta: string|null, horas: number}`. Es la
+  /// fuente de la tabla del formulario y del Excel (una fila por actividad).
+  /// `actividades` (arriba) se mantiene como resumen derivado para filtros y
+  /// filas legacy. Solo una limpieza de silos puede ser PLANTA, y entonces
+  /// dice en cuál (regla del cliente).
+  detalleActividades Json?   @map("detalle_actividades")
   /// Key de la foto del report en el bucket (R2/MinIO) — mismo patrón que
   /// `Hallazgo.fotoKey`: sube por `POST /api/files` y el create la reclama.
   /// La API solo expone la URL firmada. Null en filas legacy.
