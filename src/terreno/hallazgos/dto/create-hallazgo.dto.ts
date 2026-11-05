@@ -8,7 +8,6 @@ import {
   MaxLength,
 } from 'class-validator';
 
-import { IsDateOnly } from '../../../shifts/date-only';
 import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
 
 export class CreateHallazgoDto {
