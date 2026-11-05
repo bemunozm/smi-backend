@@ -621,27 +621,15 @@ export class ShiftsService {
       isPastBusinessDay(businessDayKey(card.fecha), now) &&
       businessDayKey(card.createdAt) === todayInBusinessTimeZone(now);
 
-    // La foto del surtidor es obligatoria en el cierre VIVO; la carga
-    // histórica (planilla de papel, días pasados) no la tiene y se acepta
-    // sin ella — decisión del dueño del producto, 04/11.
-    if (!dto.tmpPhotoKey && !esCargaHistorica) {
-      throw new BadRequestException({
-        message: 'Falta la foto del surtidor para cerrar la tarjeta.',
-        code: ERROR_CODES.PUMP_PHOTO_REQUIRED,
-      });
-    }
-
     // Reclama la foto ANTES de la transacción (mismo patrón que
     // `CombustibleService.create`): si `claimTmp` falla (tmp vencido/ajeno),
     // todavía no hay nada que descartar. `claimTmp` traduce un tmp
     // vencido/inexistente a 400 `TMP_KEY_EXPIRED`.
-    const pumpPhotoKey = dto.tmpPhotoKey
-      ? await this.storage.claimTmp(
-          dto.tmpPhotoKey,
-          session.user.id,
-          'fuel-photo',
-        )
-      : null;
+    const pumpPhotoKey = await this.storage.claimTmp(
+      dto.tmpPhotoKey,
+      session.user.id,
+      'fuel-photo',
+    );
 
     // `closed` se declara AFUERA del `try` y `this.shapeCard(closed!)` (que
     // llama `StorageService.sign`) corre
@@ -746,9 +734,8 @@ export class ShiftsService {
       });
     } catch (error) {
       // Cualquier falla DESPUÉS del claim exige descartar la copia recién
-      // creada — nunca dejar un objeto huérfano en el bucket. (El cierre
-      // histórico sin foto no reclamó nada.)
-      if (pumpPhotoKey) await this.storage.discard(pumpPhotoKey);
+      // creada — nunca dejar un objeto huérfano en el bucket.
+      await this.storage.discard(pumpPhotoKey);
 
       if (error instanceof ShiftCardCloseRaceError) {
         return this.resolveCloseRace(id, dto.closeClientId);
