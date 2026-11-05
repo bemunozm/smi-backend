@@ -35,6 +35,7 @@ import { StorageService } from '../../storage/storage.service';
 import {
   ACTIVIDAD_LABEL,
   DESTINO_LABEL,
+  ActividadDetalleDto,
   CreateTrabajoExtraDto,
 } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
@@ -85,9 +86,68 @@ type DatosTrabajo = Pick<
   | 'descripcion'
   | 'observaciones'
   | 'reportNumero'
-  | 'destino'
-  | 'planta'
 >;
+
+/** Una fila del desglose por actividad, como se guarda en
+ * `detalle_actividades` (y como la expone la API en `detalle`). */
+export interface DetalleActividad {
+  actividad: string;
+  lugar: string;
+  planta: string | null;
+  horas: number;
+}
+
+/**
+ * Reglas POR FILA del desglose (cliente, 05-11) + normalización: solo una
+ * limpieza de silos puede hacerse EN PLANTA y entonces dice en cuál; en el
+ * resto la planta se descarta para que no quede un nombre huérfano.
+ */
+function normalizarDetalle(filas: ActividadDetalleDto[]): DetalleActividad[] {
+  return filas.map((f) => {
+    const planta = f.planta?.trim();
+    if (f.lugar === 'PLANTA') {
+      if (f.actividad !== 'LIMPIEZA_SILOS') {
+        throw new BadRequestException(
+          'Solo una limpieza de silos puede hacerse en planta: para el resto usá Transporte o Variado.',
+        );
+      }
+      if (!planta) {
+        throw new BadRequestException(
+          'Indicá en qué planta se hizo la limpieza de silos.',
+        );
+      }
+    }
+    return {
+      actividad: f.actividad,
+      lugar: f.lugar,
+      planta: f.lugar === 'PLANTA' ? (planta ?? null) : null,
+      horas: Number(f.horas.toFixed(2)),
+    };
+  });
+}
+
+/** El resumen `actividades` (String[]) se deriva del desglose — filtros,
+ * avisos y filas legacy siguen leyendo de ahí. */
+const actividadesDe = (detalle: DetalleActividad[]): string[] => [
+  ...new Set(detalle.map((d) => d.actividad)),
+];
+
+/** `Limpieza de silos · Planta (P.P.1) · 3 h; …` — cómo se lee el desglose
+ * en el registro de cambios. Una fila legacy sin desglose cae al resumen. */
+function resumenDetalle(detalle: unknown, actividades: string[]): string {
+  const filas = Array.isArray(detalle) ? (detalle as DetalleActividad[]) : null;
+  if (!filas?.length) {
+    return actividades.map((a) => ACTIVIDAD_LABEL[a] ?? a).join(', ');
+  }
+  return filas
+    .map(
+      (d) =>
+        `${ACTIVIDAD_LABEL[d.actividad] ?? d.actividad} · ${DESTINO_LABEL[d.lugar] ?? d.lugar}${
+          d.planta ? ` (${d.planta})` : ''
+        } · ${formatNumber(d.horas)} h`,
+    )
+    .join('; ');
+}
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
 const CAMPO_LABEL: Record<keyof DatosTrabajo, string> = {
@@ -104,8 +164,6 @@ const CAMPO_LABEL: Record<keyof DatosTrabajo, string> = {
   descripcion: 'Descripción',
   observaciones: 'Observaciones',
   reportNumero: 'N° de report',
-  destino: 'Dónde se hizo',
-  planta: 'Planta',
 };
 
 /** Solo los campos que admiten precondición `X-Expected`. */
@@ -124,8 +182,6 @@ function datosDe(t: DatosTrabajo): DatosTrabajo {
     descripcion: t.descripcion,
     observaciones: t.observaciones,
     reportNumero: t.reportNumero,
-    destino: t.destino,
-    planta: t.planta,
   };
 }
 
@@ -200,6 +256,9 @@ export class TrabajosExtraService {
      * máquina que ejecutó la tarea, como respaldo del pago. Que el equipo esté
      * en turno es un aviso del formulario, no un bloqueo.
      */
+    // El desglose por actividad valida sus reglas por fila y de él se deriva
+    // el resumen `actividades` (el cliente ya no manda la lista suelta).
+    const detalle = normalizarDetalle(dto.detalle);
     const datos = this.validar({
       equipoId: dto.equipoId,
       operatorId: operator.id,
@@ -209,13 +268,11 @@ export class TrabajosExtraService {
       horometroInicial: dto.horometroInicial,
       horometroFinal: dto.horometroFinal,
       totalHoras: 0,
-      actividades: dto.actividades,
+      actividades: actividadesDe(detalle),
       otraActividad: dto.otraActividad ?? null,
       descripcion: dto.descripcion,
       observaciones: dto.observaciones ?? null,
       reportNumero: dto.reportNumero,
-      destino: dto.destino,
-      planta: dto.planta ?? null,
     });
 
     // La foto del report se reclama DESPUÉS de validar: una key tmp reclamada
@@ -230,6 +287,7 @@ export class TrabajosExtraService {
         createdById: userId,
         fecha,
         fotoKey,
+        detalleActividades: detalle as unknown as Prisma.InputJsonValue,
         ...datos,
       },
       include: TRABAJO_EXTRA_INCLUDE,
@@ -347,8 +405,6 @@ export class TrabajosExtraService {
           [vigente.equipoId]: vigente.equipo.internalCode,
           [nuevo.equipoId]: codigoNuevo,
         };
-        const actividades = (v: unknown) =>
-          (v as string[]).map((a) => ACTIVIDAD_LABEL[a] ?? a).join(', ');
         const CAMPOS: readonly ComparableField<DatosTrabajo>[] = [
           {
             field: 'equipoId',
@@ -364,26 +420,48 @@ export class TrabajosExtraService {
             format: horas,
           },
           { field: 'horometroFinal', label: 'Horómetro final', format: horas },
-          { field: 'actividades', label: 'Actividades', format: actividades },
           { field: 'otraActividad', label: 'Otra actividad' },
           { field: 'descripcion', label: 'Descripción' },
           { field: 'observaciones', label: 'Observaciones' },
           { field: 'reportNumero', label: 'N° de report' },
-          {
-            field: 'destino',
-            label: 'Dónde se hizo',
-            format: (v) => DESTINO_LABEL[v as string] ?? String(v ?? '—'),
-          },
-          { field: 'planta', label: 'Planta' },
         ];
         const diff = diffFields<DatosTrabajo>(vigente, nuevo, CAMPOS);
+        // El desglose por actividad es JSON: se compara por su resumen
+        // legible en vez de entrar a los diffs escalares (cubre también el
+        // resumen `actividades`, que se deriva de él).
+        const detalleNuevo = dto.detalle
+          ? normalizarDetalle(dto.detalle)
+          : null;
+        const resumenAntes = resumenDetalle(
+          vigente.detalleActividades,
+          vigente.actividades,
+        );
+        const resumenDespues = detalleNuevo
+          ? resumenDetalle(detalleNuevo, nuevo.actividades)
+          : resumenAntes;
+        if (resumenAntes !== resumenDespues) {
+          diff.push({
+            field: 'detalle',
+            label: 'Actividades',
+            before: resumenAntes,
+            after: resumenDespues,
+          });
+        }
         if (diff.length === 0) {
           return { registro: vigente, cambios: diff, codigo: codigoNuevo };
         }
 
         const editado = await tx.trabajoExtraordinario.update({
           where: { id },
-          data: nuevo,
+          data: {
+            ...nuevo,
+            ...(detalleNuevo
+              ? {
+                  detalleActividades:
+                    detalleNuevo as unknown as Prisma.InputJsonValue,
+                }
+              : {}),
+          },
           include: TRABAJO_EXTRA_INCLUDE,
           omit: CON_DUENO,
         });
@@ -452,7 +530,9 @@ export class TrabajosExtraService {
       horometroInicial: dto.horometroInicial ?? actual.horometroInicial,
       horometroFinal: dto.horometroFinal ?? actual.horometroFinal,
       totalHoras: actual.totalHoras,
-      actividades: dto.actividades ?? actual.actividades,
+      actividades: dto.detalle
+        ? actividadesDe(normalizarDetalle(dto.detalle))
+        : (dto.actividades ?? actual.actividades),
       otraActividad:
         dto.otraActividad !== undefined
           ? dto.otraActividad
@@ -463,8 +543,6 @@ export class TrabajosExtraService {
           ? dto.observaciones
           : actual.observaciones,
       reportNumero: dto.reportNumero ?? actual.reportNumero,
-      destino: dto.destino ?? actual.destino,
-      planta: dto.planta !== undefined ? dto.planta : actual.planta,
     });
   }
 
@@ -510,32 +588,13 @@ export class TrabajosExtraService {
       );
     }
 
-    /**
-     * Dónde se hizo (regla del cliente): solo una limpieza de silos puede
-     * hacerse EN PLANTA, y entonces hay que decir en cuál; el resto es
-     * Transporte o Variado. `destino` nulo se tolera por las filas legacy
-     * (editar una sin tocar el destino no puede rebotar), pero un destino
-     * PLANTA siempre llega con su planta y su actividad que lo justifica.
-     */
-    const planta = datos.planta?.trim();
-    if (datos.destino === 'PLANTA') {
-      if (!datos.actividades.includes('LIMPIEZA_SILOS')) {
-        throw new BadRequestException(
-          'Solo una limpieza de silos puede hacerse en planta: para el resto usá Transporte o Variado.',
-        );
-      }
-      if (!planta) {
-        throw new BadRequestException('Indicá en qué planta se hizo.');
-      }
-    }
+    // Las reglas de dónde se hizo viven POR FILA en `normalizarDetalle`
+    // (solo silos puede ser PLANTA, y con nombre de planta).
 
     return {
       ...datos,
       otraActividad: eligioOtro ? (otraActividad ?? null) : null,
       observaciones: datos.observaciones?.trim() || null,
-      // La planta solo acompaña a un destino PLANTA: en el resto se descarta
-      // para que no quede un nombre huérfano contradiciendo el destino.
-      planta: datos.destino === 'PLANTA' ? (planta ?? null) : null,
       totalHoras: Number(
         (datos.horometroFinal - datos.horometroInicial).toFixed(2),
       ),
