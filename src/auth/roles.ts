@@ -46,6 +46,8 @@ export const ROLES = {
    * Oficina (pedido del cliente, 03/11): ve el dashboard y completa o corrige
    * lo que los supervisores olvidan — hallazgos, trabajos extra y reportes
    * diarios, incluido el estado de un hallazgo si el taller no lo movió.
+   * Ve los cinco reportes del administrador y puede cerrar una mantención que
+   * el taller dejó en proceso (sin insumos: el stock lo mueve el taller).
    * No elimina.
    */
   SECRETARIA: 'SECRETARIA',

@@ -14,6 +14,7 @@ import type { UserSession } from '@thallesp/nestjs-better-auth';
 import { ROLES } from '../auth/roles';
 import { CreateShiftReportDto } from './dto/create-shift-report.dto';
 import { ShiftReportsService } from './shift-reports.service';
+import { ShiftsService } from './shifts.service';
 
 function assertNonEmptyId(id: string): void {
   if (!id || id.trim().length === 0) {
@@ -29,7 +30,10 @@ function assertNonEmptyId(id: string): void {
 @Controller('shift-reports')
 @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
 export class ShiftReportsController {
-  constructor(private readonly service: ShiftReportsService) {}
+  constructor(
+    private readonly service: ShiftReportsService,
+    private readonly shifts: ShiftsService,
+  ) {}
 
   @Post()
   async create(
@@ -45,10 +49,11 @@ export class ShiftReportsController {
   /**
    * Registro de reportes para la vista «Reportes» del administrador.
    * SOBRESCRIBE el gate de clase (SUPERVISOR+ADMIN): el listado completo —de
-   * todos los supervisores— es solo del administrador, mismo patrón de
-   * override por método que `UsersController.findAll`.
+   * todos los supervisores— es del administrador (y de SECRETARIA, que ve
+   * sus mismos reportes), mismo patrón de override por método que
+   * `UsersController.findAll`.
    */
-  @Roles([ROLES.ADMIN])
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
   @Get()
   async list() {
     return { data: await this.service.list(), message: 'ok' };
@@ -60,6 +65,22 @@ export class ShiftReportsController {
    * `{data,message}` del filtro global: `@Redirect()` solo intercepta el
    * `return`, no las excepciones.
    */
+  /**
+   * «Ver registro»: las tarjetas del turno del reporte, con la misma forma que
+   * `GET /shift-cards/mine` — lo que el PDF resume, para verlo (y, en un caso
+   * extremo, que el administrador lo corrija con `PATCH /shift-cards/:id`).
+   * Son las tarjetas de HOY: si se corrigió una después del envío, el PDF
+   * sigue mostrando lo que se envió.
+   */
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
+  @Get(':id/cards')
+  async cards(@Param('id') id: string) {
+    assertNonEmptyId(id);
+    const shiftId = await this.service.shiftIdOf(id);
+    return { data: await this.shifts.cardsOfShift(shiftId), message: 'ok' };
+  }
+
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   @Get(':id/file')
   @Redirect()
   async getFile(

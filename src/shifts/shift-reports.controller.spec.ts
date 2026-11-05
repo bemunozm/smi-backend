@@ -7,6 +7,7 @@ import type { NextFunction, Request, Response } from 'express';
 
 import { ShiftReportsController } from './shift-reports.controller';
 import { ShiftReportsService } from './shift-reports.service';
+import { ShiftsService } from './shifts.service';
 
 const FAKE_SESSION = {
   user: { id: 'sup_1', name: 'Ana Soto', role: 'SUPERVISOR' },
@@ -16,6 +17,8 @@ describe('ShiftReportsController', () => {
   let app: INestApplication<App>;
   const create = jest.fn();
   const getSignedFileUrl = jest.fn();
+  const shiftIdOf = jest.fn();
+  const cardsOfShift = jest.fn();
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -25,8 +28,9 @@ describe('ShiftReportsController', () => {
       providers: [
         {
           provide: ShiftReportsService,
-          useValue: { create, getSignedFileUrl },
+          useValue: { create, getSignedFileUrl, shiftIdOf },
         },
+        { provide: ShiftsService, useValue: { cardsOfShift } },
       ],
     }).compile();
 
@@ -107,5 +111,27 @@ describe('ShiftReportsController', () => {
     await request(app.getHttpServer())
       .get('/shift-reports/no-existe/file')
       .expect(404);
+  });
+
+  it('GET /:id/cards devuelve las tarjetas del turno del reporte', async () => {
+    shiftIdOf.mockResolvedValue('shift_1');
+    cardsOfShift.mockResolvedValue([{ id: 'c1' }, { id: 'c2' }]);
+
+    const response = await request(app.getHttpServer())
+      .get('/shift-reports/r1/cards')
+      .expect(200);
+
+    expect(shiftIdOf).toHaveBeenCalledWith('r1');
+    expect(cardsOfShift).toHaveBeenCalledWith('shift_1');
+    const body = response.body as { data: { id: string }[] };
+    expect(body.data.map((c) => c.id)).toEqual(['c1', 'c2']);
+  });
+
+  it('GET /:id/cards de un reporte inexistente -> 404', async () => {
+    shiftIdOf.mockRejectedValue(new NotFoundException('Reporte no encontrado'));
+    await request(app.getHttpServer())
+      .get('/shift-reports/nope/cards')
+      .expect(404);
+    expect(cardsOfShift).not.toHaveBeenCalled();
   });
 });

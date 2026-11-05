@@ -1042,6 +1042,17 @@ export class ShiftsService {
     return this.shapeCards(cards);
   }
 
+  /** Las tarjetas de un turno, de la más reciente a la más vieja, con la forma
+   * de `mine` (`GET /shift-reports/:id/cards`, «Ver registro» del informe). */
+  async cardsOfShift(shiftId: string): Promise<ShiftCardResponse[]> {
+    const cards = await this.prisma.registroHorometro.findMany({
+      where: { shiftId },
+      orderBy: { fecha: 'desc' },
+      include: SHIFT_CARD_INCLUDE,
+    });
+    return this.shapeCards(cards);
+  }
+
   /**
    * `GET /api/shifts?date&type` — contrato compartido con el Módulo B
    * ("lista viva"). Deliberadamente MÁS liviano que `ShiftCardResponse` (sin

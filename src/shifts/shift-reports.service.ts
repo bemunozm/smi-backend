@@ -342,10 +342,22 @@ export class ShiftReportsService {
     }));
   }
 
+  /** El turno de un reporte (`GET /shift-reports/:id/cards`); 404 si no existe. */
+  async shiftIdOf(id: string): Promise<string> {
+    const report = await this.prisma.shiftExitReport.findUnique({
+      where: { id },
+      select: { shiftId: true },
+    });
+    if (!report) {
+      throw new NotFoundException('Reporte no encontrado');
+    }
+    return report.shiftId;
+  }
+
   /**
    * `GET /api/shift-reports/:id/file` — URL firmada RECIÉN generada (mismo
-   * patrón que `EquipmentDocumentService.getSignedFileUrl`). ADMIN o el
-   * creador del reporte; cualquier otro → 403 `NOT_OWNER`.
+   * patrón que `EquipmentDocumentService.getSignedFileUrl`). ADMIN, SECRETARIA
+   * o el creador del reporte; cualquier otro → 403 `NOT_OWNER`.
    */
   async getSignedFileUrl(id: string, session: UserSession): Promise<string> {
     const report = await this.prisma.shiftExitReport.findUnique({
@@ -356,8 +368,10 @@ export class ShiftReportsService {
       throw new NotFoundException('Reporte no encontrado');
     }
 
-    const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
-    if (report.createdById !== session.user.id && !isAdmin) {
+    const veTodos =
+      sessionHasRole(session.user.role, ROLES.ADMIN) ||
+      sessionHasRole(session.user.role, ROLES.SECRETARIA);
+    if (report.createdById !== session.user.id && !veTodos) {
       throw new ForbiddenException({
         message: 'No puedes descargar el reporte de otro supervisor',
         code: ERROR_CODES.NOT_OWNER,

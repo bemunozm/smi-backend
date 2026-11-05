@@ -511,6 +511,18 @@ describe('ShiftReportsService', () => {
       ).resolves.toBe('https://minio.local/signed/r1.pdf');
     });
 
+    it('SECRETARIA puede descargar el reporte de cualquier supervisor', async () => {
+      prisma.shiftExitReport.findUnique.mockResolvedValue(REPORT);
+      storage.sign.mockResolvedValue('https://minio.local/signed/r1.pdf');
+
+      await expect(
+        service.getSignedFileUrl(
+          'r1',
+          buildSession('sec_1', 'SECRETARIA', 'Berenice'),
+        ),
+      ).resolves.toBe('https://minio.local/signed/r1.pdf');
+    });
+
     it('otro supervisor -> 403 NOT_OWNER', async () => {
       prisma.shiftExitReport.findUnique.mockResolvedValue(REPORT);
 
