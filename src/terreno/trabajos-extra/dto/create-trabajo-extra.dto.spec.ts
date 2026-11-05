@@ -132,6 +132,24 @@ describe('CreateTrabajoExtraDto', () => {
     });
   });
 
+  describe('fecha — registro de días pasados', () => {
+    it('acepta una fecha date-only válida', async () => {
+      const dto = plainToInstance(
+        CreateTrabajoExtraDto,
+        base({ fecha: '2026-10-15' }),
+      );
+      expect(await validate(dto)).toHaveLength(0);
+    });
+
+    it('rechaza un formato que no es YYYY-MM-DD', async () => {
+      const dto = plainToInstance(
+        CreateTrabajoExtraDto,
+        base({ fecha: '15-10-2026' }),
+      );
+      expect(await validate(dto)).not.toHaveLength(0);
+    });
+  });
+
   describe('turno', () => {
     it('rechaza un valor fuera de DIURNO/NOCTURNO', async () => {
       const dto = plainToInstance(

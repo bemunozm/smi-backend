@@ -11,7 +11,10 @@ import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type { RecordEditedEvent } from '../../common/events/domain-events';
-import { parseDateOnlyUtc } from '../../shifts/date-only';
+import {
+  assertShiftDateWithinWindow,
+  parseDateOnlyUtc,
+} from '../../shifts/date-only';
 import {
   ChangeLogService,
   diffFields,
@@ -154,6 +157,10 @@ export class ReporteDiarioService {
     userId: string,
     userName: string,
   ): Promise<ReporteDiarioResponse> {
+    // Misma ventana (30 días atrás / 1 adelante) que las tarjetas y el
+    // reporte de salida — el formulario ahora deja elegir la fecha para la
+    // carga histórica y esto le pone el mismo borde en el servidor.
+    assertShiftDateWithinWindow(dto.fecha);
     this.validarBloques(dto);
     await this.validarCatalogos(dto);
 

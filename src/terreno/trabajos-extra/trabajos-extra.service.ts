@@ -15,7 +15,14 @@ import { formatNumber } from '../../common/format/number';
 import { OperatorsService } from '../../operators/operators.service';
 import { resolveNombresUsuarios } from '../common/registrado-por.util';
 import { resolveRecordDate } from '../../common/dates/capture-time';
-import { formatBusinessDate } from '../../common/dates/business-time';
+import {
+  businessDayInstant,
+  formatBusinessDate,
+} from '../../common/dates/business-time';
+import {
+  assertShiftDateWithinWindow,
+  isDateOnlyString,
+} from '../../shifts/date-only';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type { RecordEditedEvent } from '../../common/events/domain-events';
 import {
@@ -146,7 +153,18 @@ export class TrabajosExtraService {
   }
 
   private async createFresh(dto: CreateTrabajoExtraDto, userId: string) {
-    const fecha = resolveRecordDate(dto.fecha, dto.capturedAt);
+    // `fecha` date-only = carga histórica de Terreno: ventana de 30 días y
+    // el instante se guarda DENTRO de ese día de negocio (por donde agrupan
+    // el dashboard y los filtros del admin) — por `resolveRecordDate` un
+    // date-only caería a medianoche UTC, el día ANTERIOR en Chile. Con hora
+    // (panel del admin) o sin `fecha`, la ruta de siempre.
+    let fecha: Date;
+    if (dto.fecha && isDateOnlyString(dto.fecha)) {
+      assertShiftDateWithinWindow(dto.fecha);
+      fecha = businessDayInstant(dto.fecha);
+    } else {
+      fecha = resolveRecordDate(dto.fecha, dto.capturedAt);
+    }
 
     const equipo = await this.prisma.equipment.findUnique({
       where: { id: dto.equipoId },

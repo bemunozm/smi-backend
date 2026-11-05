@@ -52,8 +52,12 @@ import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
 import { formatNumber } from '../common/format/number';
 import { assertChecklistNotPending } from '../mantenimiento/daily-checklists/checklist-gate';
 import {
+  businessDayInstant,
+  businessDayKey,
   formatBusinessDate,
   formatBusinessDateTime,
+  isPastBusinessDay,
+  todayInBusinessTimeZone,
 } from '../common/dates/business-time';
 import {
   computeClientClockSkewMs,
@@ -63,6 +67,7 @@ import {
 import {
   assertShiftDateWithinWindow,
   formatDateOnly,
+  isPastShift,
   parseDateOnlyUtc,
 } from './date-only';
 import { adBlueError } from './adblue';
@@ -195,6 +200,9 @@ export interface ShiftWithCardsResponse {
   type: string;
   supervisorId: string;
   cards: ShiftCardSummaryResponse[];
+  /** Reportes de salida ya enviados del turno — la carga histórica avisa con
+   * esto que el turno elegido ya fue reportado. */
+  exitReports: { id: string; requestedAt: Date; cardCount: number }[];
 }
 
 function round2(value: number): number {
@@ -316,6 +324,14 @@ export class ShiftsService {
     // Ventana razonable de `shiftDate` — antes de tocar cualquier estado
     // (ni el operador, ni menos el `Shift`, que sí escribe).
     assertShiftDateWithinWindow(dto.shiftDate, now);
+    // Carga histórica (turno YA TERMINADO de un día pasado — `isPastShift`
+    // exceptúa al nocturno de anoche que sigue corriendo de madrugada): el
+    // estado ACTUAL del equipo no dice nada de ese día (hoy puede estar en
+    // taller y la semana pasada haber trabajado), así que no bloquea la
+    // apertura; y la tarjeta se fecha DENTRO de ese día de negocio, que es
+    // por donde agrupan el dashboard y las fichas (`createdAt` conserva
+    // cuándo se cargó de verdad).
+    const pastShift = isPastShift(dto.shiftDate, dto.shiftType, now);
     const clientClockSkewMs =
       computeClientClockSkewMs(clientTimeHeader, now) ?? discardedSkewMs;
 
@@ -351,7 +367,7 @@ export class ShiftsService {
     if (!operator && equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT) {
       throw new BadRequestException('Elige el operador del equipo.');
     }
-    if (equipoPrecheck.status !== EquipmentStatus.OPERATIONAL) {
+    if (!pastShift && equipoPrecheck.status !== EquipmentStatus.OPERATIONAL) {
       throw new ConflictException({
         message: 'El equipo no está operativo',
         code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
@@ -411,8 +427,9 @@ export class ShiftsService {
         });
         if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
-        // Un equipo fuera de servicio o en taller no puede abrir turno.
-        if (equipo.status !== EquipmentStatus.OPERATIONAL) {
+        // Un equipo fuera de servicio o en taller no puede abrir turno —
+        // salvo en la carga histórica de un día pasado (ver `pastShift`).
+        if (!pastShift && equipo.status !== EquipmentStatus.OPERATIONAL) {
           throw new ConflictException({
             message: 'El equipo no está operativo',
             code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
@@ -466,7 +483,12 @@ export class ShiftsService {
               operatorId: operator?.id ?? null,
               supervisorId,
               shiftId: shift.id,
-              fecha: capturedAt,
+              fecha: pastShift
+                ? businessDayInstant(
+                    dto.shiftDate,
+                    dto.shiftType === 'NOCTURNO' ? '20:30' : '12:00',
+                  )
+                : capturedAt,
               clientClockSkewMs: clientClockSkewMs ?? null,
               belowPreviousReading: belowPrevious,
             },
@@ -586,6 +608,19 @@ export class ShiftsService {
       now,
     );
 
+    // Carga histórica: tarjeta de un día de negocio PASADO que se abrió HOY
+    // (backfill). Su cierre se fecha en ese día histórico (reusando el
+    // instante sintético que dejó la apertura) para que el dashboard y las
+    // fichas agrupen la salida y el combustible donde corresponden. La doble
+    // condición deja fuera al NOCTURNO vivo cerrado de madrugada y a la
+    // tarjeta olvidada de hace días (createdAt viejo): esos cierres siguen
+    // con la hora real.
+    const esCargaHistorica =
+      card.fecha != null &&
+      card.createdAt != null &&
+      isPastBusinessDay(businessDayKey(card.fecha), now) &&
+      businessDayKey(card.createdAt) === todayInBusinessTimeZone(now);
+
     // Reclama la foto ANTES de la transacción (mismo patrón que
     // `CombustibleService.create`): si `claimTmp` falla (tmp vencido/ajeno),
     // todavía no hay nada que descartar. `claimTmp` traduce un tmp
@@ -613,7 +648,7 @@ export class ShiftsService {
           where: { id, valorFinal: null },
           data: {
             valorFinal: dto.valorFinal,
-            fechaSalida: capturedAt,
+            fechaSalida: esCargaHistorica ? card.fecha : capturedAt,
             closedAt: now,
             closeClientId: dto.closeClientId,
             closedById: session.user.id,
@@ -686,7 +721,7 @@ export class ShiftsService {
               // sola en la ficha y en el historial de combustible sin
               // duplicar la foto.
               fotoKey: pumpPhotoKey,
-              fecha: photoCapturedAt,
+              fecha: esCargaHistorica ? card.fecha : photoCapturedAt,
               registroHorometroId: id,
             },
           });
@@ -1085,6 +1120,12 @@ export class ShiftsService {
           },
           orderBy: { fecha: 'desc' },
         },
+        // Para la carga histórica: el frontend avisa si el turno elegido ya
+        // tiene su reporte de salida enviado (campo aditivo — el Módulo B
+        // ignora claves extra).
+        exitReports: {
+          select: { id: true, requestedAt: true, cardCount: true },
+        },
       },
     });
 
@@ -1093,6 +1134,7 @@ export class ShiftsService {
       date: formatDateOnly(shift.date),
       type: shift.type,
       supervisorId: shift.supervisorId,
+      exitReports: shift.exitReports,
       cards: shift.cards.map((card) => ({
         id: card.id,
         equipoId: card.equipoId,
