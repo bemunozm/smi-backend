@@ -6,6 +6,7 @@ import { prismaClient } from '../common/prisma/prisma.service';
 import { env } from '../common/config/env';
 import { ac, roles } from './access-control';
 import { ROLES } from './roles';
+import { LoginGuard, loginGuardHooks } from './login-guard';
 
 export const auth = betterAuth({
   basePath: '/api/auth',
@@ -39,16 +40,22 @@ export const auth = betterAuth({
   // HTTPS), `enabled` gobernado por
   // `AUTH_RATE_LIMIT_ENABLED` (ver env.ts) — `true` por defecto en
   // producción, `false` en el resto para no romper el e2e suite (hace login
-  // muchas veces seguidas). `customRules` fija 5 intentos / 60s para
-  // `/sign-in/email` en vez de confiar en la regla especial por defecto de
-  // Better Auth (3/10s para cualquier path que empiece con `/sign-in`) —
-  // SECURITY-NOTES.md pide explícitamente "5 intentos / 60s".
+  // muchas veces seguidas). El límite es por IP, y en faena las tablets
+  // comparten la IP de salida: 30 intentos / 60s aguanta un cambio de turno
+  // desde la misma red (con 5 se bloqueaban entre todos, 05/11). Contra quien
+  // adivina claves protege el bloqueo POR CUENTA de `login-guard.ts`: 5
+  // claves equivocadas seguidas y esa cuenta espera 15 min.
   rateLimit: {
     enabled: env.authRateLimitEnabled,
     customRules: {
-      '/sign-in/email': { window: 60, max: 5 },
+      '/sign-in/email': { window: 60, max: 30 },
     },
   },
+  // Mismo interruptor que el rate limit: apagado fuera de producción para no
+  // romper el e2e, que entra muchas veces seguidas con claves de prueba.
+  ...(env.authRateLimitEnabled
+    ? { hooks: loginGuardHooks(new LoginGuard()) }
+    : {}),
   // Detrás de Traefik (Dokploy) el cliente real no es la IP del socket: el rate
   // limit y las sesiones necesitan leerla de un header. Traefik reescribe
   // `X-Forwarded-For` cuando el origen no es de confianza, así que ahí ese
