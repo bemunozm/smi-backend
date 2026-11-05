@@ -44,7 +44,7 @@ export class OrdenesController {
   constructor(private readonly ordenesService: OrdenesService) {}
 
   @Get()
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR, ROLES.SECRETARIA])
   async findAll(
     @Query() query: FindOrdenesQueryDto,
   ): Promise<OrdenListResponse> {
@@ -53,7 +53,7 @@ export class OrdenesController {
   }
 
   @Get(':id')
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR, ROLES.SECRETARIA])
   async findOne(@Param('id') id: string): Promise<OrdenDetailResponse> {
     assertNonEmptyId(id);
     const data = await this.ordenesService.findOne(id);
@@ -88,8 +88,9 @@ export class OrdenesController {
     return { data, message: 'Mantención anterior registrada' };
   }
 
+  // SECRETARIA: cierra (o corrige) una orden que el taller dejó en proceso.
   @Patch(':id')
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateOrdenDto,

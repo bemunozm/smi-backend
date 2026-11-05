@@ -1,8 +1,15 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  Post,
+} from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
-import { ROLES } from '../auth/roles';
+import { ROLES, sessionHasRole } from '../auth/roles';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
 import { CreateIntervencionDto } from './dto/create-intervencion.dto';
 import type { IntervencionResponseDto } from './dto/intervencion-response.dto';
@@ -24,7 +31,7 @@ export class IntervencionesController {
   constructor(private readonly intervencionesService: IntervencionesService) {}
 
   @Get()
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR, ROLES.SECRETARIA])
   async findAll(
     @Param('ordenId') ordenId: string,
   ): Promise<IntervencionListResponse> {
@@ -34,15 +41,25 @@ export class IntervencionesController {
   }
 
   // ADMIN incluido: puede cerrar una tarea del taller (registrar el cierre
-  // con insumos/foto), además del MANTENEDOR que la trabaja.
+  // con insumos/foto), además del MANTENEDOR que la trabaja. SECRETARIA cierra
+  // la que el taller olvidó, solo con «qué se hizo»: sin insumos ni bodega,
+  // porque el stock lo mueve el taller.
   @Post()
-  @Roles([ROLES.ADMIN, ROLES.MANTENEDOR])
+  @Roles([ROLES.ADMIN, ROLES.MANTENEDOR, ROLES.SECRETARIA])
   async create(
     @Param('ordenId') ordenId: string,
     @Body() dto: CreateIntervencionDto,
     @Session() session: UserSession,
   ): Promise<IntervencionDetailResponse> {
     assertNonEmptyId(ordenId, 'ordenId');
+    if (
+      sessionHasRole(session.user.role, ROLES.SECRETARIA) &&
+      ((dto.insumos?.length ?? 0) > 0 || dto.branchId !== undefined)
+    ) {
+      throw new ForbiddenException(
+        'Secretaría registra el cierre sin insumos: el stock lo descuenta el taller.',
+      );
+    }
     const data = await this.intervencionesService.create(
       ordenId,
       dto,
