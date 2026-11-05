@@ -61,15 +61,11 @@ export class CloseShiftCardDto {
   /** Key `tmp/<userId>/<uuid>.<ext>` de la foto del surtidor/horómetro,
    * subida antes por `POST /api/files` — obligatoria AUN con `fuelLiters ===
    * 0` (la spec lo pide así: siempre queda evidencia fotográfica del
-   * cierre)… SALVO en la carga histórica (tarjeta de un día pasado creada
-   * hoy): de ese cierre no existe foto y el servicio lo acepta sin ella
-   * (`PUMP_PHOTO_REQUIRED` para el cierre vivo que no la mande).
-   * `ShiftsService` la reclama con `StorageService.claimTmp`. */
-  @IsOptional()
+   * cierre). `ShiftsService` la reclama con `StorageService.claimTmp`. */
   @IsString()
   @MaxLength(160)
   @Matches(TMP_KEY_REGEX)
-  tmpPhotoKey?: string;
+  tmpPhotoKey!: string;
 
   /** 1000 (no 2000) + normalizado (trim, CRLF→LF, 3+ saltos → 2) ANTES de
    * medir el límite — texto libre que un supervisor puede pegar desde el

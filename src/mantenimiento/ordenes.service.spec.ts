@@ -713,9 +713,10 @@ describe('OrdenesService', () => {
     });
 
     it('acepta el código interno como equipoId (segunda búsqueda)', async () => {
-      equipmentFindUnique
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce({ internalCode: 'CM-003', controlUnit: 'HOURS' });
+      equipmentFindUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        internalCode: 'CM-003',
+        controlUnit: 'HOURS',
+      });
       ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
       userFindMany.mockResolvedValue([]);
 

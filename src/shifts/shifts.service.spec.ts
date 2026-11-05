@@ -886,33 +886,6 @@ describe('ShiftsService', () => {
         );
       });
 
-      it('cierre histórico SIN foto: cierra con pumpPhotoKey null y combustible sin fotoKey', async () => {
-        prisma.registroHorometro.findUnique.mockResolvedValue({
-          ...cardBase,
-          fecha: fechaHistorica,
-          createdAt: new Date(), // abierta HOY para un día pasado: backfill
-        });
-        const sinFoto = { ...dto, tmpPhotoKey: undefined };
-
-        await service.closeCard('card_1', sinFoto, session);
-
-        expect(claimTmp).not.toHaveBeenCalled();
-        const update = lastCallData(tx.registroHorometro.updateMany);
-        expect(update.pumpPhotoKey).toBeNull();
-        const fuel = lastCallData(tx.registroCombustible.create);
-        expect(fuel.fotoKey).toBeNull();
-      });
-
-      it('cierre VIVO sin foto → 400 PUMP_PHOTO_REQUIRED sin reclamar nada', async () => {
-        // Fixture del beforeEach: tarjeta viva (no es carga histórica).
-        const sinFoto = { ...dto, tmpPhotoKey: undefined };
-
-        await expect(
-          service.closeCard('card_1', sinFoto, session),
-        ).rejects.toMatchObject({ response: { code: 'PUMP_PHOTO_REQUIRED' } });
-        expect(claimTmp).not.toHaveBeenCalled();
-      });
-
       it('un NOCTURNO vivo de anoche cerrado en la mañana NO se re-fecha', async () => {
         // Apertura real hace 11 h: según la hora en que corra Jest cae en
         // ayer (día pasado, pero createdAt de ayer) o en hoy — en ambos
@@ -2160,6 +2133,47 @@ describe('ShiftsService', () => {
       );
 
       expect(shift.date).toBe('2026-09-28');
+    });
+
+    it('las tarjetas del resumen traen la clase del equipo (para excluir camionetas en el front)', async () => {
+      prisma.shift.findMany.mockResolvedValue([
+        {
+          id: 'shift_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'DIURNO',
+          supervisorId: 'sup_1',
+          cards: [
+            {
+              id: 'c1',
+              equipoId: 'e1',
+              equipo: {
+                internalCode: 'EX-005',
+                type: 'Excavadora',
+                controlUnit: 'HOURS',
+                equipmentClass: 'HEAVY',
+              },
+              operatorId: 'op_1',
+              operador: 'Patricio Rojas',
+              valorInicial: 100,
+              valorFinal: 110,
+              fecha: new Date('2026-09-28T12:00:00.000Z'),
+              fechaSalida: new Date('2026-09-28T12:00:00.000Z'),
+            },
+          ],
+          exitReports: [],
+        },
+      ]);
+
+      const [shift] = await service.findShifts(
+        { date: '2026-09-28', type: 'DIURNO' },
+        buildSession('sup_1'),
+      );
+
+      expect(shift.cards[0].equipo).toMatchObject({ equipmentClass: 'HEAVY' });
+      const [args] = prisma.shift.findMany.mock.calls[0] as [
+        { include: { cards: { include: { equipo: { select: Record<string, boolean> } } } } },
+      ];
+      expect(args.include.cards.include.equipo.select).toHaveProperty('equipmentClass', true);
     });
 
     it('incluye los reportes de salida ya enviados del turno', async () => {
