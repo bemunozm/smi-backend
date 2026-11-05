@@ -51,6 +51,12 @@ export const ROLES = {
    * No elimina.
    */
   SECRETARIA: 'SECRETARIA',
+  /**
+   * Prevencionista de riesgos (pedido del cliente, 04/11): solo registra el uso
+   * de las camionetas — km de salida al sacarla y km final al cargar
+   * combustible —, igual que «Mi camioneta» del mantenedor. Nada de pesados.
+   */
+  PREVENCIONISTA: 'PREVENCIONISTA',
 } as const;
 
 export type Role = (typeof ROLES)[keyof typeof ROLES];

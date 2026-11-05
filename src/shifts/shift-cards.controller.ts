@@ -40,7 +40,12 @@ export class ShiftCardsController {
   @Post()
   // También el MANTENEDOR: registra el km de la camioneta que usa para
   // moverse en faena (solo livianos, lo valida el service).
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.MANTENEDOR])
+  @Roles([
+    ROLES.SUPERVISOR,
+    ROLES.ADMIN,
+    ROLES.MANTENEDOR,
+    ROLES.PREVENCIONISTA,
+  ])
   async open(
     @Body() dto: OpenShiftCardDto,
     @Session() session: UserSession,
@@ -56,7 +61,12 @@ export class ShiftCardsController {
   @HttpCode(HttpStatus.OK)
   // También el MANTENEDOR: registra el km de la camioneta que usa para
   // moverse en faena (solo livianos, lo valida el service).
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.MANTENEDOR])
+  @Roles([
+    ROLES.SUPERVISOR,
+    ROLES.ADMIN,
+    ROLES.MANTENEDOR,
+    ROLES.PREVENCIONISTA,
+  ])
   async close(
     @Param('id') id: string,
     @Body() dto: CloseShiftCardDto,
@@ -100,7 +110,12 @@ export class ShiftCardsController {
   @Get('mine')
   // También el MANTENEDOR: registra el km de la camioneta que usa para
   // moverse en faena (solo livianos, lo valida el service).
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.MANTENEDOR])
+  @Roles([
+    ROLES.SUPERVISOR,
+    ROLES.ADMIN,
+    ROLES.MANTENEDOR,
+    ROLES.PREVENCIONISTA,
+  ])
   async mine(@Session() session: UserSession) {
     return { data: await this.service.mine(session), message: 'ok' };
   }

@@ -353,12 +353,15 @@ export class ShiftsService {
       select: { status: true, equipmentClass: true },
     });
     if (!equipoPrecheck) throw new NotFoundException('Equipo no encontrado');
+    // El mantenedor y el prevencionista solo se mueven en camioneta: un
+    // pesado lo abre el supervisor, con su operador.
     if (
-      sessionHasRole(session.user.role, ROLES.MANTENEDOR) &&
+      (sessionHasRole(session.user.role, ROLES.MANTENEDOR) ||
+        sessionHasRole(session.user.role, ROLES.PREVENCIONISTA)) &&
       equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT
     ) {
       throw new ForbiddenException(
-        'El mantenedor solo registra el uso de vehículos livianos.',
+        'Solo puedes registrar el uso de vehículos livianos.',
       );
     }
     if (!operator && equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT) {
