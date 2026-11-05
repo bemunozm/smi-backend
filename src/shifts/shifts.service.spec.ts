@@ -2162,6 +2162,47 @@ describe('ShiftsService', () => {
       expect(shift.date).toBe('2026-09-28');
     });
 
+    it('las tarjetas del resumen traen la clase del equipo (para excluir camionetas en el front)', async () => {
+      prisma.shift.findMany.mockResolvedValue([
+        {
+          id: 'shift_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'DIURNO',
+          supervisorId: 'sup_1',
+          cards: [
+            {
+              id: 'c1',
+              equipoId: 'e1',
+              equipo: {
+                internalCode: 'EX-005',
+                type: 'Excavadora',
+                controlUnit: 'HOURS',
+                equipmentClass: 'HEAVY',
+              },
+              operatorId: 'op_1',
+              operador: 'Patricio Rojas',
+              valorInicial: 100,
+              valorFinal: 110,
+              fecha: new Date('2026-09-28T12:00:00.000Z'),
+              fechaSalida: new Date('2026-09-28T12:00:00.000Z'),
+            },
+          ],
+          exitReports: [],
+        },
+      ]);
+
+      const [shift] = await service.findShifts(
+        { date: '2026-09-28', type: 'DIURNO' },
+        buildSession('sup_1'),
+      );
+
+      expect(shift.cards[0].equipo).toMatchObject({ equipmentClass: 'HEAVY' });
+      const [args] = prisma.shift.findMany.mock.calls[0] as [
+        { include: { cards: { include: { equipo: { select: Record<string, boolean> } } } } },
+      ];
+      expect(args.include.cards.include.equipo.select).toHaveProperty('equipmentClass', true);
+    });
+
     it('incluye los reportes de salida ya enviados del turno', async () => {
       const requestedAt = new Date('2026-09-28T20:05:00.000Z');
       prisma.shift.findMany.mockResolvedValue([

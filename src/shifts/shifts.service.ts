@@ -184,7 +184,14 @@ export interface ShiftCardResponse {
 export interface ShiftCardSummaryResponse {
   id: string;
   equipoId: string;
-  equipo: { internalCode: string; type: string; controlUnit: ControlUnit };
+  equipo: {
+    internalCode: string;
+    type: string;
+    controlUnit: ControlUnit;
+    /** Para que el informe de producción excluya camionetas del resumen de un
+     * turno pasado, igual que lo hace con "mis tarjetas". */
+    equipmentClass: EquipmentClass;
+  };
   operatorId: string | null;
   operatorName: string;
   valorInicial: number;
@@ -1128,7 +1135,12 @@ export class ShiftsService {
         cards: {
           include: {
             equipo: {
-              select: { internalCode: true, type: true, controlUnit: true },
+              select: {
+                internalCode: true,
+                type: true,
+                controlUnit: true,
+                equipmentClass: true,
+              },
             },
           },
           orderBy: { fecha: 'desc' },
