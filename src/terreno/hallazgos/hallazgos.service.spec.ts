@@ -191,12 +191,55 @@ describe('HallazgosService', () => {
       DOMAIN_EVENTS.HALLAZGO_CREATED,
       {
         hallazgoId: 'h1',
+        tipo: 'EQUIPO',
+        zona: null,
         equipoId: 'e1',
         equipoCodigo: 'CA-011',
         prioridad: 'ALTA',
         descripcion: 'Fuga',
       },
     );
+  });
+
+  describe('hallazgo de zona (un lugar de la faena, sin equipo)', () => {
+    const zona = {
+      tipo: 'ZONA' as const,
+      faena: 'Kainita',
+      lugar: ' Cancha norte ',
+      descripcion: 'Bache en la entrada',
+      prioridad: 'MEDIA',
+    };
+
+    it('se guarda sin equipo, con faena y lugar, y avisa con el nombre de la zona', async () => {
+      await service.create(zona, 'u1');
+
+      expect(prisma.equipment.findUnique).not.toHaveBeenCalled();
+      expect(prisma.hallazgo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            tipo: 'ZONA',
+            equipoId: null,
+            faena: 'Kainita',
+            lugar: 'Cancha norte',
+          }) as unknown,
+        }),
+      );
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        DOMAIN_EVENTS.HALLAZGO_CREATED,
+        expect.objectContaining({
+          tipo: 'ZONA',
+          zona: 'Cancha norte (Kainita)',
+          equipoCodigo: null,
+        }),
+      );
+    });
+
+    it('con equipo además del lugar se rechaza', async () => {
+      await expect(
+        service.create({ ...zona, equipoId: 'e1' }, 'u1'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.hallazgo.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('foto en storage privado', () => {
@@ -553,6 +596,43 @@ describe('HallazgosService', () => {
       prisma.$transaction.mockImplementation(
         (fn: (tx: typeof prisma) => unknown) => fn(prisma),
       );
+    });
+
+    it('uno de zona corrige su lugar, pero no se le puede poner equipo', async () => {
+      const deZona = {
+        ...guardado,
+        tipo: 'ZONA',
+        equipoId: null,
+        equipo: null,
+        faena: 'Kainita',
+        lugar: 'Cancha norte',
+      };
+      prisma.hallazgo.findUnique.mockResolvedValue(deZona);
+
+      await expect(
+        service.update('h1', { equipoId: 'e1' }, editor),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      await service.update('h1', { lugar: 'Cancha sur' }, editor);
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'hallazgo',
+        'h1',
+        editor,
+        [
+          expect.objectContaining({
+            label: 'Lugar',
+            before: 'Cancha norte',
+            after: 'Cancha sur',
+          }),
+        ],
+      );
+    });
+
+    it('uno de equipo no acepta faena ni lugar', async () => {
+      await expect(
+        service.update('h1', { lugar: 'Cancha' }, editor),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('guarda la corrección y la registra con su antes y después legibles', async () => {

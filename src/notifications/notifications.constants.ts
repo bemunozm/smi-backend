@@ -38,6 +38,9 @@ export const HALLAZGO_CREATED_ROLES: readonly Role[] = [
   ROLES.ADMIN,
 ];
 
+/** Un hallazgo de ZONA no tiene máquina para el taller: lo ve el administrador. */
+export const HALLAZGO_ZONA_CREATED_ROLES: readonly Role[] = [ROLES.ADMIN];
+
 const PRIORIDAD_HALLAZGO: Record<string, string> = {
   BAJA: 'baja',
   MEDIA: 'media',
@@ -54,6 +57,13 @@ export function buildHallazgoCreatedTemplate(
   event: HallazgoCreatedEvent,
 ): NotificationTemplate {
   const prioridad = PRIORIDAD_HALLAZGO[event.prioridad] ?? event.prioridad;
+  if (event.tipo === 'ZONA') {
+    return {
+      tipo: DOMAIN_EVENTS.HALLAZGO_CREATED,
+      titulo: `Hallazgo de zona de prioridad ${prioridad}${event.zona ? ` en ${event.zona}` : ''}`,
+      cuerpo: event.descripcion,
+    };
+  }
   const equipo = event.equipoCodigo ? ` en ${event.equipoCodigo}` : '';
   return {
     tipo: DOMAIN_EVENTS.HALLAZGO_CREATED,

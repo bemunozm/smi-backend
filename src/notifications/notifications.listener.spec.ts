@@ -84,6 +84,24 @@ describe('NotificationsListener', () => {
     );
   });
 
+  it('un hallazgo de ZONA avisa solo al ADMIN (no hay máquina para el taller)', async () => {
+    await listener.onHallazgoCreated({
+      hallazgoId: 'h2',
+      tipo: 'ZONA',
+      zona: 'Cancha norte (Kainita)',
+      equipoId: null,
+      prioridad: 'ALTA',
+      descripcion: 'Bache en la entrada',
+    });
+
+    expect(createForRoles).toHaveBeenCalledWith(
+      [ROLES.ADMIN],
+      expect.objectContaining({
+        titulo: 'Hallazgo de zona de prioridad alta en Cancha norte (Kainita)',
+      }),
+    );
+  });
+
   it('orden.assigned notifica al asignado (createForUser) y a SUPERVISOR (createForRoles)', async () => {
     await listener.onOrdenAssigned({
       ordenId: 'o1',

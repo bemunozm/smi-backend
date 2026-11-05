@@ -27,6 +27,7 @@ import type { ShiftExitReportEmailStatus } from '../shifts/shift-exit-report-ema
 import { NotificationsService } from './notifications.service';
 import {
   HALLAZGO_CREATED_ROLES,
+  HALLAZGO_ZONA_CREATED_ROLES,
   ITEM_LOW_STOCK_ROLES,
   ORDEN_ASSIGNED_ROLES,
   ORDEN_COMPLETED_ROLES,
@@ -60,7 +61,11 @@ export class NotificationsListener {
   @OnEvent(DOMAIN_EVENTS.HALLAZGO_CREATED)
   async onHallazgoCreated(event: HallazgoCreatedEvent): Promise<void> {
     const template = buildHallazgoCreatedTemplate(event);
-    await this.notifications.createForRoles(HALLAZGO_CREATED_ROLES, {
+    const roles =
+      event.tipo === 'ZONA'
+        ? HALLAZGO_ZONA_CREATED_ROLES
+        : HALLAZGO_CREATED_ROLES;
+    await this.notifications.createForRoles(roles, {
       ...template,
       data: { hallazgoId: event.hallazgoId, equipoId: event.equipoId ?? null },
     });

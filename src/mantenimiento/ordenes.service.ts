@@ -184,11 +184,18 @@ export class OrdenesService {
       orden = await this.prisma.$transaction(async (tx) => {
         const hallazgo = await tx.hallazgo.findUnique({
           where: { id: hallazgoId },
-          select: { id: true },
+          select: { id: true, tipo: true },
         });
         if (!hallazgo) {
           throw new NotFoundException(
             `Hallazgo con id "${hallazgoId}" no encontrado`,
+          );
+        }
+        // Un hallazgo de zona (camino, cancha) no tiene máquina para el
+        // taller: lo atiende el administrador desde Hallazgos.
+        if (hallazgo.tipo === 'ZONA') {
+          throw new BadRequestException(
+            'Un hallazgo de zona no se atiende en el taller.',
           );
         }
         // Claim CONDICIONAL atómico: "tómalo solo si sigue ABIERTO". Dos
