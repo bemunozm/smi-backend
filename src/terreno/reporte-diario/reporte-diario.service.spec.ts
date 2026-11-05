@@ -6,15 +6,23 @@ import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ChangeLogService } from '../../change-log/change-log.service';
+import { todayInBusinessTimeZone } from '../../common/dates/business-time';
 import { ReporteDiarioService } from './reporte-diario.service';
 import type { CreateReporteDiarioDto } from './dto/create-reporte-diario.dto';
 
 const USER = { id: 'u1', name: 'Supervisor SMI' };
 
+/** `YYYY-MM-DD` del día de negocio chileno de hace `days` días. */
+const dateOnlyDaysAgo = (days: number) =>
+  todayInBusinessTimeZone(new Date(Date.now() - days * 86_400_000));
+/** Fecha del fixture: HOY (dinámica — con la ventana de 30 días del create,
+ * una fecha fija pudriría estos tests al correr el calendario). */
+const FECHA_BASE = dateOnlyDaysAgo(0);
+
 /** Payload completo y válido; cada test muta lo que necesita. */
 const base = (): CreateReporteDiarioDto => ({
   id: '7b0d8c1e-3f5a-4e6b-9c2d-1a2b3c4d5e6f',
-  fecha: '2026-10-14',
+  fecha: FECHA_BASE,
   turno: 'DIURNO',
   produccion: [
     { seccion: 'INTERNOS', camiones: 5, vueltasPorCamion: 4 },
@@ -157,7 +165,7 @@ describe('ReporteDiarioService.create', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ConflictException);
     expect((err as ConflictException).message).toBe(
-      'Ya existe el reporte del turno DIURNO del 2026-10-14.',
+      `Ya existe el reporte del turno DIURNO del ${FECHA_BASE}.`,
     );
   });
 
@@ -212,10 +220,30 @@ describe('ReporteDiarioService.create', () => {
     await service.create(base(), USER.id, USER.name);
     expect(prisma.reporteDiario.findUnique).toHaveBeenCalledWith({
       where: {
-        fecha_turno: { fecha: new Date('2026-10-14'), turno: 'DIURNO' },
+        fecha_turno: { fecha: new Date(FECHA_BASE), turno: 'DIURNO' },
       },
       select: { id: true },
     });
+  });
+
+  it('fecha fuera de la ventana de 30 días → 400 INVALID_SHIFT_DATE', async () => {
+    await expect(
+      service.create(
+        { ...base(), fecha: dateOnlyDaysAgo(40) },
+        USER.id,
+        USER.name,
+      ),
+    ).rejects.toMatchObject({ response: { code: 'INVALID_SHIFT_DATE' } });
+    expect(prisma.reporteDiario.create).not.toHaveBeenCalled();
+  });
+
+  it('fecha de 30 días atrás exactos pasa la ventana', async () => {
+    await service.create(
+      { ...base(), fecha: dateOnlyDaysAgo(30) },
+      USER.id,
+      USER.name,
+    );
+    expect(prisma.reporteDiario.create).toHaveBeenCalled();
   });
 
   it('rechaza tolvas repetidas', async () => {

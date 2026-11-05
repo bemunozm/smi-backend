@@ -15,6 +15,10 @@ import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import { OperatorsService } from '../../operators/operators.service';
 import { CreateTrabajoExtraDto } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
+import {
+  businessDayKey,
+  todayInBusinessTimeZone,
+} from '../../common/dates/business-time';
 
 describe('TrabajosExtraService', () => {
   let service: TrabajosExtraService;
@@ -115,6 +119,49 @@ describe('TrabajosExtraService', () => {
       ]);
       expect(res.every((r) => !('createdById' in r))).toBe(true);
       expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('fecha — registro de días pasados', () => {
+    const base: CreateTrabajoExtraDto = {
+      equipoId: 'e1',
+      operatorId: 'op_1',
+      faena: 'Rajo Norte',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      actividades: ['REGULACION_CARGA'],
+      descripcion: 'Carga de material',
+    };
+    /** `YYYY-MM-DD` del día de negocio chileno de hace `days` días. */
+    const dateOnlyDaysAgo = (days: number) =>
+      todayInBusinessTimeZone(new Date(Date.now() - days * 86_400_000));
+    /** `data` de la primera llamada al `create` mockeado, sin `any`. */
+    const createData = (): { fecha: Date } =>
+      (
+        prisma.trabajoExtraordinario.create.mock.calls as unknown as Array<
+          [{ data: { fecha: Date } }]
+        >
+      )[0][0].data;
+
+    it('con fecha: guarda un instante dentro de ese día de negocio', async () => {
+      const fecha = dateOnlyDaysAgo(5);
+      await createAs({ ...base, fecha });
+      expect(businessDayKey(createData().fecha)).toBe(fecha);
+    });
+
+    it('fecha fuera de la ventana de 30 días → 400 INVALID_SHIFT_DATE', async () => {
+      await expect(
+        createAs({ ...base, fecha: dateOnlyDaysAgo(40) }),
+      ).rejects.toMatchObject({
+        response: { code: 'INVALID_SHIFT_DATE' },
+      });
+      expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    });
+
+    it('sin fecha: se fecha con la hora de captura, como siempre', async () => {
+      await createAs(base);
+      expect(businessDayKey(createData().fecha)).toBe(dateOnlyDaysAgo(0));
     });
   });
 

@@ -23,8 +23,12 @@ export class CreateHallazgoDto {
   capturedAt?: string;
 
   /**
-   * Fecha y hora elegidas en el panel, para cargar el hallazgo que se olvidó
-   * (`resolveRecordDate`): gana sobre `capturedAt` y no puede ser futura.
+   * Fecha elegida explícitamente, que gana sobre `capturedAt`. Dos formas:
+   * con hora (panel del admin, `resolveRecordDate`: solo no puede ser
+   * futura) o `YYYY-MM-DD` a secas (carga histórica de Terreno: misma
+   * ventana de 30 días de las tarjetas y se guarda DENTRO de ese día de
+   * negocio chileno — un date-only por `new Date()` caería a medianoche UTC,
+   * o sea las ~21:00 del día ANTERIOR en Chile).
    */
   @IsOptional()
   @IsDateString()

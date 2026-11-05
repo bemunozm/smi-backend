@@ -11,6 +11,10 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import { StorageService } from '../../storage/storage.service';
 import { ChangeLogService } from '../../change-log/change-log.service';
+import {
+  businessDayKey,
+  todayInBusinessTimeZone,
+} from '../../common/dates/business-time';
 
 describe('HallazgosService', () => {
   let service: HallazgosService;
@@ -70,6 +74,40 @@ describe('HallazgosService', () => {
         ...data,
       }),
     );
+  });
+
+  describe('fecha — registro de días pasados', () => {
+    const base = { equipoId: 'e1', descripcion: 'Fuga', prioridad: 'ALTA' };
+    /** `YYYY-MM-DD` del día de negocio chileno de hace `days` días. */
+    const dateOnlyDaysAgo = (days: number) =>
+      todayInBusinessTimeZone(new Date(Date.now() - days * 86_400_000));
+    /** `data` de la primera llamada al `create` mockeado, sin `any`. */
+    const createData = (): { fecha: Date } =>
+      (
+        prisma.hallazgo.create.mock.calls as unknown as Array<
+          [{ data: { fecha: Date } }]
+        >
+      )[0][0].data;
+
+    it('con fecha: guarda un instante dentro de ese día de negocio', async () => {
+      const fecha = dateOnlyDaysAgo(5);
+      await service.create({ ...base, fecha }, 'u1');
+      expect(businessDayKey(createData().fecha)).toBe(fecha);
+    });
+
+    it('fecha fuera de la ventana de 30 días → 400 INVALID_SHIFT_DATE', async () => {
+      await expect(
+        service.create({ ...base, fecha: dateOnlyDaysAgo(40) }, 'u1'),
+      ).rejects.toMatchObject({
+        response: { code: 'INVALID_SHIFT_DATE' },
+      });
+      expect(prisma.hallazgo.create).not.toHaveBeenCalled();
+    });
+
+    it('sin fecha: se fecha con la hora de captura, como siempre', async () => {
+      await service.create(base, 'u1');
+      expect(businessDayKey(createData().fecha)).toBe(dateOnlyDaysAgo(0));
+    });
   });
 
   describe('registradoPor — quién registró el hallazgo', () => {

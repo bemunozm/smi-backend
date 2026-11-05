@@ -15,6 +15,7 @@ import { StorageService } from '../storage/storage.service';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { ShiftsService } from './shifts.service';
+import { businessDayKey } from '../common/dates/business-time';
 
 /**
  * Captura el `data` de la ÚLTIMA llamada a un mock `jest.fn()` sin tipar.
@@ -527,6 +528,146 @@ describe('ShiftsService', () => {
       });
     });
 
+    describe('turno de un día pasado (carga histórica)', () => {
+      // −2 días: estrictamente anterior al día de negocio chileno sin
+      // importar el huso de la máquina que corre Jest (−1 es ambiguo entre
+      // ~21:00 y medianoche de Chile).
+      const pasado = todayShiftDate(-2);
+
+      it('equipo no operativo NO bloquea la apertura de un día pasado', async () => {
+        prisma.equipment.findUnique.mockResolvedValue({
+          status: 'IN_WORKSHOP',
+        });
+        tx.equipment.findUnique.mockResolvedValue({
+          status: 'IN_WORKSHOP',
+          controlUnit: 'HOURS',
+          currentHourmeter: null,
+          currentMileage: null,
+        });
+
+        await service.openCard({ ...dto, shiftDate: pasado }, session);
+
+        expect(tx.registroHorometro.create).toHaveBeenCalled();
+      });
+
+      it('la tarjeta de un día pasado se fecha dentro de ese día de negocio', async () => {
+        await service.openCard({ ...dto, shiftDate: pasado }, session);
+
+        const data = lastCallData(tx.registroHorometro.create);
+        expect(businessDayKey(data.fecha as Date)).toBe(pasado);
+      });
+
+      it('NOCTURNO pasado: el instante cae en la tarde de ese día (20:30 −03)', async () => {
+        await service.openCard(
+          { ...dto, shiftDate: pasado, shiftType: 'NOCTURNO' },
+          session,
+        );
+
+        const data = lastCallData(tx.registroHorometro.create);
+        expect(businessDayKey(data.fecha as Date)).toBe(pasado);
+        expect((data.fecha as Date).toISOString()).toBe(
+          `${pasado}T23:30:00.000Z`,
+        );
+      });
+
+      it('shiftDate de HOY: el equipo no operativo sigue bloqueando (409)', async () => {
+        prisma.equipment.findUnique.mockResolvedValue({
+          status: 'IN_WORKSHOP',
+        });
+
+        await expect(service.openCard(dto, session)).rejects.toMatchObject({
+          response: { code: 'EQUIPMENT_NOT_OPERATIONAL' },
+        });
+      });
+
+      it('día pasado + tarjeta abierta del equipo → sigue 409 EQUIPMENT_BUSY', async () => {
+        tx.registroHorometro.findFirst.mockResolvedValue({
+          supervisorId: 'otro_sup',
+          fecha: new Date('2026-09-28T06:00:00.000Z'),
+        });
+        tx.user.findUnique.mockResolvedValue({ name: 'Ana Torres' });
+
+        await expect(
+          service.openCard({ ...dto, shiftDate: pasado }, session),
+        ).rejects.toMatchObject({ response: { code: 'EQUIPMENT_BUSY' } });
+      });
+
+      /**
+       * Antes de las 08:00 el frontend VIVO manda `shiftDate` de ayer
+       * (`fechaDeTurno`): el NOCTURNO que corre desde anoche NO es carga
+       * histórica aunque su día de negocio ya haya pasado. Sin esta
+       * distinción, un equipo agregado al turno a las 02:00 se saltaría el
+       * guard de "no operativo" y quedaría fechado sintético a las 20:30 de
+       * ayer (y su cierre de las 07:00, también).
+       */
+      describe('madrugada: el NOCTURNO vivo de anoche no es carga histórica', () => {
+        // 05:00Z del 02-11 = 02:00 en Chile (UTC-3 en noviembre) → el
+        // nocturno vigente es el del 2026-11-01.
+        const MADRUGADA = new Date('2026-11-02T05:00:00.000Z');
+        const NOCTURNO_ANOCHE = {
+          shiftDate: '2026-11-01',
+          shiftType: 'NOCTURNO' as const,
+        };
+
+        beforeEach(() => {
+          jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+          jest.setSystemTime(MADRUGADA);
+        });
+        afterEach(() => jest.useRealTimers());
+
+        it('a las 02:00, equipo no operativo → sigue 409 (flujo vivo)', async () => {
+          prisma.equipment.findUnique.mockResolvedValue({
+            status: 'IN_WORKSHOP',
+          });
+
+          await expect(
+            service.openCard(
+              { ...dto, ...NOCTURNO_ANOCHE, capturedAt: iso() },
+              session,
+            ),
+          ).rejects.toMatchObject({
+            response: { code: 'EQUIPMENT_NOT_OPERATIONAL' },
+          });
+        });
+
+        it('a las 02:00, la tarjeta se fecha con la hora REAL de captura, no sintética', async () => {
+          const capturedAt = iso();
+          await service.openCard(
+            { ...dto, ...NOCTURNO_ANOCHE, capturedAt },
+            session,
+          );
+
+          const data = lastCallData(tx.registroHorometro.create);
+          expect((data.fecha as Date).toISOString()).toBe(
+            new Date(capturedAt).toISOString(),
+          );
+        });
+
+        it('a las 10:00 ese nocturno YA terminó: vuelve a ser carga histórica (fecha sintética)', async () => {
+          jest.setSystemTime(new Date('2026-11-02T13:00:00.000Z')); // 10:00 Chile
+          prisma.equipment.findUnique.mockResolvedValue({
+            status: 'IN_WORKSHOP',
+          });
+          tx.equipment.findUnique.mockResolvedValue({
+            status: 'IN_WORKSHOP',
+            controlUnit: 'HOURS',
+            currentHourmeter: null,
+            currentMileage: null,
+          });
+
+          await service.openCard(
+            { ...dto, ...NOCTURNO_ANOCHE, capturedAt: iso() },
+            session,
+          );
+
+          const data = lastCallData(tx.registroHorometro.create);
+          expect((data.fecha as Date).toISOString()).toBe(
+            '2026-11-01T23:30:00.000Z',
+          );
+        });
+      });
+    });
+
     describe('ventana de shiftDate', () => {
       it('rechaza un shiftDate de más de 30 días de antigüedad con INVALID_SHIFT_DATE, antes de crear el Shift', async () => {
         expect.assertions(4);
@@ -684,6 +825,61 @@ describe('ShiftsService', () => {
         registroHorometroId: 'card_1',
       });
       expect(result.pumpPhotoUrl).toBe('https://signed/fuel-photos/final.jpg');
+    });
+
+    describe('cierre de una tarjeta de carga histórica (día pasado)', () => {
+      const pasado = todayShiftDate(-2);
+      // 12:00 −03 de ese día — el instante que dejó la apertura backfilleada.
+      const fechaHistorica = new Date(`${pasado}T15:00:00.000Z`);
+      const cardBase = {
+        id: 'card_1',
+        equipoId: 'e1',
+        valorInicial: 100,
+        valorFinal: null,
+        supervisorId: 'sup_1',
+        closeClientId: null,
+        closedAt: null,
+        clientClockSkewMs: null,
+        belowPreviousReading: false,
+      };
+
+      it('fechaSalida y el combustible caen en el día histórico de la tarjeta', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          ...cardBase,
+          fecha: fechaHistorica,
+          createdAt: new Date(), // abierta HOY para un día pasado: backfill
+        });
+
+        await service.closeCard('card_1', dto, session);
+
+        const update = lastCallData(tx.registroHorometro.updateMany);
+        expect((update.fechaSalida as Date).toISOString()).toBe(
+          fechaHistorica.toISOString(),
+        );
+        const fuel = lastCallData(tx.registroCombustible.create);
+        expect((fuel.fecha as Date).toISOString()).toBe(
+          fechaHistorica.toISOString(),
+        );
+      });
+
+      it('un NOCTURNO vivo de anoche cerrado en la mañana NO se re-fecha', async () => {
+        // Apertura real hace 11 h: según la hora en que corra Jest cae en
+        // ayer (día pasado, pero createdAt de ayer) o en hoy — en ambos
+        // casos el cierre es VIVO y conserva la hora real.
+        const apertura = new Date(Date.now() - 11 * 3_600_000);
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          ...cardBase,
+          fecha: apertura,
+          createdAt: apertura,
+        });
+
+        await service.closeCard('card_1', dto, session);
+
+        const update = lastCallData(tx.registroHorometro.updateMany);
+        expect((update.fechaSalida as Date).toISOString()).toBe(
+          new Date(dto.capturedAt).toISOString(),
+        );
+      });
     });
 
     it('un capturedAt fuera de ventana no rechaza el cierre: fechaSalida es la hora del servidor y se audita el desfase', async () => {
@@ -1903,6 +2099,7 @@ describe('ShiftsService', () => {
           type: 'DIURNO',
           supervisorId: 'sup_1',
           cards: [],
+          exitReports: [],
         },
       ]);
 
@@ -1912,6 +2109,34 @@ describe('ShiftsService', () => {
       );
 
       expect(shift.date).toBe('2026-09-28');
+    });
+
+    it('incluye los reportes de salida ya enviados del turno', async () => {
+      const requestedAt = new Date('2026-09-28T20:05:00.000Z');
+      prisma.shift.findMany.mockResolvedValue([
+        {
+          id: 'shift_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'DIURNO',
+          supervisorId: 'sup_1',
+          cards: [],
+          exitReports: [{ id: 'rep_1', requestedAt, cardCount: 4 }],
+        },
+      ]);
+
+      const [shift] = await service.findShifts(
+        { date: '2026-09-28', type: 'DIURNO' },
+        buildSession('sup_1'),
+      );
+
+      expect(shift.exitReports).toEqual([
+        { id: 'rep_1', requestedAt, cardCount: 4 },
+      ]);
+      // El include pide exitReports junto con las tarjetas.
+      const [args] = prisma.shift.findMany.mock.calls[0] as [
+        { include: Record<string, unknown> },
+      ];
+      expect(args.include).toHaveProperty('exitReports');
     });
   });
 });
