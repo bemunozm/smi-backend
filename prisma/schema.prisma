@@ -874,6 +874,11 @@ model Operator {
 
 model TrabajoExtraordinario {
   id               String    @id @default(cuid())
+  /// N° de Report: correlativo, lo asigna la base al crear (nunca el
+  /// cliente) y no se reusa si un registro se borra. Los anteriores a esta
+  /// columna se numeraron por orden de creación (migración
+  /// `trabajo_extra_numero`).
+  numero           Int       @unique @default(autoincrement())
   equipoId         String    @map("equipo_id")
   equipo           Equipment @relation(fields: [equipoId], references: [id])
   operador         String // nombre y apellido — snapshot armado por el SERVIDOR; ver `operatorId` para el catálogo
