@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import type { Hallazgo } from '@prisma/client';
@@ -30,16 +34,19 @@ import { StorageService } from '../../storage/storage.service';
 import { resolveNombresUsuarios } from '../common/registrado-por.util';
 import { CreateHallazgoDto } from './dto/create-hallazgo.dto';
 import { UpdateHallazgoDto } from './dto/update-hallazgo.dto';
+import { nombreZona } from './hallazgo-tipo';
 
 /** Los datos de un hallazgo que se pueden corregir. */
 type DatosHallazgo = Pick<
   Hallazgo,
-  'equipoId' | 'descripcion' | 'prioridad' | 'estado'
+  'equipoId' | 'faena' | 'lugar' | 'descripcion' | 'prioridad' | 'estado'
 >;
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
 const CAMPO_LABEL: Record<keyof DatosHallazgo, string> = {
   equipoId: 'Equipo',
+  faena: 'Faena',
+  lugar: 'Lugar',
   descripcion: 'Descripción',
   prioridad: 'Prioridad',
   estado: 'Estado',
@@ -65,6 +72,8 @@ function mergeDatos(
 ): DatosHallazgo {
   return {
     equipoId: dto.equipoId ?? actual.equipoId,
+    faena: dto.faena ?? actual.faena,
+    lugar: dto.lugar?.trim() ?? actual.lugar,
     descripcion: dto.descripcion?.trim() ?? actual.descripcion,
     prioridad: dto.prioridad ?? actual.prioridad,
     estado: dto.estado ?? actual.estado,
@@ -75,6 +84,8 @@ function mergeDatos(
 function datosDe(h: DatosHallazgo): DatosHallazgo {
   return {
     equipoId: h.equipoId,
+    faena: h.faena,
+    lugar: h.lugar,
     descripcion: h.descripcion,
     prioridad: h.prioridad,
     estado: h.estado,
@@ -164,10 +175,20 @@ export class HallazgosService {
       fecha = resolveRecordDate(dto.fecha, dto.capturedAt);
     }
 
-    const equipo = await this.prisma.equipment.findUnique({
-      where: { id: dto.equipoId },
-    });
-    if (!equipo) throw new NotFoundException('Equipo no encontrado');
+    // De zona: sin equipo, con su faena y lugar (el DTO ya exige ambos). De
+    // equipo, el de siempre: el equipo tiene que existir.
+    const esZona = dto.tipo === 'ZONA';
+    if (esZona && dto.equipoId) {
+      throw new BadRequestException(
+        'Un hallazgo de zona no lleva equipo: indica la faena y el lugar.',
+      );
+    }
+    const equipo = esZona
+      ? null
+      : await this.prisma.equipment.findUnique({
+          where: { id: dto.equipoId },
+        });
+    if (!esZona && !equipo) throw new NotFoundException('Equipo no encontrado');
 
     // Se reclama ANTES del `create` y fuera del try, igual que en
     // `CombustibleService`: si el claim falla, todavía no hay fila que revertir.
@@ -180,7 +201,10 @@ export class HallazgosService {
       hallazgo = await this.prisma.hallazgo.create({
         data: {
           ...(dto.id ? { id: dto.id } : {}),
-          equipoId: dto.equipoId,
+          tipo: esZona ? 'ZONA' : 'EQUIPO',
+          equipoId: esZona ? null : dto.equipoId,
+          faena: esZona ? dto.faena : null,
+          lugar: esZona ? dto.lugar?.trim() : null,
           descripcion: dto.descripcion,
           prioridad: dto.prioridad,
           estado: 'ABIERTO',
@@ -207,8 +231,10 @@ export class HallazgosService {
 
     this.eventEmitter.emit(DOMAIN_EVENTS.HALLAZGO_CREATED, {
       hallazgoId: hallazgo.id,
+      tipo: esZona ? 'ZONA' : 'EQUIPO',
+      zona: esZona ? nombreZona(hallazgo.faena, hallazgo.lugar) : null,
       equipoId: hallazgo.equipoId,
-      equipoCodigo: equipo.internalCode,
+      equipoCodigo: equipo?.internalCode ?? null,
       prioridad: hallazgo.prioridad,
       descripcion: hallazgo.descripcion,
     } satisfies HallazgoCreatedEvent);
@@ -287,30 +313,51 @@ export class HallazgosService {
           labels: CAMPO_LABEL,
           notFoundMessage: 'Hallazgo no encontrado',
         });
+        // El tipo no se cambia: cada uno corrige lo suyo.
+        if (vigente.tipo === 'ZONA' && dto.equipoId !== undefined) {
+          throw new BadRequestException('Un hallazgo de zona no lleva equipo.');
+        }
+        if (
+          vigente.tipo !== 'ZONA' &&
+          (dto.faena !== undefined || dto.lugar !== undefined)
+        ) {
+          throw new BadRequestException(
+            'Un hallazgo de equipo no lleva faena ni lugar.',
+          );
+        }
         const nuevo = mergeDatos(vigente, dto);
         const codigoNuevo =
-          equipoNuevo?.internalCode ?? vigente.equipo.internalCode;
+          vigente.tipo === 'ZONA'
+            ? nombreZona(nuevo.faena, nuevo.lugar)
+            : (equipoNuevo?.internalCode ??
+              vigente.equipo?.internalCode ??
+              '—');
 
-        const codigos: Record<string, string> = {
-          [vigente.equipoId]: vigente.equipo.internalCode,
-          [nuevo.equipoId]: codigoNuevo,
-        };
+        const codigos: Record<string, string> = {};
+        if (vigente.equipoId && vigente.equipo) {
+          codigos[vigente.equipoId] = vigente.equipo.internalCode;
+        }
+        if (nuevo.equipoId && equipoNuevo) {
+          codigos[nuevo.equipoId] = equipoNuevo.internalCode;
+        }
         const diff = diffFields<DatosHallazgo>(vigente, nuevo, [
           {
             field: 'equipoId',
             label: 'Equipo',
-            format: (v) => codigos[v] ?? v,
+            format: (v) => (v ? (codigos[v] ?? v) : '—'),
           },
+          { field: 'faena', label: 'Faena', format: (v) => v ?? '—' },
+          { field: 'lugar', label: 'Lugar', format: (v) => v ?? '—' },
           { field: 'descripcion', label: 'Descripción' },
           {
             field: 'prioridad',
             label: 'Prioridad',
-            format: (v) => PRIORIDAD_LABEL[v] ?? v,
+            format: (v) => (v ? (PRIORIDAD_LABEL[v] ?? v) : '—'),
           },
           {
             field: 'estado',
             label: 'Estado',
-            format: (v) => ESTADO_LABEL[v] ?? v,
+            format: (v) => (v ? (ESTADO_LABEL[v] ?? v) : '—'),
           },
         ]);
         if (diff.length === 0) {

@@ -2,6 +2,7 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
 import { CreateTrabajoExtraDto } from './create-trabajo-extra.dto';
+import { UpdateTrabajoExtraDto } from './update-trabajo-extra.dto';
 
 function base(overrides: Record<string, unknown> = {}) {
   return {
@@ -160,6 +161,27 @@ describe('CreateTrabajoExtraDto', () => {
         base({ turno: 'VESPERTINO' }),
       );
       expect(await validate(dto)).not.toHaveLength(0);
+    });
+  });
+
+  /**
+   * El N° de Report lo asigna la base (`numero`, autoincrement): el cliente no
+   * lo elige al crear ni lo cambia al editar. Con `forbidNonWhitelisted` (la
+   * misma config que `app.setup.ts`) mandarlo es un 400.
+   */
+  describe('numero — lo asigna la base, nunca el usuario', () => {
+    const estricto = { whitelist: true, forbidNonWhitelisted: true };
+
+    it('al crear, mandar un número se rechaza', async () => {
+      const dto = plainToInstance(CreateTrabajoExtraDto, base({ numero: 999 }));
+      const errores = await validate(dto, estricto);
+      expect(errores.map((e) => e.property)).toContain('numero');
+    });
+
+    it('al editar, cambiar el número se rechaza', async () => {
+      const dto = plainToInstance(UpdateTrabajoExtraDto, { numero: 1 });
+      const errores = await validate(dto, estricto);
+      expect(errores.map((e) => e.property)).toContain('numero');
     });
   });
 });

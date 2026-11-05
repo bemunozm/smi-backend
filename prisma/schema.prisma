@@ -940,9 +940,19 @@ model TrabajoExtraordinario {
 }
 
 model Hallazgo {
-  id          String    @id @default(cuid())
-  equipoId    String    @map("equipo_id")
-  equipo      Equipment @relation(fields: [equipoId], references: [id])
+  id          String     @id @default(cuid())
+  /// EQUIPO: la falla es de una máquina y llega al taller. ZONA: un lugar de
+  /// la faena (camino, cancha, romana) — no va al taller, lo atiende el
+  /// administrador (pedido del cliente, 05/11). Los anteriores son EQUIPO.
+  tipo        String     @default("EQUIPO")
+  /// Solo EQUIPO (la migración `hallazgo_zona` lo exige con un CHECK).
+  equipoId    String?    @map("equipo_id")
+  /// `Restrict` explícito: el de una relación opcional sería `SetNull`, y un
+  /// equipo con hallazgos no se borra (igual que antes de ser opcional).
+  equipo      Equipment? @relation(fields: [equipoId], references: [id], onDelete: Restrict)
+  /// Solo ZONA: la faena (Patillo | Kainita) y el lugar, escrito libre.
+  faena       String?
+  lugar       String?
   descripcion String
   prioridad   String // BAJA | MEDIA | ALTA | CRITICA
   estado      String    @default("ABIERTO") // ABIERTO | EN_PROCESO | CERRADO

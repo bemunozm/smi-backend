@@ -979,6 +979,16 @@ describe('OrdenesService', () => {
       hallazgoId: 'hallazgo_1',
     };
 
+    it('un hallazgo de ZONA no inicia una orden de taller', async () => {
+      hallazgoFindUnique.mockResolvedValue({ id: 'hallazgo_1', tipo: 'ZONA' });
+
+      await expect(service.create(CREATE_DTO, 'user_1')).rejects.toThrow(
+        'Un hallazgo de zona no se atiende en el taller.',
+      );
+      expect(hallazgoUpdateMany).not.toHaveBeenCalled();
+      expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+    });
+
     it('create con hallazgoId toma el hallazgo con un claim CONDICIONAL atómico', async () => {
       hallazgoFindUnique.mockResolvedValue({
         id: 'hallazgo_1',

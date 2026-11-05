@@ -1,12 +1,20 @@
 import {
   IsDateString,
   IsIn,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
   MaxLength,
+  ValidateIf,
 } from 'class-validator';
+
+import {
+  HALLAZGO_FAENAS,
+  HALLAZGO_TIPOS,
+  type HallazgoTipo,
+} from '../hallazgo-tipo';
 
 import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
 
@@ -34,8 +42,27 @@ export class CreateHallazgoDto {
   @IsDateString()
   fecha?: string;
 
+  /** EQUIPO (por defecto, lo que mandan los clientes viejos) o ZONA. */
+  @IsOptional()
+  @IsIn(HALLAZGO_TIPOS)
+  tipo?: HallazgoTipo;
+
+  /** Obligatorio en un hallazgo de EQUIPO; uno de ZONA no lo lleva. */
+  @ValidateIf((dto: CreateHallazgoDto) => dto.tipo !== 'ZONA')
   @IsString()
-  equipoId!: string;
+  equipoId?: string;
+
+  /** Solo ZONA: la faena del lugar. */
+  @ValidateIf((dto: CreateHallazgoDto) => dto.tipo === 'ZONA')
+  @IsIn(HALLAZGO_FAENAS)
+  faena?: string;
+
+  /** Solo ZONA: el lugar, escrito libre («Cancha norte», «Camino a la romana»). */
+  @ValidateIf((dto: CreateHallazgoDto) => dto.tipo === 'ZONA')
+  @IsString()
+  @IsNotEmpty({ message: 'Escribe el lugar del hallazgo' })
+  @MaxLength(120)
+  lugar?: string;
 
   @IsString()
   descripcion!: string;

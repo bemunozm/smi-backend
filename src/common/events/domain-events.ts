@@ -30,6 +30,10 @@ export type DomainEventName =
 /** Emitido por Terreno al crear un Hallazgo. */
 export interface HallazgoCreatedEvent {
   hallazgoId: string;
+  /** EQUIPO (va al taller) o ZONA (solo al administrador). Sin él, EQUIPO. */
+  tipo?: 'EQUIPO' | 'ZONA';
+  /** Solo ZONA: «Cancha norte (Kainita)». */
+  zona?: string | null;
   equipoId?: string | null;
   /** Código del equipo (`CA-011`), para que el aviso diga qué máquina es. */
   equipoCodigo?: string | null;
