@@ -255,7 +255,7 @@ describe('ShiftsService', () => {
         equipmentClass: 'HEAVY',
       });
       await expect(service.openCard(dto, mantenedor)).rejects.toThrow(
-        'solo registra el uso de vehículos livianos',
+        'Solo puedes registrar el uso de vehículos livianos',
       );
 
       prisma.equipment.findUnique.mockResolvedValueOnce({
@@ -265,6 +265,30 @@ describe('ShiftsService', () => {
       await service.openCard({ ...dto, operatorId: undefined }, mantenedor);
       expect(lastCallData(tx.registroHorometro.create)).toMatchObject({
         supervisorId: 'mant_1',
+        operatorId: null,
+      });
+    });
+
+    it('prevencionista: igual que el mantenedor, solo camionetas', async () => {
+      const prevencionista = {
+        ...session,
+        user: { ...session.user, id: 'prev_1', role: 'PREVENCIONISTA' },
+      } as typeof session;
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        status: 'OPERATIONAL',
+        equipmentClass: 'HEAVY',
+      });
+      await expect(service.openCard(dto, prevencionista)).rejects.toThrow(
+        'Solo puedes registrar el uso de vehículos livianos',
+      );
+
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        status: 'OPERATIONAL',
+        equipmentClass: 'LIGHT',
+      });
+      await service.openCard({ ...dto, operatorId: undefined }, prevencionista);
+      expect(lastCallData(tx.registroHorometro.create)).toMatchObject({
+        supervisorId: 'prev_1',
         operatorId: null,
       });
     });
