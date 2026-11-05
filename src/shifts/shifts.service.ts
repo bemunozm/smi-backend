@@ -636,7 +636,11 @@ export class ShiftsService {
     // todavía no hay nada que descartar. `claimTmp` traduce un tmp
     // vencido/inexistente a 400 `TMP_KEY_EXPIRED`.
     const pumpPhotoKey = dto.tmpPhotoKey
-      ? await this.storage.claimTmp(dto.tmpPhotoKey, session.user.id, 'fuel-photo')
+      ? await this.storage.claimTmp(
+          dto.tmpPhotoKey,
+          session.user.id,
+          'fuel-photo',
+        )
       : null;
 
     // `closed` se declara AFUERA del `try` y `this.shapeCard(closed!)` (que

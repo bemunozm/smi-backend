@@ -892,9 +892,9 @@ describe('ShiftsService', () => {
           fecha: fechaHistorica,
           createdAt: new Date(), // abierta HOY para un día pasado: backfill
         });
-        const { tmpPhotoKey: _omitida, ...sinFoto } = dto;
+        const sinFoto = { ...dto, tmpPhotoKey: undefined };
 
-        await service.closeCard('card_1', sinFoto as CloseShiftCardDto, session);
+        await service.closeCard('card_1', sinFoto, session);
 
         expect(claimTmp).not.toHaveBeenCalled();
         const update = lastCallData(tx.registroHorometro.updateMany);
@@ -905,10 +905,10 @@ describe('ShiftsService', () => {
 
       it('cierre VIVO sin foto → 400 PUMP_PHOTO_REQUIRED sin reclamar nada', async () => {
         // Fixture del beforeEach: tarjeta viva (no es carga histórica).
-        const { tmpPhotoKey: _omitida, ...sinFoto } = dto;
+        const sinFoto = { ...dto, tmpPhotoKey: undefined };
 
         await expect(
-          service.closeCard('card_1', sinFoto as CloseShiftCardDto, session),
+          service.closeCard('card_1', sinFoto, session),
         ).rejects.toMatchObject({ response: { code: 'PUMP_PHOTO_REQUIRED' } });
         expect(claimTmp).not.toHaveBeenCalled();
       });
