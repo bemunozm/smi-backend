@@ -4,6 +4,7 @@ import type { Prisma } from '@prisma/client';
 
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
 import { StorageService } from '../../storage/storage.service';
 import { resolveNombresUsuarios } from '../common/registrado-por.util';
 import { CreateCombustibleDto } from './dto/create-combustible.dto';
@@ -19,10 +20,20 @@ import { UpdateCombustibleDto } from './dto/update-combustible.dto';
  */
 const COMBUSTIBLE_INCLUDE = {
   equipo: {
-    select: { internalCode: true, type: true, equipmentClass: true },
+    select: {
+      internalCode: true,
+      type: true,
+      equipmentClass: true,
+      controlUnit: true,
+    },
   },
   registroHorometro: {
-    select: { closedByName: true, closedById: true, supervisorId: true },
+    select: {
+      closedByName: true,
+      closedById: true,
+      supervisorId: true,
+      valorFinal: true,
+    },
   },
 } satisfies Prisma.RegistroCombustibleInclude;
 
@@ -37,12 +48,14 @@ type RegistroCombustibleRow = Prisma.RegistroCombustibleGetPayload<{
 type FilaCombustible = {
   fotoUrl: string | null;
   fotoKey: string | null;
+  lectura?: number | null;
   registroHorometroId?: string | null;
   createdById?: string | null;
   registroHorometro?: {
     closedByName: string | null;
     closedById: string | null;
     supervisorId: string | null;
+    valorFinal?: number | null;
   } | null;
 };
 
@@ -54,14 +67,18 @@ type FilaCombustible = {
  *   carga nacida de cierre de tarjeta, el supervisor que la cerró (snapshot
  *   `closedByName`, con fallback a resolver `closedById`/`supervisorId`); para
  *   una carga manual, quien la creó (`createdById`).
- * - `origen` distingue la carga de cierre de tarjeta de la manual. */
+ * - `origen` distingue la carga de cierre de tarjeta de la manual.
+ * - `lectura` es el contador del equipo AL CARGAR (horómetro en pesados, km
+ *   en livianos): la propia de la carga (alta manual) o, en cargas de
+ *   tarjeta, el `valorFinal` de la tarjeta vinculada. */
 export type CombustibleResponse<T> = Omit<
   T,
-  'fotoKey' | 'createdById' | 'registroHorometro'
+  'fotoKey' | 'createdById' | 'registroHorometro' | 'lectura'
 > & {
   fotoUrl: string | null;
   realizadoPor: string | null;
   origen: 'TARJETA' | 'MANUAL';
+  lectura: number | null;
 };
 
 @Injectable()
@@ -113,23 +130,41 @@ export class CombustibleService {
     // explícito para no depender de ese detalle.
     let registro: RegistroCombustibleRow;
     try {
-      registro = await this.prisma.registroCombustible.create({
-        data: {
-          ...(dto.id ? { id: dto.id } : {}),
-          createdById: userId,
-          equipoId: dto.equipoId,
-          litros: dto.litros,
-          tipo: dto.tipo,
-          // `fotoUrl` (legacy) no es un campo de creación — ver
-          // `CreateCombustibleDto`. Se omite la key: Prisma inserta NULL
-          // (siempre `null` para filas nuevas).
-          fotoKey: finalKey ?? null,
-          // Sin `fecha` en el DTO, se omite la key y Prisma aplica el
-          // `@default(now())` del schema — comportamiento previo intacto.
-          ...(dto.fecha ? { fecha: new Date(dto.fecha) } : {}),
-        },
-        include: COMBUSTIBLE_INCLUDE,
-        omit: { createdById: false },
+      // Carga + contador en UNA transacción: si la reconciliación lanzara,
+      // la carga no queda a medias.
+      registro = await this.prisma.$transaction(async (tx) => {
+        const creado = await tx.registroCombustible.create({
+          data: {
+            ...(dto.id ? { id: dto.id } : {}),
+            createdById: userId,
+            equipoId: dto.equipoId,
+            litros: dto.litros,
+            tipo: dto.tipo,
+            // `fotoUrl` (legacy) no es un campo de creación — ver
+            // `CreateCombustibleDto`. Se omite la key: Prisma inserta NULL
+            // (siempre `null` para filas nuevas).
+            fotoKey: finalKey ?? null,
+            // Sin `fecha` en el DTO, se omite la key y Prisma aplica el
+            // `@default(now())` del schema — comportamiento previo intacto.
+            ...(dto.fecha ? { fecha: new Date(dto.fecha) } : {}),
+            lectura: dto.lectura ?? null,
+          },
+          include: COMBUSTIBLE_INCLUDE,
+          omit: { createdById: false },
+        });
+        if (dto.lectura != null) {
+          // Modo 'warn': una carga histórica puede traer una lectura menor
+          // que el contador vigente — se guarda en la carga igual y el
+          // contador NO retrocede ni se rechaza (ver comentario del schema).
+          await reconcileEquipmentCounter(
+            tx,
+            dto.equipoId,
+            equipo,
+            dto.lectura,
+            'warn',
+          );
+        }
+        return creado;
       });
     } catch (error: unknown) {
       // Se descarta ANTES de que `createOrReturn` relea la carrera: la copia
@@ -207,8 +242,14 @@ export class CombustibleService {
     registro: T,
     nombres: ReadonlyMap<string, string>,
   ): Promise<CombustibleResponse<T>> {
-    const { fotoKey, fotoUrl, createdById, registroHorometro, ...resto } =
-      registro;
+    const {
+      fotoKey,
+      fotoUrl,
+      createdById,
+      registroHorometro,
+      lectura,
+      ...resto
+    } = registro;
     const esDeTarjeta = Boolean(registro.registroHorometroId);
     const realizadoPor = esDeTarjeta
       ? (registroHorometro?.closedByName ??
@@ -227,6 +268,9 @@ export class CombustibleService {
       fotoUrl: fotoKey ? await this.storage.sign(fotoKey) : fotoUrl,
       realizadoPor,
       origen: esDeTarjeta ? 'TARJETA' : 'MANUAL',
+      // La propia de la carga (alta manual), o el valorFinal de la tarjeta
+      // que la originó — es la MISMA lectura física al momento de cargar.
+      lectura: lectura ?? registroHorometro?.valorFinal ?? null,
     } as CombustibleResponse<T>;
   }
 }
