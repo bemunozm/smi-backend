@@ -155,12 +155,10 @@ describe('TrabajosExtraService', () => {
       turno: 'DIURNO',
       horometroInicial: 1200,
       horometroFinal: 1212,
-      actividades: ['REGULACION_CARGA'],
       detalle: detalleDe(['REGULACION_CARGA']),
       descripcion: 'Carga de material',
       // Obligatorios desde el folio y la foto del report (#65).
       reportNumero: '4509',
-      destino: 'TRANSPORTE',
       fotoKey: 'tmp/u1/report.jpg',
     };
     /** `YYYY-MM-DD` del día de negocio chileno de hace `days` días. */

@@ -869,6 +869,14 @@ model Operator {
   /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
   createdById String? @map("created_by_id")
 
+  /// Supervisor con que este operador sale habitualmente (soft ref a
+  /// `user.id`, sin FK — mismo criterio que `supervisorId` de los turnos).
+  /// En los selectores de ese supervisor aparece primero, en «Tus
+  /// operadores»; cualquier supervisor lo puede elegir igual (pedido del
+  /// cliente, 06/11). Lo asigna el administrador.
+  supervisorHabitualId String? @map("supervisor_habitual_id")
+
+  @@index([supervisorHabitualId])
   @@map("operator")
 }
 

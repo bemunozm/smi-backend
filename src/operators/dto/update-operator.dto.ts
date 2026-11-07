@@ -27,4 +27,12 @@ export class UpdateOperatorDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  /**
+   * `user.id` del supervisor con que sale habitualmente; `null` lo quita.
+   * Solo el ADMIN lo cambia (`OperatorsService`).
+   */
+  @IsOptional()
+  @IsString()
+  supervisorHabitualId?: string | null;
 }
