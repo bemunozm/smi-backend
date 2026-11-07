@@ -10,6 +10,7 @@ import { HealthModule } from './health/health.module';
 import { MantenimientoModule } from './mantenimiento/mantenimiento.module';
 import { UsersModule } from './users/users.module';
 import { BranchModule } from './branch/branch.module';
+import { AsistenciaModule } from './asistencia/asistencia.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { EquipmentModule } from './equipment/equipment.module';
 import { FichaModule } from './ficha/ficha.module';
@@ -56,6 +57,9 @@ import { auth } from './auth/auth';
     ShiftsModule,
     // Dashboard del administrador (lecturas agregadas).
     DashboardModule,
+    // Asistencia mensual de supervisores/operadores (grilla de la
+    // secretaria, lectura agregada de tarjetas + Reports).
+    AsistenciaModule,
     // Almacenamiento de archivos de Flota y Terreno: sube a `tmp/` vía
     // POST /api/files. No existe ruta pública `/uploads` — ver
     // SECURITY-NOTES.md.
