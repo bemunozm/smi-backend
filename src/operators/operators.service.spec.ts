@@ -1,4 +1,9 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 
 import { ERROR_CODES } from '../common/errors/error-codes';
@@ -17,11 +22,19 @@ describe('OperatorsService', () => {
   const create = jest.fn();
   const update = jest.fn();
   const deleteFn = jest.fn();
+  const userFindUnique = jest.fn();
+  const userFindMany = jest.fn();
 
   beforeEach(async () => {
-    [findMany, findUnique, create, update, deleteFn].forEach((m) =>
-      m.mockReset(),
-    );
+    [
+      findMany,
+      findUnique,
+      create,
+      update,
+      deleteFn,
+      userFindUnique,
+      userFindMany,
+    ].forEach((m) => m.mockReset());
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -36,6 +49,7 @@ describe('OperatorsService', () => {
               update,
               delete: deleteFn,
             },
+            user: { findUnique: userFindUnique, findMany: userFindMany },
           },
         },
       ],
@@ -447,6 +461,105 @@ describe('OperatorsService', () => {
       await expect(service.assertActive('missing')).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  describe('supervisor habitual', () => {
+    const admin = buildSession('admin_1', 'ADMIN');
+    const supervisor = buildSession('sup_1', 'SUPERVISOR');
+
+    it('la lista trae el nombre del supervisor habitual de cada operador', async () => {
+      findMany.mockResolvedValue([
+        { id: 'op_1', name: 'Milton Mosquera', supervisorHabitualId: 'sup_1' },
+        { id: 'op_2', name: 'Jose Farias', supervisorHabitualId: null },
+      ]);
+      userFindMany.mockResolvedValue([
+        { id: 'sup_1', name: 'Limbert Villacorta' },
+      ]);
+
+      const res = await service.findAll({}, admin);
+
+      expect(res.map((o) => o.supervisorHabitualNombre)).toEqual([
+        'Limbert Villacorta',
+        null,
+      ]);
+    });
+
+    it('el ADMIN lo asigna a un usuario SUPERVISOR', async () => {
+      findUnique.mockResolvedValue({ id: 'op_1' });
+      userFindUnique.mockResolvedValue({ role: 'SUPERVISOR' });
+      update.mockResolvedValue({ id: 'op_1' });
+
+      await service.update(
+        'op_1',
+        { supervisorHabitualId: 'sup_1' },
+        undefined,
+        admin,
+      );
+
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'op_1' },
+        data: { supervisorHabitualId: 'sup_1' },
+      });
+    });
+
+    it('un SUPERVISOR no reparte la cuadrilla (403), aunque sí edite el resto', async () => {
+      findUnique.mockResolvedValue({ id: 'op_1' });
+
+      await expect(
+        service.update(
+          'op_1',
+          { supervisorHabitualId: 'sup_1' },
+          undefined,
+          supervisor,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(update).not.toHaveBeenCalled();
+
+      update.mockResolvedValue({ id: 'op_1' });
+      await service.update(
+        'op_1',
+        { name: 'Milton M.' },
+        undefined,
+        supervisor,
+      );
+      expect(update).toHaveBeenCalled();
+    });
+
+    it('tiene que ser un supervisor: otro rol o un id que no existe es 400', async () => {
+      findUnique.mockResolvedValue({ id: 'op_1' });
+      userFindUnique.mockResolvedValueOnce({ role: 'MANTENEDOR' });
+      await expect(
+        service.update(
+          'op_1',
+          { supervisorHabitualId: 'm_1' },
+          undefined,
+          admin,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      userFindUnique.mockResolvedValueOnce(null);
+      await expect(
+        service.update('op_1', { supervisorHabitualId: 'x' }, undefined, admin),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('null lo quita', async () => {
+      findUnique.mockResolvedValue({ id: 'op_1' });
+      update.mockResolvedValue({ id: 'op_1' });
+
+      await service.update(
+        'op_1',
+        { supervisorHabitualId: null },
+        undefined,
+        admin,
+      );
+
+      expect(userFindUnique).not.toHaveBeenCalled();
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'op_1' },
+        data: { supervisorHabitualId: null },
+      });
     });
   });
 });

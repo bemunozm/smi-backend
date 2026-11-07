@@ -1,5 +1,7 @@
 import {
+  BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -34,6 +36,7 @@ const CAMPO_LABEL: Record<string, string> = {
   name: 'Nombre',
   rut: 'RUT',
   isActive: 'Activo',
+  supervisorHabitualId: 'Supervisor habitual',
 };
 
 @Injectable()
@@ -57,7 +60,62 @@ export class OperatorsService {
     );
   }
 
-  findAll(filtros: QueryOperatorDto, session?: UserSession) {
+  /**
+   * El supervisor habitual lo asigna solo el ADMIN (un supervisor no reparte
+   * la cuadrilla de otro) y tiene que ser un usuario SUPERVISOR. `null` lo
+   * quita.
+   */
+  private async validarSupervisorHabitual(
+    dto: { supervisorHabitualId?: string | null },
+    session?: UserSession,
+  ): Promise<void> {
+    if (dto.supervisorHabitualId === undefined) return;
+    if (session && !sessionHasRole(session.user.role, ROLES.ADMIN)) {
+      throw new ForbiddenException(
+        'Solo el administrador asigna el supervisor habitual de un operador.',
+      );
+    }
+    if (dto.supervisorHabitualId === null) return;
+    const supervisor = await this.prisma.user.findUnique({
+      where: { id: dto.supervisorHabitualId },
+      select: { role: true },
+    });
+    if (!supervisor || supervisor.role !== ROLES.SUPERVISOR) {
+      throw new BadRequestException(
+        'El supervisor habitual tiene que ser un usuario supervisor.',
+      );
+    }
+  }
+
+  /** Cada operador con el nombre de su supervisor habitual (null si no tiene). */
+  private async conSupervisor<
+    T extends { supervisorHabitualId: string | null },
+  >(
+    operadores: T[],
+  ): Promise<(T & { supervisorHabitualNombre: string | null })[]> {
+    const ids = [
+      ...new Set(
+        operadores
+          .map((o) => o.supervisorHabitualId)
+          .filter((id): id is string => id != null),
+      ),
+    ];
+    const usuarios = ids.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const nombres = new Map(usuarios.map((u) => [u.id, u.name]));
+    return operadores.map((o) => ({
+      ...o,
+      supervisorHabitualNombre: o.supervisorHabitualId
+        ? (nombres.get(o.supervisorHabitualId) ?? null)
+        : null,
+    }));
+  }
+
+  async findAll(filtros: QueryOperatorDto, session?: UserSession) {
     const where: Prisma.OperatorWhereInput = {};
 
     if (filtros.isActive !== undefined) where.isActive = filtros.isActive;
@@ -66,16 +124,20 @@ export class OperatorsService {
     }
 
     if (this.hasRutAccess(session)) {
-      return this.prisma.operator.findMany({
+      return this.conSupervisor(
+        await this.prisma.operator.findMany({
+          where,
+          orderBy: { name: 'asc' },
+        }),
+      );
+    }
+    return this.conSupervisor(
+      await this.prisma.operator.findMany({
         where,
         orderBy: { name: 'asc' },
-      });
-    }
-    return this.prisma.operator.findMany({
-      where,
-      orderBy: { name: 'asc' },
-      omit: OPERATOR_OMIT_RUT,
-    });
+        omit: OPERATOR_OMIT_RUT,
+      }),
+    );
   }
 
   /**
@@ -108,7 +170,7 @@ export class OperatorsService {
     return operator;
   }
 
-  async create(dto: CreateOperatorDto, userId: string) {
+  async create(dto: CreateOperatorDto, userId: string, session?: UserSession) {
     return createOrReturn({
       id: dto.id,
       userId,
@@ -121,11 +183,16 @@ export class OperatorsService {
         if (!owner) return null;
         return { ownerId: owner.createdById, result: () => this.findOne(id) };
       },
-      create: () => this.createFresh(dto, userId),
+      create: () => this.createFresh(dto, userId, session),
     });
   }
 
-  private async createFresh(dto: CreateOperatorDto, userId: string) {
+  private async createFresh(
+    dto: CreateOperatorDto,
+    userId: string,
+    session?: UserSession,
+  ) {
+    await this.validarSupervisorHabitual(dto, session);
     // `rut` ya pasó `IsChileanRut` en el DTO (dígito verificador correcto) —
     // acá se normaliza SIEMPRE al formato canónico `12345678-K` antes de
     // persistir, para que dos entradas del mismo RUT con puntuación distinta
@@ -147,8 +214,14 @@ export class OperatorsService {
     }
   }
 
-  async update(id: string, dto: UpdateOperatorDto, expected?: ExpectedValues) {
+  async update(
+    id: string,
+    dto: UpdateOperatorDto,
+    expected?: ExpectedValues,
+    session?: UserSession,
+  ) {
     await this.assertExiste(id);
+    await this.validarSupervisorHabitual(dto, session);
 
     const data: Prisma.OperatorUpdateInput = {
       ...dto,
@@ -168,7 +241,12 @@ export class OperatorsService {
           read: (db) =>
             db.operator.findUnique({
               where: { id },
-              select: { name: true, rut: true, isActive: true },
+              select: {
+                name: true,
+                rut: true,
+                isActive: true,
+                supervisorHabitualId: true,
+              },
             }),
           desired: definedFields({
             ...dto,

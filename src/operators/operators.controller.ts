@@ -63,7 +63,7 @@ export class OperatorsController {
     @Session() session: UserSession,
   ) {
     return {
-      data: await this.service.create(dto, session.user.id),
+      data: await this.service.create(dto, session.user.id, session),
       message: 'Operador creado',
     };
   }
@@ -73,11 +73,12 @@ export class OperatorsController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateOperatorDto,
+    @Session() session: UserSession,
     @ExpectedFields() expected?: ExpectedValues,
   ) {
     assertNonEmptyId(id);
     return {
-      data: await this.service.update(id, dto, expected),
+      data: await this.service.update(id, dto, expected, session),
       message: 'Operador actualizado',
     };
   }
