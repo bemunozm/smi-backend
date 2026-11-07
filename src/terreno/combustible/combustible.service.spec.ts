@@ -62,7 +62,7 @@ describe('CombustibleService', () => {
     // El create corre dentro de una transacción (carga + contador): el doble
     // la ejecuta sobre el mismo mock, propagando lo que la callback lance.
     prisma.$transaction.mockImplementation(
-      async (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+      (fn: (tx: typeof prisma) => unknown) => fn(prisma),
     );
     prisma.registroCombustible.create.mockImplementation(
       ({ data }: { data: Record<string, unknown> }) => data,
