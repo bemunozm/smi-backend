@@ -8,10 +8,32 @@ import { CombustibleService } from './combustible.service';
 
 const USER_ID = 'user_1234567890123456789';
 
+/** Include + omit que TODOS los read paths comparten (Terreno + vista admin). */
+const INCLUDE_ESPERADO = {
+  equipo: {
+    select: {
+      internalCode: true,
+      type: true,
+      equipmentClass: true,
+      controlUnit: true,
+    },
+  },
+  registroHorometro: {
+    select: {
+      closedByName: true,
+      closedById: true,
+      supervisorId: true,
+      valorFinal: true,
+    },
+  },
+};
+
 describe('CombustibleService', () => {
   let service: CombustibleService;
   const prisma = {
-    equipment: { findUnique: jest.fn() },
+    $transaction: jest.fn(),
+    equipment: { findUnique: jest.fn(), updateMany: jest.fn() },
+    user: { findMany: jest.fn() },
     registroCombustible: {
       create: jest.fn(),
       update: jest.fn(),
@@ -36,6 +58,12 @@ describe('CombustibleService', () => {
     }).compile();
     service = mod.get(CombustibleService);
     jest.clearAllMocks();
+    prisma.user.findMany.mockResolvedValue([]);
+    // El create corre dentro de una transacción (carga + contador): el doble
+    // la ejecuta sobre el mismo mock, propagando lo que la callback lance.
+    prisma.$transaction.mockImplementation(
+      (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+    );
     prisma.registroCombustible.create.mockImplementation(
       ({ data }: { data: Record<string, unknown> }) => data,
     );
@@ -290,7 +318,7 @@ describe('CombustibleService', () => {
   });
 
   describe('findAll/findOne/update — shape', () => {
-    it('findAll mantiene el include equipo.internalCode que usa la vista de Terreno', async () => {
+    it('findAll pide el include de Terreno + vista admin (equipo con clase, tarjeta) y lee createdById', async () => {
       prisma.registroCombustible.findMany.mockResolvedValue([
         {
           id: 'c1',
@@ -308,7 +336,8 @@ describe('CombustibleService', () => {
 
       expect(prisma.registroCombustible.findMany).toHaveBeenCalledWith({
         orderBy: { fecha: 'desc' },
-        include: { equipo: { select: { internalCode: true } } },
+        include: INCLUDE_ESPERADO,
+        omit: { createdById: false },
       });
       expect(res).toMatchObject({ equipo: { internalCode: 'EX-001' } });
       expect(res).not.toHaveProperty('fotoKey');
@@ -348,12 +377,263 @@ describe('CombustibleService', () => {
       expect(prisma.registroCombustible.update).toHaveBeenCalledWith({
         where: { id: 'c1' },
         data: {},
+        include: INCLUDE_ESPERADO,
+        omit: { createdById: false },
       });
       // El registro YA tenía fotoUrl legacy antes de este update (dato
       // histórico) — se sigue devolviendo tal cual, aunque el DTO de update
       // no tenga forma de escribirlo.
       expect(res.fotoUrl).toBe('/uploads/legacy.jpg');
       expect(res).not.toHaveProperty('fotoKey');
+    });
+  });
+
+  describe('lectura al cargar — contador del equipo', () => {
+    const equipoPesado = {
+      id: 'e1',
+      controlUnit: 'HOURS',
+      currentHourmeter: 1000,
+      currentMileage: null,
+    };
+
+    it('create con lectura la persiste y adelanta el contador del equipo', async () => {
+      prisma.equipment.findUnique.mockResolvedValue(equipoPesado);
+
+      await service.create(
+        { equipoId: 'e1', litros: 20, tipo: 'PETROLEO', lectura: 1200 },
+        USER_ID,
+      );
+
+      const [{ data }] = prisma.registroCombustible.create.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({ lectura: 1200 });
+      expect(prisma.equipment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'e1',
+          OR: [{ currentHourmeter: null }, { currentHourmeter: { lt: 1200 } }],
+        },
+        data: { currentHourmeter: 1200 },
+      });
+    });
+
+    it('una lectura menor que el contador vigente (carga histórica) NO rechaza ni lo mueve', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        ...equipoPesado,
+        currentHourmeter: 2000,
+      });
+
+      const res = await service.create(
+        { equipoId: 'e1', litros: 20, tipo: 'PETROLEO', lectura: 1200 },
+        USER_ID,
+      );
+
+      // La carga igual guarda SU lectura (el dato histórico vale).
+      expect(res.lectura).toBe(1200);
+      expect(prisma.equipment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('sin lectura, el create no toca el contador', async () => {
+      prisma.equipment.findUnique.mockResolvedValue(equipoPesado);
+
+      await service.create(
+        { equipoId: 'e1', litros: 20, tipo: 'PETROLEO' },
+        USER_ID,
+      );
+
+      expect(prisma.equipment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('en un liviano (KM) la lectura adelanta el kilometraje', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        id: 'e2',
+        controlUnit: 'KM',
+        currentHourmeter: null,
+        currentMileage: 40000,
+      });
+
+      await service.create(
+        { equipoId: 'e2', litros: 35, tipo: 'BENCINA', lectura: 45210 },
+        USER_ID,
+      );
+
+      expect(prisma.equipment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'e2',
+          OR: [{ currentMileage: null }, { currentMileage: { lt: 45210 } }],
+        },
+        data: { currentMileage: 45210 },
+      });
+    });
+  });
+
+  describe('realizadoPor y origen — vista admin', () => {
+    const base = {
+      id: 'c1',
+      equipoId: 'e1',
+      litros: 20,
+      tipo: 'PETROLEO',
+      fotoUrl: null,
+      fotoKey: null,
+      fecha: new Date(),
+      createdById: null,
+      registroHorometroId: null,
+      registroHorometro: null,
+      equipo: {
+        internalCode: 'EX-001',
+        type: 'Excavadora',
+        equipmentClass: 'HEAVY',
+      },
+    };
+
+    it('carga de tarjeta usa closedByName y origen TARJETA', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        {
+          ...base,
+          registroHorometroId: 'h1',
+          registroHorometro: {
+            closedByName: 'Juan Pérez',
+            closedById: 'u-cerro',
+            supervisorId: 'u-abrio',
+          },
+        },
+      ]);
+
+      const [res] = await service.findAll();
+
+      expect(res.realizadoPor).toBe('Juan Pérez');
+      expect(res.origen).toBe('TARJETA');
+    });
+
+    it('sin closedByName cae al nombre del supervisor que abrió la tarjeta', async () => {
+      prisma.user.findMany.mockResolvedValue([
+        { id: 'u-abrio', name: 'Pedro Soto' },
+      ]);
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        {
+          ...base,
+          registroHorometroId: 'h1',
+          registroHorometro: {
+            closedByName: null,
+            closedById: null,
+            supervisorId: 'u-abrio',
+          },
+        },
+      ]);
+
+      const [res] = await service.findAll();
+
+      expect(res.realizadoPor).toBe('Pedro Soto');
+      expect(res.origen).toBe('TARJETA');
+    });
+
+    it('carga manual usa el nombre del creador y origen MANUAL', async () => {
+      prisma.user.findMany.mockResolvedValue([
+        { id: USER_ID, name: 'Admin SMI' },
+      ]);
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        { ...base, createdById: USER_ID },
+      ]);
+
+      const [res] = await service.findAll();
+
+      expect(res.realizadoPor).toBe('Admin SMI');
+      expect(res.origen).toBe('MANUAL');
+    });
+
+    it('fila vieja sin tarjeta ni createdById queda con realizadoPor null', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([{ ...base }]);
+
+      const [res] = await service.findAll();
+
+      expect(res.realizadoPor).toBeNull();
+      expect(res.origen).toBe('MANUAL');
+    });
+
+    it('no expone createdById, fotoKey ni la relación registroHorometro', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        {
+          ...base,
+          createdById: USER_ID,
+          registroHorometroId: 'h1',
+          registroHorometro: {
+            closedByName: 'Juan Pérez',
+            closedById: 'u-cerro',
+            supervisorId: 'u-abrio',
+          },
+        },
+      ]);
+
+      const [res] = await service.findAll();
+
+      expect(res).not.toHaveProperty('createdById');
+      expect(res).not.toHaveProperty('fotoKey');
+      expect(res).not.toHaveProperty('registroHorometro');
+    });
+
+    it('carga de tarjeta: la lectura es el valorFinal de la tarjeta', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        {
+          ...base,
+          lectura: null,
+          registroHorometroId: 'h1',
+          registroHorometro: {
+            closedByName: 'Juan Pérez',
+            closedById: null,
+            supervisorId: null,
+            valorFinal: 1534.5,
+          },
+        },
+      ]);
+
+      const [res] = await service.findAll();
+
+      expect(res.lectura).toBe(1534.5);
+    });
+
+    it('carga manual: la lectura es la propia de la carga', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        { ...base, lectura: 12850 },
+      ]);
+
+      const [res] = await service.findAll();
+
+      expect(res.lectura).toBe(12850);
+    });
+
+    it('fila vieja sin lectura ni tarjeta queda con lectura null', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([{ ...base }]);
+
+      const [res] = await service.findAll();
+
+      expect(res.lectura).toBeNull();
+    });
+
+    it('create, findOne y update devuelven el mismo shape enriquecido', async () => {
+      const fila = { ...base, createdById: USER_ID };
+      prisma.user.findMany.mockResolvedValue([
+        { id: USER_ID, name: 'Admin SMI' },
+      ]);
+      prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+      prisma.registroCombustible.create.mockResolvedValue(fila);
+      prisma.registroCombustible.findUnique.mockResolvedValue(fila);
+      prisma.registroCombustible.update.mockResolvedValue(fila);
+
+      const creado = await service.create(
+        { equipoId: 'e1', litros: 20, tipo: 'PETROLEO' },
+        USER_ID,
+      );
+      const leido = await service.findOne('c1');
+      const actualizado = await service.update('c1', {});
+
+      for (const res of [creado, leido, actualizado]) {
+        expect(res).toMatchObject({
+          realizadoPor: 'Admin SMI',
+          origen: 'MANUAL',
+          equipo: { internalCode: 'EX-001', equipmentClass: 'HEAVY' },
+        });
+        expect(res).not.toHaveProperty('createdById');
+      }
     });
   });
 });

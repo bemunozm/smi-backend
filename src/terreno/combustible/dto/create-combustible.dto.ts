@@ -51,4 +51,12 @@ export class CreateCombustibleDto {
   @IsOptional()
   @IsDateString()
   fecha?: string;
+
+  /** Lectura del contador del equipo al cargar: horómetro (h) en pesados,
+   * kilometraje (km) en livianos — ver el comentario de la columna en el
+   * schema. Opcional: Terreno no la manda (su lectura vive en la tarjeta). */
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  lectura?: number;
 }
