@@ -651,6 +651,17 @@ model RegistroCombustible {
   fotoKey  String?
   fecha    DateTime  @default(now())
 
+  /// Lectura del contador del equipo AL CARGAR, según su `controlUnit`:
+  /// horómetro (h) en pesados, kilometraje (km) en livianos. La llena el alta
+  /// manual del panel (pesado → horómetro, liviano → km, pedido del cliente);
+  /// las cargas nacidas de cierre de tarjeta la dejan null porque su lectura
+  /// ES el `valorFinal` de la tarjeta vinculada — la API resuelve `lectura`
+  /// con ese fallback. El create con lectura además adelanta
+  /// `Equipment.currentHourmeter/currentMileage` vía
+  /// `reconcileEquipmentCounter` en modo 'warn' (una carga histórica puede
+  /// venir por detrás del contador vigente: se guarda igual y NO lo retrocede).
+  lectura Float?
+
   /// Vínculo 1:1 opcional con la tarjeta de turno que originó esta carga:
   /// al cerrar una tarjeta con
   /// `fuelLiters > 0`, el cierre crea ACÁ la carga con la misma `pumpPhotoKey`

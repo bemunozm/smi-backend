@@ -22,7 +22,9 @@ export class CombustibleController {
   }
 
   @Post()
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  // SECRETARIA registra la carga que un supervisor olvidó — mismo criterio
+  // que el POST de trabajos-extra y hallazgos.
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async create(
     @Body() dto: CreateCombustibleDto,
     @Session() session: UserSession,
