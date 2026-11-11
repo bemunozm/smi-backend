@@ -34,7 +34,7 @@ describe('UpdateShiftCardDto', () => {
     ['valorFinal sobre el tope', { valorFinal: 1_000_001 }],
     ['valorFinal null', { valorFinal: null }],
     ['valorInicial NaN', { valorInicial: NaN }],
-    ['fuelLiters sobre 10 000', { fuelLiters: 10_001 }],
+    ['fuelLiters sobre 100 000', { fuelLiters: 100_001 }],
     ['fuelLiters null', { fuelLiters: null }],
     ['adBlue no booleano', { adBlue: 'si' }],
     ['adBlue null', { adBlue: null }],
@@ -48,6 +48,10 @@ describe('UpdateShiftCardDto', () => {
     ['un campo que no se edita', { equipoId: 'e1' }],
   ])('rechaza %s', async (_name, body) => {
     expect(await errorsFor(body)).not.toHaveLength(0);
+  });
+
+  it.each([[10_001], [100_000]])('acepta fuelLiters %i', async (liters) => {
+    expect(await errorsFor({ fuelLiters: liters })).toHaveLength(0);
   });
 
   it('admite null para limpiar litros de AdBlue y observaciones', async () => {

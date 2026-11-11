@@ -19,6 +19,7 @@ import { SHIFT_TYPES, type ShiftType } from '../shift-type';
 import { normalizeObservaciones } from '../../common/normalize-observaciones';
 import { TMP_KEY_REGEX } from '../../storage/storage-keys';
 import { IsAdBlueLitersConsistent } from '../adblue';
+import { FUEL_LITERS_MAX, FUEL_LITERS_MAX_MESSAGE } from '../fuel';
 
 export class CloseShiftCardDto {
   /** UUID v4 generado por el CLIENTE en ESTE intento de cierre — la clave de
@@ -34,15 +35,12 @@ export class CloseShiftCardDto {
   valorFinal!: number;
 
   /** Litros cargados al cierre — obligatorio (la spec lo pide así), 0
-   * permitido (equipo que no cargó combustible en este turno). Tope 10 000 L:
-   * los camiones de extracción minera más grandes cargan varios miles de
-   * litros, pero no cientos de miles. */
+   * permitido (equipo que no cargó combustible en este turno). Tope
+   * `FUEL_LITERS_MAX`: una carga real puede pasar de 10 000 L, pero un valor
+   * mayor suele ser un kilometraje u horómetro tipeado en el campo equivocado. */
   @IsNumber()
   @Min(0, { message: 'Los litros no pueden ser negativos.' })
-  @Max(10_000, {
-    message:
-      'Los litros no pueden superar 10.000 L: revisa que no sea el kilometraje u horómetro.',
-  })
+  @Max(FUEL_LITERS_MAX, { message: FUEL_LITERS_MAX_MESSAGE })
   fuelLiters!: number;
 
   /** AdBlue cargado en el turno (el cliente exige registrarlo al cerrar). Opcional: un cierre
