@@ -13,6 +13,7 @@ import {
 
 import { normalizeObservaciones } from '../../common/normalize-observaciones';
 import { ADBLUE_MAX_LITERS } from '../adblue';
+import { FUEL_LITERS_MAX, FUEL_LITERS_MAX_MESSAGE } from '../fuel';
 
 /** Los campos que un `null` explícito no puede tocar: solo `undefined` los omite. */
 const isPresent = (_: unknown, value: unknown): boolean => value !== undefined;
@@ -46,10 +47,7 @@ export class UpdateShiftCardDto {
   @ValidateIf(isPresent)
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0, { message: 'Los litros no pueden ser negativos.' })
-  @Max(10_000, {
-    message:
-      'Los litros no pueden superar 10.000 L: revisa que no sea el kilometraje u horómetro.',
-  })
+  @Max(FUEL_LITERS_MAX, { message: FUEL_LITERS_MAX_MESSAGE })
   fuelLiters?: number;
 
   @ValidateIf(isPresent)

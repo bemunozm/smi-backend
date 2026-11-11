@@ -64,20 +64,30 @@ describe('CloseShiftCardDto', () => {
       expect(await validate(dto)).toHaveLength(0);
     });
 
-    it('acepta el máximo (10_000)', async () => {
-      const dto = plainToInstance(
-        CloseShiftCardDto,
-        base({ fuelLiters: 10_000 }),
-      );
-      expect(await validate(dto)).toHaveLength(0);
-    });
-
-    it('rechaza por encima del máximo', async () => {
+    it('acepta una carga sobre 10_000 L', async () => {
       const dto = plainToInstance(
         CloseShiftCardDto,
         base({ fuelLiters: 10_001 }),
       );
-      expect(await validate(dto)).not.toHaveLength(0);
+      expect(await validate(dto)).toHaveLength(0);
+    });
+
+    it('acepta el máximo (100_000)', async () => {
+      const dto = plainToInstance(
+        CloseShiftCardDto,
+        base({ fuelLiters: 100_000 }),
+      );
+      expect(await validate(dto)).toHaveLength(0);
+    });
+
+    it('rechaza por encima del máximo (100_001)', async () => {
+      const dto = plainToInstance(
+        CloseShiftCardDto,
+        base({ fuelLiters: 100_001 }),
+      );
+      const errors = await validate(dto);
+      expect(errors).not.toHaveLength(0);
+      expect(JSON.stringify(errors)).toContain('100.000 L');
     });
   });
 
