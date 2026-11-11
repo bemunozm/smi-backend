@@ -49,7 +49,10 @@ import {
   DEFAULT_DEV_STORAGE_SECRET_ACCESS_KEY,
 } from '../src/common/config/env';
 import { DOMAIN_EVENTS } from '../src/common/events/domain-events';
-import { todayInBusinessTimeZone } from '../src/common/dates/business-time';
+import {
+  businessDayKey,
+  todayInBusinessTimeZone,
+} from '../src/common/dates/business-time';
 import { ApiEnvelope, ErrorEnvelope } from './helpers/api-envelope';
 import { bootstrapApp } from './helpers/bootstrap-app';
 import {
@@ -872,6 +875,133 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
         .expect(200);
       const cardsB = (asB.body as ApiEnvelope<ShiftCardData[]>).data;
       expect(cardsB.some((card) => card.id === flow2CardId)).toBe(false);
+    });
+  });
+
+  describe('7b) Turno pasado — apertura + cierre con combustible', () => {
+    const yesterday = todayInBusinessTimeZone(
+      new Date(Date.now() - 24 * 60 * 60 * 1000),
+    );
+
+    async function openPastCard(label: string, valorInicial: number) {
+      const equipoResponse = await adminAgent
+        .post('/api/equipment')
+        .send(baseEquipmentPayload(internalCode(label)))
+        .expect(201);
+      const equipo = (equipoResponse.body as ApiEnvelope<EquipmentData>).data;
+      createdEquipmentIds.push(equipo.id);
+
+      const cardId = randomUUID();
+      const openResponse = await supervisorAgent
+        .post('/api/shift-cards')
+        .send({
+          id: cardId,
+          equipoId: equipo.id,
+          operatorId,
+          valorInicial,
+          shiftDate: yesterday,
+          shiftType: 'DIURNO',
+          capturedAt: new Date().toISOString(),
+        })
+        .expect(201);
+      const opened = (openResponse.body as ApiEnvelope<ShiftCardData>).data;
+      if (opened.shift) createdShiftIds.add(opened.shift.id);
+      return { equipo, cardId };
+    }
+
+    it('con litros > 0: la tarjeta queda cerrada, libera el equipo y crea la carga fechada en el día histórico', async () => {
+      const { equipo, cardId } = await openPastCard('PASTFUEL', 200);
+
+      const upload = await uploadViaApi(
+        supervisorAgent,
+        MINIMAL_JPEG,
+        'surtidor.jpg',
+      );
+      const closeResponse = await supervisorAgent
+        .post(`/api/shift-cards/${cardId}/close`)
+        .send({
+          closeClientId: randomUUID(),
+          valorFinal: 212.5,
+          fuelLiters: 60,
+          tmpPhotoKey: upload.key,
+          capturedAt: new Date().toISOString(),
+        })
+        .expect(200);
+      const card = (closeResponse.body as ApiEnvelope<ShiftCardData>).data;
+      expect(card.valorFinal).toBe(212.5);
+      expect(card.closedAt).not.toBeNull();
+      expect(card.horasMaquina).toBe(12.5);
+      expect(card.fuelLiters).toBe(60);
+
+      const raw = await prisma.registroHorometro.findUniqueOrThrow({
+        where: { id: cardId },
+        select: {
+          valorFinal: true,
+          closedAt: true,
+          fecha: true,
+          fechaSalida: true,
+          pumpPhotoKey: true,
+        },
+      });
+      expect(raw.valorFinal).toBe(212.5);
+      expect(raw.closedAt).not.toBeNull();
+      expect(businessDayKey(raw.fecha as Date)).toBe(yesterday);
+      expect(businessDayKey(raw.fechaSalida as Date)).toBe(yesterday);
+
+      const fuel = await prisma.registroCombustible.findMany({
+        where: { registroHorometroId: cardId },
+      });
+      expect(fuel).toHaveLength(1);
+      expect(fuel[0].equipoId).toBe(equipo.id);
+      expect(fuel[0].litros).toBe(60);
+      expect(fuel[0].fotoKey).toBe(raw.pumpPhotoKey);
+      expect(fuel[0].fotoKey).toBeTruthy();
+      expect(businessDayKey(fuel[0].fecha)).toBe(yesterday);
+      expect(businessDayKey(fuel[0].fecha)).not.toBe(todayShiftDate);
+
+      // Ya no queda turno abierto: abrir hoy el mismo equipo no da 409.
+      const reopen = await supervisorAgent
+        .post('/api/shift-cards')
+        .send({
+          id: randomUUID(),
+          equipoId: equipo.id,
+          operatorId,
+          valorInicial: 212.5,
+          shiftDate: todayShiftDate,
+          shiftType: 'DIURNO',
+          capturedAt: new Date().toISOString(),
+        })
+        .expect(201);
+      const reopened = (reopen.body as ApiEnvelope<ShiftCardData>).data;
+      if (reopened.shift) createdShiftIds.add(reopened.shift.id);
+    });
+
+    it('con 0 litros: la tarjeta queda cerrada y NO se crea registro de combustible', async () => {
+      const { cardId } = await openPastCard('PASTZERO', 300);
+
+      const upload = await uploadViaApi(
+        supervisorAgent,
+        MINIMAL_JPEG,
+        'surtidor.jpg',
+      );
+      const closeResponse = await supervisorAgent
+        .post(`/api/shift-cards/${cardId}/close`)
+        .send({
+          closeClientId: randomUUID(),
+          valorFinal: 308,
+          fuelLiters: 0,
+          tmpPhotoKey: upload.key,
+          capturedAt: new Date().toISOString(),
+        })
+        .expect(200);
+      const card = (closeResponse.body as ApiEnvelope<ShiftCardData>).data;
+      expect(card.valorFinal).toBe(308);
+      expect(card.closedAt).not.toBeNull();
+
+      const fuelCount = await prisma.registroCombustible.count({
+        where: { registroHorometroId: cardId },
+      });
+      expect(fuelCount).toBe(0);
     });
   });
 
