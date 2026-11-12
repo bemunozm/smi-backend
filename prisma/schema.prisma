@@ -155,6 +155,10 @@ model ChangeLog {
   /// Qué tipo de registro se editó: `trabajo_extra`.
   entity    String
   entityId  String   @map("entity_id")
+  /// `UPDATE` (corrección de un registro que sigue existiendo) o `DELETE`
+  /// (eliminación definitiva: `changes` guarda el resumen de lo borrado, con
+  /// `after` en «—»). String y no enum, mismo criterio que `entity`.
+  action    String   @default("UPDATE")
   userId    String   @map("user_id")
   userName  String   @map("user_name")
   /// `[{ field, label, before, after }]`, con los valores ya legibles.

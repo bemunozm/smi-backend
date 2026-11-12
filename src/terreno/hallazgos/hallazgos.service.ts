@@ -406,16 +406,63 @@ export class HallazgosService {
    * bucket se suelta best-effort DESPUÉS de borrar la fila (si el borrado
    * falla, la foto sigue donde debe). Las OT/actividades que lo referencian
    * son soft refs (`hallazgoId` sin FK) y conservan su valor; el historial de
-   * cambios (`ChangeLog`) también se conserva como traza.
+   * cambios (`ChangeLog`) también se conserva como traza, y el borrado deja
+   * su PROPIA fila ahí (action `DELETE`, con el resumen de lo borrado): sin
+   * ella, un registro eliminado desaparecía sin rastro de quién lo sacó — es
+   * lo que el registro de actividad del administrador muestra.
    */
-  async remove(id: string) {
+  async remove(id: string, editor: Editor) {
     const registro = await this.prisma.hallazgo.findUnique({
       where: { id },
-      select: { fotoKey: true },
+      select: {
+        fotoKey: true,
+        tipo: true,
+        faena: true,
+        lugar: true,
+        descripcion: true,
+        prioridad: true,
+        estado: true,
+        fecha: true,
+        equipo: { select: { internalCode: true } },
+      },
     });
     if (!registro) throw new NotFoundException('Hallazgo no encontrado');
 
-    await this.prisma.hallazgo.delete({ where: { id } });
+    // Qué decía el hallazgo al borrarlo, ya legible — el `before` del
+    // historial. `after` queda en «—»: después del borrado no hay registro.
+    const borrado = (label: string, before: string) => ({
+      field: label.toLowerCase(),
+      label,
+      before,
+      after: '—',
+    });
+    const resumen = [
+      borrado(
+        registro.tipo === 'ZONA' ? 'Zona' : 'Equipo',
+        registro.tipo === 'ZONA'
+          ? nombreZona(registro.faena, registro.lugar)
+          : (registro.equipo?.internalCode ?? '—'),
+      ),
+      borrado('Descripción', registro.descripcion),
+      borrado(
+        'Prioridad',
+        PRIORIDAD_LABEL[registro.prioridad] ?? registro.prioridad,
+      ),
+      borrado('Estado', ESTADO_LABEL[registro.estado] ?? registro.estado),
+      borrado('Fecha', formatBusinessDate(registro.fecha)),
+    ];
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.changeLog.record(
+        tx,
+        'hallazgo',
+        id,
+        editor,
+        resumen,
+        'DELETE',
+      );
+      await tx.hallazgo.delete({ where: { id } });
+    });
 
     if (registro.fotoKey) {
       await this.storage.deleteBestEffort(registro.fotoKey);

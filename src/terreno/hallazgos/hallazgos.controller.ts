@@ -73,11 +73,12 @@ export class HallazgosController {
   }
 
   /** Eliminación definitiva — solo el administrador, desde su vista de
-   * hallazgos. Los supervisores corrigen con PATCH, nunca borran. */
+   * hallazgos. Los supervisores corrigen con PATCH, nunca borran. Quién
+   * borra sale de la sesión: es la firma del borrado en el historial. */
   @Delete(':id')
   @Roles([ROLES.ADMIN])
-  async remove(@Param('id') id: string) {
-    await this.service.remove(id);
+  async remove(@Param('id') id: string, @CurrentEditor() editor: Editor) {
+    await this.service.remove(id, editor);
     return { data: null, message: 'Hallazgo eliminado' };
   }
 }
