@@ -210,7 +210,12 @@ export interface ShiftWithCardsResponse {
   cards: ShiftCardSummaryResponse[];
   /** Reportes de salida ya enviados del turno — la carga histórica avisa con
    * esto que el turno elegido ya fue reportado. */
-  exitReports: { id: string; requestedAt: Date; cardCount: number }[];
+  exitReports: {
+    id: string;
+    requestedAt: Date;
+    cardCount: number;
+    emailStatus: string;
+  }[];
 }
 
 function round2(value: number): number {
@@ -1372,7 +1377,14 @@ export class ShiftsService {
         // tiene su reporte de salida enviado (campo aditivo — el Módulo B
         // ignora claves extra).
         exitReports: {
-          select: { id: true, requestedAt: true, cardCount: true },
+          select: {
+            id: true,
+            requestedAt: true,
+            cardCount: true,
+            // `emailStatus` para que el modo pasado pueda mostrar el MISMO
+            // panel de reporte del flujo vivo (línea de estado del correo).
+            emailStatus: true,
+          },
         },
       },
     });
