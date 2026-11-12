@@ -1,7 +1,13 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import type { Prisma } from '@prisma/client';
 
+import { ERROR_CODES } from '../../common/errors/error-codes';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
@@ -203,13 +209,69 @@ export class CombustibleService {
     return this.shapeSolo(reg);
   }
 
+  /**
+   * Corrección de una carga MANUAL desde el panel (solo ADMIN en el
+   * controller). Una carga nacida de un cierre de tarjeta se corrige editando
+   * la TARJETA (`PATCH /shift-cards/:id` sincroniza `litros` vía
+   * `syncFuelRecord` y deja historial) — editarla por acá las haría divergir,
+   * por eso se rechaza. Una `lectura` nueva reconcilia el contador del equipo
+   * en modo `warn`, igual que el alta: solo avanza, nunca retrocede.
+   */
   async update(id: string, dto: UpdateCombustibleDto) {
+    if (
+      dto.litros === undefined &&
+      dto.tipo === undefined &&
+      dto.fecha === undefined &&
+      dto.lectura === undefined
+    ) {
+      throw new BadRequestException(
+        'Indica al menos un dato a corregir de la carga',
+      );
+    }
+
+    const previa = await this.prisma.registroCombustible.findUnique({
+      where: { id },
+      select: { equipoId: true, registroHorometroId: true },
+    });
+    if (!previa) throw new NotFoundException('Registro no encontrado');
+    if (previa.registroHorometroId) {
+      throw new ConflictException({
+        message:
+          'Esta carga nació del cierre de una tarjeta de turno: corrígela editando esa tarjeta.',
+        code: ERROR_CODES.FUEL_LOAD_FROM_CARD,
+      });
+    }
+
     const registro = await this.prisma.registroCombustible.update({
       where: { id },
-      data: dto,
+      data: {
+        ...(dto.litros !== undefined ? { litros: dto.litros } : {}),
+        ...(dto.tipo !== undefined ? { tipo: dto.tipo } : {}),
+        ...(dto.fecha !== undefined ? { fecha: new Date(dto.fecha) } : {}),
+        ...(dto.lectura !== undefined ? { lectura: dto.lectura } : {}),
+      },
       include: COMBUSTIBLE_INCLUDE,
       omit: { createdById: false },
     });
+
+    if (dto.lectura !== undefined) {
+      const equipo = await this.prisma.equipment.findUnique({
+        where: { id: previa.equipoId },
+        select: { controlUnit: true, currentHourmeter: true, currentMileage: true },
+      });
+      if (equipo) {
+        // `warn`: la lectura corregida hacia abajo no retrocede el contador
+        // (si quedó inflado por el typo, se corrige en la ficha del equipo).
+        await reconcileEquipmentCounter(
+          this.prisma,
+          previa.equipoId,
+          equipo,
+          dto.lectura,
+          'warn',
+        );
+      }
+    }
+
     return this.shapeSolo(registro);
   }
 

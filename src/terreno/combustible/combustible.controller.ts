@@ -35,8 +35,10 @@ export class CombustibleController {
     };
   }
 
+  // Corrección de datos registrados: un acto de administración, no de
+  // operación — por eso más angosto que el resto del controller.
   @Patch(':id')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.ADMIN])
   async update(@Param('id') id: string, @Body() dto: UpdateCombustibleDto) {
     return {
       data: await this.service.update(id, dto),
