@@ -83,7 +83,7 @@ export class UpdateItemDto {
   @IsOptional()
   @ValidateIf((dto: UpdateItemDto) => dto.contentUnit !== null)
   @IsIn(CONTENT_UNITS, {
-    message: 'El contenido se mide en litros, kilos o metros.',
+    message: 'El contenido se mide en litros, kilos, metros o unidades.',
   })
   contentUnit?: UnitOfMeasure | null;
 
