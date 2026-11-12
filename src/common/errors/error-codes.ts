@@ -35,6 +35,9 @@ export const ERROR_CODES = {
   INSUFFICIENT_STOCK: 'INSUFFICIENT_STOCK',
   /** El checklist diario del equipo está por validar o rechazado (Módulo 3). */
   CHECKLIST_NOT_ACCEPTED: 'CHECKLIST_NOT_ACCEPTED',
+  /** `POST /shift-cards/closed` con un turno que aún no termina — el flujo
+   * vivo se registra abriendo y cerrando la tarjeta, nunca por backfill. */
+  SHIFT_NOT_FINISHED: 'SHIFT_NOT_FINISHED',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

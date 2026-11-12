@@ -72,6 +72,7 @@ import {
 } from './date-only';
 import { adBlueError } from './adblue';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
+import { RegisterClosedShiftCardDto } from './dto/register-closed-shift-card.dto';
 import { UpdateShiftCardDto } from './dto/update-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { QueryShiftDto } from './dto/query-shift.dto';
@@ -762,6 +763,241 @@ export class ShiftsService {
     }
 
     return this.shapeCard(closed!);
+  }
+
+  /**
+   * `POST /api/shift-cards/closed` — registro histórico de un turno YA
+   * TERMINADO: la tarjeta nace CERRADA (apertura + cierre + combustible en
+   * una sola transacción). Al no existir nunca una fila con `valorFinal:
+   * null`, el backfill no pisa el índice parcial de tarjeta abierta ni choca
+   * con una tarjeta abierta HOY del mismo equipo — el presente no interfiere
+   * en el pasado ni al revés. Por lo mismo acá NO hay chequeo de
+   * `EQUIPMENT_BUSY` ni de equipo operativo (misma relajación que la
+   * apertura con `pastShift`); el checklist del día sí sigue siendo
+   * requisito. Idempotente por `dto.id` (replay devuelve la existente sin
+   * reclamar la foto de nuevo) y por `closeClientId` (`@unique`).
+   */
+  async registerClosedCard(
+    dto: RegisterClosedShiftCardDto,
+    session: UserSession,
+    clientTimeHeader?: string,
+  ): Promise<ShiftCardResponse> {
+    const now = new Date();
+    assertShiftDateWithinWindow(dto.shiftDate, now);
+    if (!isPastShift(dto.shiftDate, dto.shiftType, now)) {
+      throw new BadRequestException({
+        message:
+          'El turno aún no termina: regístralo abriendo y cerrando la tarjeta.',
+        code: ERROR_CODES.SHIFT_NOT_FINISHED,
+      });
+    }
+    // `fecha` es SIEMPRE el instante sintético del día histórico — la hora
+    // del dispositivo solo se audita como desfase, igual que en la apertura.
+    const { discardedSkewMs } = resolveCapturedAt(dto.capturedAt, now);
+    const clientClockSkewMs =
+      computeClientClockSkewMs(clientTimeHeader, now) ?? discardedSkewMs;
+
+    if (dto.valorFinal < dto.valorInicial) {
+      throw new BadRequestException({
+        message: `La lectura final (${formatNumber(dto.valorFinal)}) no puede ser menor que la inicial (${formatNumber(dto.valorInicial)})`,
+        code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
+      });
+    }
+
+    const operator = dto.operatorId
+      ? await this.operators.assertActive(dto.operatorId)
+      : null;
+
+    const equipoPrecheck = await this.prisma.equipment.findUnique({
+      where: { id: dto.equipoId },
+      select: { equipmentClass: true },
+    });
+    if (!equipoPrecheck) throw new NotFoundException('Equipo no encontrado');
+    if (
+      (sessionHasRole(session.user.role, ROLES.MANTENEDOR) ||
+        sessionHasRole(session.user.role, ROLES.PREVENCIONISTA)) &&
+      equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT
+    ) {
+      throw new ForbiddenException(
+        'Solo puedes registrar el uso de vehículos livianos.',
+      );
+    }
+    if (!operator && equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT) {
+      throw new BadRequestException('Elige el operador del equipo.');
+    }
+    await assertChecklistNotPending(
+      this.prisma,
+      dto.equipoId,
+      parseDateOnlyUtc(dto.shiftDate),
+    );
+
+    const supervisorId = session.user.id;
+
+    // Replay ANTES de reclamar la foto (mismo criterio que el cierre): un
+    // reintento cuyo registro ya está aplicado no reclama la key de nuevo.
+    const previa = await this.prisma.registroHorometro.findUnique({
+      where: { id: dto.id },
+      include: SHIFT_CARD_INCLUDE,
+    });
+    if (previa) {
+      if (
+        previa.supervisorId === supervisorId &&
+        previa.equipoId === dto.equipoId
+      ) {
+        return this.shapeCard(previa);
+      }
+      throw new ConflictException({
+        message:
+          'Ya existe una tarjeta con ese id para otro equipo o supervisor',
+        code: ERROR_CODES.ID_CONFLICT,
+      });
+    }
+
+    const shift = await this.upsertShift(
+      supervisorId,
+      dto.shiftDate,
+      dto.shiftType,
+    );
+    const historicalInstant = businessDayInstant(
+      dto.shiftDate,
+      dto.shiftType === 'NOCTURNO' ? '20:30' : '12:00',
+    );
+
+    const pumpPhotoKey = await this.storage.claimTmp(
+      dto.tmpPhotoKey,
+      session.user.id,
+      'fuel-photo',
+    );
+
+    let created: ShiftCardRecord | null;
+    try {
+      created = await this.prisma.$transaction(async (tx) => {
+        const equipo = await tx.equipment.findUnique({
+          where: { id: dto.equipoId },
+          select: {
+            equipmentClass: true,
+            controlUnit: true,
+            currentHourmeter: true,
+            currentMileage: true,
+          },
+        });
+        if (!equipo) throw new NotFoundException('Equipo no encontrado');
+        await assertChecklistNotPending(
+          tx,
+          dto.equipoId,
+          parseDateOnlyUtc(dto.shiftDate),
+        );
+
+        // `belowPreviousReading` espeja el flujo de dos pasos: la INICIAL se
+        // compara contra el contador vigente ANTES de reconciliar, y la
+        // FINAL reconcilia en modo `'warn'` (una lectura histórica menor se
+        // audita, nunca mueve el contador hacia atrás — ver el comentario
+        // del cierre sobre por qué acá jamás va `'reject'`).
+        const vigente =
+          equipo.controlUnit === ControlUnit.HOURS
+            ? equipo.currentHourmeter
+            : equipo.currentMileage;
+        const initialBelow = vigente != null && dto.valorInicial < vigente;
+        const { belowPrevious } = await reconcileEquipmentCounter(
+          tx,
+          dto.equipoId,
+          equipo,
+          dto.valorFinal,
+          'warn',
+        );
+
+        const esLiviano = equipo.equipmentClass === EquipmentClass.LIGHT;
+
+        try {
+          const card = await tx.registroHorometro.create({
+            data: {
+              id: dto.id,
+              equipoId: dto.equipoId,
+              valorInicial: dto.valorInicial,
+              valorFinal: dto.valorFinal,
+              turno: dto.shiftType,
+              operador: operator?.name ?? '',
+              operatorId: operator?.id ?? null,
+              supervisorId,
+              shiftId: shift.id,
+              fecha: historicalInstant,
+              fechaSalida: historicalInstant,
+              closedAt: now,
+              closeClientId: dto.closeClientId,
+              closedById: session.user.id,
+              closedByName: session.user.name?.trim() || session.user.email,
+              // El liviano entra en el reporte de salida del turno de quien
+              // lo registra — mismo criterio que el cierre normal.
+              closedShiftId: esLiviano ? shift.id : null,
+              fuelLiters: dto.fuelLiters,
+              pumpPhotoKey,
+              observaciones: dto.observaciones ?? null,
+              adBlue: dto.adBlue ?? false,
+              adBlueLiters: dto.adBlue ? (dto.adBlueLiters ?? null) : null,
+              clientClockSkewMs: clientClockSkewMs ?? null,
+              belowPreviousReading: initialBelow || belowPrevious,
+            },
+            include: SHIFT_CARD_INCLUDE,
+          });
+
+          if (dto.fuelLiters > 0) {
+            // Mismo criterio que el cierre: `lectura` queda null porque su
+            // lectura ES el `valorFinal` de la tarjeta vinculada.
+            await tx.registroCombustible.create({
+              data: {
+                equipoId: dto.equipoId,
+                litros: dto.fuelLiters,
+                tipo: DEFAULT_SHIFT_CLOSE_FUEL_TYPE,
+                fotoKey: pumpPhotoKey,
+                fecha: historicalInstant,
+                registroHorometroId: dto.id,
+              },
+            });
+          }
+
+          return card;
+        } catch (error) {
+          if (
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === 'P2002'
+          ) {
+            // Ver comentario de cabecera del archivo: NO seguir consultando
+            // acá, la tx ya quedó abortada. Se relee afuera.
+            throw new ShiftCardIdRaceError();
+          }
+          throw error;
+        }
+      });
+    } catch (error) {
+      // Cualquier falla DESPUÉS del claim exige descartar la copia recién
+      // creada — nunca dejar un objeto huérfano en el bucket.
+      await this.storage.discard(pumpPhotoKey);
+
+      if (error instanceof ShiftCardIdRaceError) {
+        // `id` (PK) o `closeClientId` (@unique) chocaron en una carrera —
+        // se relee AFUERA de la tx abortada. No se usa `resolveOpenRace`:
+        // su rama de miss asume una tarjeta abierta (EQUIPMENT_BUSY), que
+        // acá no existe.
+        const existing = await this.prisma.registroHorometro.findUnique({
+          where: { id: dto.id },
+          include: SHIFT_CARD_INCLUDE,
+        });
+        if (
+          existing &&
+          existing.supervisorId === supervisorId &&
+          existing.equipoId === dto.equipoId
+        ) {
+          return this.shapeCard(existing);
+        }
+        throw new ConflictException({
+          message: 'Ya existe un registro con ese identificador',
+          code: ERROR_CODES.ID_CONFLICT,
+        });
+      }
+      throw error;
+    }
+
+    return this.shapeCard(created!);
   }
 
   /**
