@@ -38,6 +38,9 @@ export const ERROR_CODES = {
   /** `POST /shift-cards/closed` con un turno que aún no termina — el flujo
    * vivo se registra abriendo y cerrando la tarjeta, nunca por backfill. */
   SHIFT_NOT_FINISHED: 'SHIFT_NOT_FINISHED',
+  /** `PATCH /combustible/:id` sobre una carga nacida de un cierre de
+   * tarjeta — se corrige editando esa tarjeta, que sincroniza la carga. */
+  FUEL_LOAD_FROM_CARD: 'FUEL_LOAD_FROM_CARD',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
