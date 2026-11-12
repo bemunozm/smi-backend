@@ -724,8 +724,8 @@ export class DashboardService {
       });
       if (item) {
         const stock = round2(item.stocks.reduce((a, s) => a + s.quantity, 0));
+        // Unidad o envase (bidón, tineta…): solo esos guardan contenido.
         const enBidones =
-          item.unit === 'UNIT' &&
           item.contentPerUnit != null &&
           (item.contentUnit ?? 'LITER') === 'LITER';
         return {

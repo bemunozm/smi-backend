@@ -407,11 +407,18 @@ model DocumentExpiryAlert {
 // Hay que presupuestarlo así.
 // ============================================================================
 
+/// En qué se cuenta el saldo. `UNIT` y los envases (`PAIL` tineta, `CAN`
+/// bidón, `DRUM` tambor, `BOX` caja) se cuentan por pieza y pueden declarar su
+/// contenido (`contentPerUnit` + `contentUnit`); litros, kilos y metros no.
 enum UnitOfMeasure {
   UNIT
   LITER
   KILOGRAM
   METER
+  PAIL
+  CAN
+  DRUM
+  BOX
 }
 
 /// Suministro (consumible: aceite, grasa, huaipe) vs. repuesto (pieza que se

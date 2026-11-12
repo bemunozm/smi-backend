@@ -24,7 +24,7 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StockService, type PendingStockEvents } from '../stock.service';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
-import { CreateItemDto } from './dto/create-item.dto';
+import { CreateItemDto, PACKAGED_UNITS } from './dto/create-item.dto';
 import { QueryItemsDto } from './dto/query-items.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 
@@ -84,18 +84,24 @@ const PREFIJO_SKU: Record<ItemType, string> = {
 const INTENTOS_SKU = 3;
 
 /**
- * El contenido por unidad solo tiene sentido en un ítem contado en unidades:
- * con litros, kilos o metros se limpia. Sin unidad del contenido, litros.
+ * El contenido solo tiene sentido en un ítem contado por pieza (unidad o
+ * envase): con litros, kilos o metros se limpia. Sin unidad del contenido,
+ * litros. «Unidades» como contenido de una unidad no dice nada: se limpia.
  */
 function contenido(
   unit: UnitOfMeasure,
   contentPerUnit: number | null | undefined,
   contentUnit: UnitOfMeasure | null | undefined,
 ): { contentPerUnit: number | null; contentUnit: UnitOfMeasure | null } {
-  if (unit !== UnitOfMeasure.UNIT || contentPerUnit == null) {
+  const medida = contentUnit ?? UnitOfMeasure.LITER;
+  if (
+    !PACKAGED_UNITS.includes(unit) ||
+    contentPerUnit == null ||
+    (unit === UnitOfMeasure.UNIT && medida === UnitOfMeasure.UNIT)
+  ) {
     return { contentPerUnit: null, contentUnit: null };
   }
-  return { contentPerUnit, contentUnit: contentUnit ?? UnitOfMeasure.LITER };
+  return { contentPerUnit, contentUnit: medida };
 }
 
 @Injectable()
@@ -277,7 +283,7 @@ export class ItemsService {
         where: { id },
         // Pasar a litros, kilos o metros borra el contenido por unidad.
         data:
-          dto.unit && dto.unit !== UnitOfMeasure.UNIT
+          dto.unit && !PACKAGED_UNITS.includes(dto.unit)
             ? { ...dto, contentPerUnit: null, contentUnit: null }
             : dto,
         include: STOCK_INCLUDE,

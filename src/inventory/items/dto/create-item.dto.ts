@@ -18,11 +18,27 @@ import {
 const normalizeSku = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toUpperCase() : value;
 
-/** Unidades en que se puede medir el contenido de una unidad (no «unidades»). */
+/**
+ * Unidades que se cuentan por pieza y pueden declarar su contenido: la unidad
+ * suelta y los envases (tineta, bidón, tambor, caja).
+ */
+export const PACKAGED_UNITS: UnitOfMeasure[] = [
+  UnitOfMeasure.UNIT,
+  UnitOfMeasure.PAIL,
+  UnitOfMeasure.CAN,
+  UnitOfMeasure.DRUM,
+  UnitOfMeasure.BOX,
+];
+
+/**
+ * En qué se puede medir ese contenido. «Unidades» solo vale para un envase
+ * (una caja de 12 filtros); en un ítem contado en unidades se descarta.
+ */
 export const CONTENT_UNITS: UnitOfMeasure[] = [
   UnitOfMeasure.LITER,
   UnitOfMeasure.KILOGRAM,
   UnitOfMeasure.METER,
+  UnitOfMeasure.UNIT,
 ];
 
 export class CreateItemDto {
@@ -70,7 +86,7 @@ export class CreateItemDto {
   /** En qué se mide ese contenido: litros, kilos o metros. */
   @IsOptional()
   @IsIn(CONTENT_UNITS, {
-    message: 'El contenido se mide en litros, kilos o metros.',
+    message: 'El contenido se mide en litros, kilos, metros o unidades.',
   })
   contentUnit?: UnitOfMeasure;
 
