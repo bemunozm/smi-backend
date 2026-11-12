@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEmail,
   IsIn,
   IsOptional,
@@ -21,4 +22,9 @@ export class UpdateUserDto {
   @IsOptional()
   @IsIn(ALL_ROLES)
   role?: Role;
+
+  /** Un ADMIN que usa camioneta (RFC-camioneta-administradores). */
+  @IsOptional()
+  @IsBoolean()
+  usesLightVehicle?: boolean;
 }

@@ -1165,7 +1165,11 @@ describe('EquipmentService', () => {
       'liviano: acepta un %s a cargo (la camioneta la usa quien se mueve en faena)',
       async (role) => {
         findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'LIGHT' });
-        userFindUnique.mockResolvedValue({ id: 'user_admin', role });
+        userFindUnique.mockResolvedValue({
+          id: 'user_admin',
+          role,
+          usesLightVehicle: true,
+        });
         update.mockResolvedValue({
           id: 'eq_1',
           equipmentClass: 'LIGHT',
@@ -1186,6 +1190,20 @@ describe('EquipmentService', () => {
         });
       },
     );
+
+    it('liviano: rechaza un ADMIN que no tiene marcado «Usa camioneta»', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'LIGHT' });
+      userFindUnique.mockResolvedValue({
+        id: 'user_admin',
+        role: ROLES.ADMIN,
+        usesLightVehicle: false,
+      });
+
+      await expect(
+        service.updateAssignment('eq_1', { supervisorId: 'user_admin' }),
+      ).rejects.toThrow('Usa camioneta');
+      expect(update).not.toHaveBeenCalled();
+    });
 
     it('pesado: un administrador no puede quedar como supervisor a cargo', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'HEAVY' });

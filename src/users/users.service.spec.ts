@@ -12,6 +12,7 @@ const MOCK_USER = {
   image: null,
   role: 'ADMIN',
   banned: false,
+  usesLightVehicle: false,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   updatedAt: new Date('2026-01-02T00:00:00.000Z'),
 };
@@ -20,17 +21,19 @@ describe('UsersService', () => {
   let service: UsersService;
   const findMany = jest.fn();
   const findUnique = jest.fn();
+  const update = jest.fn();
 
   beforeEach(async () => {
     findMany.mockReset();
     findUnique.mockReset();
+    update.mockReset();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UsersService,
         {
           provide: PrismaService,
-          useValue: { user: { findMany, findUnique } },
+          useValue: { user: { findMany, findUnique, update } },
         },
       ],
     }).compile();
@@ -52,10 +55,25 @@ describe('UsersService', () => {
         image: null,
         role: 'ADMIN',
         banned: false,
+        usesLightVehicle: false,
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-02T00:00:00.000Z',
       },
     ]);
+  });
+
+  it('update marca «Usa camioneta» con Prisma, sin pasar por auth.api', async () => {
+    findUnique.mockResolvedValue(MOCK_USER);
+    update.mockResolvedValue({ ...MOCK_USER, usesLightVehicle: true });
+
+    await service.update('user_1', { usesLightVehicle: true }, 'other_admin', {
+      headers: {},
+    } as Parameters<UsersService['update']>[3]);
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'user_1' },
+      data: { usesLightVehicle: true },
+    });
   });
 
   it('findOne throws NotFoundException when the user does not exist', async () => {

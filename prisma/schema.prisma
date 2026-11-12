@@ -45,6 +45,10 @@ model User {
   banned        Boolean?  @default(false)
   banReason     String?
   banExpires    DateTime?
+  /// Un ADMIN que se mueve en faena en camioneta: puede quedar a cargo de un
+  /// liviano y ve «Mi camioneta». Declarado también en `user.additionalFields`
+  /// de Better Auth (ver `auth.ts`). Ver docs/rfc/RFC-camioneta-administradores.md.
+  usesLightVehicle Boolean  @default(false) @map("uses_light_vehicle")
   sessions      Session[]
   accounts      Account[]
 
