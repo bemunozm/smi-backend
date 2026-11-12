@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
@@ -51,5 +59,14 @@ export class CombustibleController {
       data: await this.service.update(id, dto, editor),
       message: 'Carga actualizada',
     };
+  }
+
+  /** Eliminación definitiva — solo el administrador, para el registro basura
+   * confirmado. Queda en el historial con quién la borró y qué decía. */
+  @Delete(':id')
+  @Roles([ROLES.ADMIN])
+  async remove(@Param('id') id: string, @CurrentEditor() editor: Editor) {
+    await this.service.remove(id, editor);
+    return { data: null, message: 'Carga eliminada' };
   }
 }

@@ -43,11 +43,14 @@ describe('CombustibleService', () => {
       update: jest.fn(),
       findUnique: jest.fn(),
       findMany: jest.fn(),
+      delete: jest.fn(),
     },
+    registroHorometro: { update: jest.fn() },
   };
   const claimTmp = jest.fn();
   const discard = jest.fn();
   const sign = jest.fn();
+  const deleteBestEffort = jest.fn();
   const changeLog = { record: jest.fn() };
 
   beforeEach(async () => {
@@ -57,7 +60,7 @@ describe('CombustibleService', () => {
         { provide: PrismaService, useValue: prisma },
         {
           provide: StorageService,
-          useValue: { claimTmp, discard, deleteBestEffort: jest.fn(), sign },
+          useValue: { claimTmp, discard, deleteBestEffort, sign },
         },
         { provide: ChangeLogService, useValue: changeLog },
       ],
@@ -65,10 +68,6 @@ describe('CombustibleService', () => {
     service = mod.get(CombustibleService);
     jest.clearAllMocks();
     prisma.user.findMany.mockResolvedValue([]);
-    // Default: la transacción ejecuta el callback con el propio mock como tx.
-    prisma.$transaction.mockImplementation(
-      (fn: (tx: typeof prisma) => unknown) => fn(prisma),
-    );
     // El create corre dentro de una transacción (carga + contador): el doble
     // la ejecuta sobre el mismo mock, propagando lo que la callback lance.
     prisma.$transaction.mockImplementation(
@@ -427,10 +426,6 @@ describe('CombustibleService', () => {
         fotoKey: null,
         fecha: new Date(),
       });
-      // La edición y su registro de cambios van en una sola transacción.
-      prisma.$transaction.mockImplementation(
-        (fn: (tx: typeof prisma) => unknown) => fn(prisma),
-      );
     });
 
     it('sin ningún campo -> 400', async () => {
@@ -558,6 +553,114 @@ describe('CombustibleService', () => {
       await expect(
         service.update('nope', { litros: 10 }, EDITOR),
       ).rejects.toMatchObject({ status: 404 });
+    });
+  });
+
+  describe('remove — eliminación definitiva desde el panel', () => {
+    const filaManual = {
+      litros: 109,
+      tipo: 'PETROLEO',
+      fecha: new Date('2026-11-11T15:01:00.000Z'),
+      lectura: 10860,
+      fotoKey: 'fuel-photos/c1.jpg',
+      registroHorometroId: null,
+      equipo: { internalCode: 'SEM 01' },
+      registroHorometro: null,
+    };
+
+    it('una carga MANUAL: borra la fila, deja la traza DELETE legible y suelta SU foto después', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue(filaManual);
+
+      await service.remove('c1', EDITOR);
+
+      expect(prisma.registroCombustible.delete).toHaveBeenCalledWith({
+        where: { id: 'c1' },
+      });
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'combustible',
+        'c1',
+        EDITOR,
+        expect.arrayContaining([
+          { field: 'equipo', label: 'Equipo', before: 'SEM 01', after: '—' },
+          { field: 'litros', label: 'Litros', before: '109', after: '—' },
+          { field: 'origen', label: 'Origen', before: 'Manual', after: '—' },
+        ]),
+        'DELETE',
+      );
+      expect(prisma.registroHorometro.update).not.toHaveBeenCalled();
+      expect(deleteBestEffort).toHaveBeenCalledWith('fuel-photos/c1.jpg');
+    });
+
+    it('una carga de TARJETA: la tarjeta queda sin litros (con su propia traza) y la foto compartida NO se toca', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...filaManual,
+        lectura: null,
+        registroHorometroId: 'rh1',
+        registroHorometro: { valorFinal: 10860 },
+      });
+
+      await service.remove('c1', EDITOR);
+
+      expect(prisma.registroHorometro.update).toHaveBeenCalledWith({
+        where: { id: 'rh1' },
+        data: { fuelLiters: null },
+      });
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'combustible',
+        'c1',
+        EDITOR,
+        expect.arrayContaining([
+          {
+            field: 'origen',
+            label: 'Origen',
+            before: 'Cierre de tarjeta',
+            after: '—',
+          },
+          { field: 'lectura', label: 'Lectura', before: '10.860', after: '—' },
+        ]),
+        'DELETE',
+      );
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'shift_card',
+        'rh1',
+        EDITOR,
+        [
+          {
+            field: 'fuelLiters',
+            label: 'Litros de combustible',
+            before: '109',
+            after: '—',
+          },
+        ],
+      );
+      expect(prisma.registroCombustible.delete).toHaveBeenCalledWith({
+        where: { id: 'c1' },
+      });
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('un id inexistente -> 404 sin borrar nada', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove('nope', EDITOR)).rejects.toMatchObject({
+        status: 404,
+      });
+      expect(prisma.registroCombustible.delete).not.toHaveBeenCalled();
+      expect(changeLog.record).not.toHaveBeenCalled();
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('si el delete falla, la foto NO se suelta', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue(filaManual);
+      prisma.registroCombustible.delete.mockRejectedValue(
+        new Error('db caída'),
+      );
+
+      await expect(service.remove('c1', EDITOR)).rejects.toThrow('db caída');
+      expect(deleteBestEffort).not.toHaveBeenCalled();
     });
   });
 

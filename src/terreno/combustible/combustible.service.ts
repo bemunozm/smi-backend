@@ -15,6 +15,7 @@ import {
 } from '../../change-log/change-log.service';
 import { formatBusinessDateTime } from '../../common/dates/business-time';
 import { ERROR_CODES } from '../../common/errors/error-codes';
+import { formatNumber } from '../../common/format/number';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
@@ -334,6 +335,84 @@ export class CombustibleService {
     }
 
     return this.shapeSolo(registro);
+  }
+
+  /**
+   * Eliminación definitiva de una carga — solo el administrador (ver
+   * controller), para el registro basura confirmado (duplicado, carga de
+   * prueba). Deja su propia fila en el historial (action `DELETE`, con el
+   * resumen legible de lo borrado) en la MISMA transacción: un borrado sin
+   * rastro es justo lo que el registro de actividad debe impedir.
+   *
+   * Una carga nacida de un cierre de tarjeta existe si y solo si la tarjeta
+   * declara litros (`syncFuelRecord`): borrarla deja la tarjeta con
+   * `fuelLiters` en null — con su propio registro en el historial de la
+   * tarjeta — y NUNCA toca la foto, que es el mismo objeto que
+   * `pumpPhotoKey` del cierre (ver la advertencia del schema). La foto de
+   * una carga MANUAL sí es exclusiva de la fila y se suelta best-effort
+   * DESPUÉS de borrar (si el borrado falla, la foto sigue donde debe).
+   */
+  async remove(id: string, editor: Editor) {
+    const registro = await this.prisma.registroCombustible.findUnique({
+      where: { id },
+      select: {
+        litros: true,
+        tipo: true,
+        fecha: true,
+        lectura: true,
+        fotoKey: true,
+        registroHorometroId: true,
+        equipo: { select: { internalCode: true } },
+        registroHorometro: { select: { valorFinal: true } },
+      },
+    });
+    if (!registro) throw new NotFoundException('Registro no encontrado');
+
+    const deTarjeta = Boolean(registro.registroHorometroId);
+    const lectura = registro.lectura ?? registro.registroHorometro?.valorFinal;
+    const borrado = (field: string, label: string, before: string) => ({
+      field,
+      label,
+      before,
+      after: '—',
+    });
+    const resumen = [
+      borrado('equipo', 'Equipo', registro.equipo.internalCode),
+      borrado('litros', 'Litros', formatNumber(registro.litros)),
+      borrado('tipo', 'Combustible', TIPO_LABEL[registro.tipo] ?? registro.tipo),
+      borrado('fecha', 'Fecha', formatBusinessDateTime(registro.fecha)),
+      borrado('lectura', 'Lectura', lectura != null ? formatNumber(lectura) : '—'),
+      borrado('origen', 'Origen', deTarjeta ? 'Cierre de tarjeta' : 'Manual'),
+    ];
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.changeLog.record(tx, 'combustible', id, editor, resumen, 'DELETE');
+      if (registro.registroHorometroId) {
+        await this.changeLog.record(
+          tx,
+          'shift_card',
+          registro.registroHorometroId,
+          editor,
+          [
+            {
+              field: 'fuelLiters',
+              label: 'Litros de combustible',
+              before: formatNumber(registro.litros),
+              after: '—',
+            },
+          ],
+        );
+        await tx.registroHorometro.update({
+          where: { id: registro.registroHorometroId },
+          data: { fuelLiters: null },
+        });
+      }
+      await tx.registroCombustible.delete({ where: { id } });
+    });
+
+    if (!deTarjeta && registro.fotoKey) {
+      await this.storage.deleteBestEffort(registro.fotoKey);
+    }
   }
 
   /** Ids de usuario que `shape` podría necesitar resolver para una fila. */
