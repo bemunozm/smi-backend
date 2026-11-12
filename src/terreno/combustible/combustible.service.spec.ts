@@ -361,22 +361,28 @@ describe('CombustibleService', () => {
       expect(res).not.toHaveProperty('fotoKey');
     });
 
-    it('update no toca fotoKey (UpdateCombustibleDto no tiene campos propios) y re-shapea la salida', async () => {
+    it('update no toca fotoKey (el DTO no tiene forma de escribirla) y re-shapea la salida', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        id: 'c1',
+        equipoId: 'e1',
+        registroHorometroId: null,
+        lectura: null,
+      });
       prisma.registroCombustible.update.mockResolvedValue({
         id: 'c1',
         equipoId: 'e1',
-        litros: 20,
+        litros: 25,
         tipo: 'PETROLEO',
         fotoUrl: '/uploads/legacy.jpg',
         fotoKey: null,
         fecha: new Date(),
       });
 
-      const res = await service.update('c1', {});
+      const res = await service.update('c1', { litros: 25 });
 
       expect(prisma.registroCombustible.update).toHaveBeenCalledWith({
         where: { id: 'c1' },
-        data: {},
+        data: { litros: 25 },
         include: INCLUDE_ESPERADO,
         omit: { createdById: false },
       });
@@ -385,6 +391,125 @@ describe('CombustibleService', () => {
       // no tenga forma de escribirlo.
       expect(res.fotoUrl).toBe('/uploads/legacy.jpg');
       expect(res).not.toHaveProperty('fotoKey');
+    });
+  });
+
+  describe('update — corrección desde el panel', () => {
+    const filaManual = {
+      id: 'c1',
+      equipoId: 'e1',
+      registroHorometroId: null,
+      lectura: 1000,
+    };
+
+    beforeEach(() => {
+      prisma.registroCombustible.findUnique.mockResolvedValue(filaManual);
+      prisma.registroCombustible.update.mockResolvedValue({
+        id: 'c1',
+        equipoId: 'e1',
+        litros: 100.4,
+        tipo: 'PETROLEO',
+        fotoUrl: null,
+        fotoKey: null,
+        fecha: new Date(),
+      });
+    });
+
+    it('sin ningún campo -> 400', async () => {
+      await expect(service.update('c1', {})).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(prisma.registroCombustible.update).not.toHaveBeenCalled();
+    });
+
+    it('una carga nacida de una tarjeta se rechaza: se corrige editando la tarjeta', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...filaManual,
+        registroHorometroId: 'h1',
+      });
+
+      await expect(
+        service.update('c1', { litros: 100.4 }),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { code: 'FUEL_LOAD_FROM_CARD' },
+      });
+      expect(prisma.registroCombustible.update).not.toHaveBeenCalled();
+    });
+
+    it('una carga MANUAL corrige litros/tipo/fecha/lectura y la fecha viaja como Date', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        id: 'e1',
+        controlUnit: 'HOURS',
+        currentHourmeter: 900,
+        currentMileage: null,
+      });
+
+      await service.update('c1', {
+        litros: 100.4,
+        tipo: 'BENCINA',
+        fecha: '2026-11-01T10:00:00.000Z',
+        lectura: 1200,
+      });
+
+      const [{ data }] = prisma.registroCombustible.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toMatchObject({
+        litros: 100.4,
+        tipo: 'BENCINA',
+        lectura: 1200,
+      });
+      expect(data.fecha).toBeInstanceOf(Date);
+      expect((data.fecha as Date).toISOString()).toBe(
+        '2026-11-01T10:00:00.000Z',
+      );
+    });
+
+    it('una lectura nueva más alta adelanta el contador del equipo (warn)', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        id: 'e1',
+        controlUnit: 'HOURS',
+        currentHourmeter: 900,
+        currentMileage: null,
+      });
+
+      await service.update('c1', { lectura: 1200 });
+
+      expect(prisma.equipment.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'e1',
+          OR: [{ currentHourmeter: null }, { currentHourmeter: { lt: 1200 } }],
+        },
+        data: { currentHourmeter: 1200 },
+      });
+    });
+
+    it('una lectura corregida hacia abajo NO retrocede el contador', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({
+        id: 'e1',
+        controlUnit: 'HOURS',
+        currentHourmeter: 2000,
+        currentMileage: null,
+      });
+
+      await service.update('c1', { lectura: 1200 });
+
+      expect(prisma.equipment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('sin lectura en el body, el contador no se toca', async () => {
+      await service.update('c1', { litros: 100.4 });
+
+      expect(prisma.equipment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('un id inexistente -> 404', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.update('nope', { litros: 10 }),
+      ).rejects.toMatchObject({ status: 404 });
     });
   });
 
@@ -624,7 +749,7 @@ describe('CombustibleService', () => {
         USER_ID,
       );
       const leido = await service.findOne('c1');
-      const actualizado = await service.update('c1', {});
+      const actualizado = await service.update('c1', { litros: 20 });
 
       for (const res of [creado, leido, actualizado]) {
         expect(res).toMatchObject({
