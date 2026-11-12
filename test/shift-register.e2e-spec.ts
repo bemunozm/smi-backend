@@ -42,6 +42,8 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 
+import { EquipmentStatus } from '@prisma/client';
+
 import { ROLES } from '../src/auth/roles';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import {
@@ -1002,6 +1004,258 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
         where: { registroHorometroId: cardId },
       });
       expect(fuelCount).toBe(0);
+    });
+  });
+
+  describe('7c) Turno pasado — tarjeta que nace cerrada (POST /shift-cards/closed)', () => {
+    const yesterday = todayInBusinessTimeZone(
+      new Date(Date.now() - 24 * 60 * 60 * 1000),
+    );
+
+    async function freshEquipment(label: string): Promise<EquipmentData> {
+      const equipoResponse = await adminAgent
+        .post('/api/equipment')
+        .send(baseEquipmentPayload(internalCode(label)))
+        .expect(201);
+      const equipo = (equipoResponse.body as ApiEnvelope<EquipmentData>).data;
+      createdEquipmentIds.push(equipo.id);
+      return equipo;
+    }
+
+    async function registerClosed(
+      equipoId: string,
+      overrides: Record<string, unknown> = {},
+    ) {
+      const upload = await uploadViaApi(
+        supervisorAgent,
+        MINIMAL_JPEG,
+        'surtidor.jpg',
+      );
+      const payload = {
+        id: randomUUID(),
+        equipoId,
+        operatorId,
+        valorInicial: 1000,
+        valorFinal: 1010,
+        shiftDate: yesterday,
+        shiftType: 'DIURNO',
+        capturedAt: new Date().toISOString(),
+        closeClientId: randomUUID(),
+        fuelLiters: 60,
+        tmpPhotoKey: upload.key,
+        ...overrides,
+      };
+      const response = await supervisorAgent
+        .post('/api/shift-cards/closed')
+        .send(payload);
+      const card = (response.body as ApiEnvelope<ShiftCardData>).data;
+      if (card?.shift) createdShiftIds.add(card.shift.id);
+      return { payload, response, card };
+    }
+
+    async function openShiftOf(equipoId: string) {
+      const response = await adminAgent.get('/api/equipment').expect(200);
+      const items = (
+        response.body as ApiEnvelope<
+          Array<{ id: string; openShift: { id: string } | null }>
+        >
+      ).data;
+      return items.find((e) => e.id === equipoId)?.openShift ?? null;
+    }
+
+    it('con litros: nace cerrada, fechada en el día histórico, con su carga, y el equipo NO queda "En uso"', async () => {
+      const equipo = await freshEquipment('CLOSEDA');
+      const { payload, response } = await registerClosed(equipo.id);
+      expect(response.status).toBe(201);
+
+      const raw = await prisma.registroHorometro.findUniqueOrThrow({
+        where: { id: payload.id as string },
+        select: {
+          valorInicial: true,
+          valorFinal: true,
+          closedAt: true,
+          fecha: true,
+          fechaSalida: true,
+          pumpPhotoKey: true,
+          closeClientId: true,
+        },
+      });
+      expect(raw.valorInicial).toBe(1000);
+      expect(raw.valorFinal).toBe(1010);
+      expect(raw.closedAt).not.toBeNull();
+      expect(raw.closeClientId).toBe(payload.closeClientId);
+      expect(businessDayKey(raw.fecha as Date)).toBe(yesterday);
+      expect(businessDayKey(raw.fechaSalida as Date)).toBe(yesterday);
+
+      const fuel = await prisma.registroCombustible.findMany({
+        where: { registroHorometroId: payload.id as string },
+      });
+      expect(fuel).toHaveLength(1);
+      expect(fuel[0].litros).toBe(60);
+      expect(fuel[0].fotoKey).toBe(raw.pumpPhotoKey);
+      expect(fuel[0].fotoKey).toBeTruthy();
+      expect(businessDayKey(fuel[0].fecha)).toBe(yesterday);
+      expect(businessDayKey(fuel[0].fecha)).not.toBe(todayShiftDate);
+
+      expect(await openShiftOf(equipo.id)).toBeNull();
+    });
+
+    it('un equipo con tarjeta abierta HOY igual se backfillea, y la tarjeta de hoy queda intacta', async () => {
+      const equipo = await freshEquipment('CLOSEDB');
+
+      const todayCardId = randomUUID();
+      const openResponse = await supervisorAgent
+        .post('/api/shift-cards')
+        .send({
+          id: todayCardId,
+          equipoId: equipo.id,
+          operatorId,
+          valorInicial: 2000,
+          shiftDate: todayShiftDate,
+          shiftType: 'DIURNO',
+          capturedAt: new Date().toISOString(),
+        })
+        .expect(201);
+      const todayCard = (openResponse.body as ApiEnvelope<ShiftCardData>).data;
+      if (todayCard.shift) createdShiftIds.add(todayCard.shift.id);
+
+      const { response } = await registerClosed(equipo.id);
+      expect(response.status).toBe(201);
+
+      const hoy = await prisma.registroHorometro.findUniqueOrThrow({
+        where: { id: todayCardId },
+        select: { valorFinal: true, valorInicial: true, closedAt: true },
+      });
+      expect(hoy.valorFinal).toBeNull();
+      expect(hoy.closedAt).toBeNull();
+      expect(hoy.valorInicial).toBe(2000);
+
+      expect((await openShiftOf(equipo.id))?.id).toBe(todayCardId);
+    });
+
+    it('un equipo hoy en taller igual registra su turno pasado', async () => {
+      const equipo = await freshEquipment('CLOSEDW');
+      await prisma.equipment.update({
+        where: { id: equipo.id },
+        data: { status: EquipmentStatus.IN_WORKSHOP },
+      });
+      const { response } = await registerClosed(equipo.id);
+      expect(response.status).toBe(201);
+    });
+
+    it('con 0 litros NO se crea registro de combustible', async () => {
+      const equipo = await freshEquipment('CLOSEDZ');
+      const { payload, response } = await registerClosed(equipo.id, {
+        fuelLiters: 0,
+      });
+      expect(response.status).toBe(201);
+      const fuelCount = await prisma.registroCombustible.count({
+        where: { registroHorometroId: payload.id as string },
+      });
+      expect(fuelCount).toBe(0);
+    });
+
+    it('el contador vigente no retrocede por lecturas históricas menores, y sí avanza con mayores', async () => {
+      const adelantado = await freshEquipment('CLOSEDC1');
+      await prisma.equipment.update({
+        where: { id: adelantado.id },
+        data: { currentHourmeter: 1050 },
+      });
+      const alta = await registerClosed(adelantado.id);
+      expect(alta.response.status).toBe(201);
+      const fichaAdelantada = await prisma.equipment.findUniqueOrThrow({
+        where: { id: adelantado.id },
+        select: { currentHourmeter: true },
+      });
+      expect(fichaAdelantada.currentHourmeter).toBe(1050);
+      const cardAdelantada = await prisma.registroHorometro.findUniqueOrThrow({
+        where: { id: alta.payload.id as string },
+        select: { belowPreviousReading: true },
+      });
+      expect(cardAdelantada.belowPreviousReading).toBe(true);
+
+      const atrasado = await freshEquipment('CLOSEDC2');
+      await prisma.equipment.update({
+        where: { id: atrasado.id },
+        data: { currentHourmeter: 900 },
+      });
+      const baja = await registerClosed(atrasado.id);
+      expect(baja.response.status).toBe(201);
+      const fichaAtrasada = await prisma.equipment.findUniqueOrThrow({
+        where: { id: atrasado.id },
+        select: { currentHourmeter: true },
+      });
+      expect(fichaAtrasada.currentHourmeter).toBe(1010);
+      const cardAtrasada = await prisma.registroHorometro.findUniqueOrThrow({
+        where: { id: baja.payload.id as string },
+        select: { belowPreviousReading: true },
+      });
+      expect(cardAtrasada.belowPreviousReading).toBe(false);
+    });
+
+    it('reintento idéntico (replay) devuelve la misma tarjeta sin duplicar la carga', async () => {
+      const equipo = await freshEquipment('CLOSEDR');
+      const { payload, response } = await registerClosed(equipo.id);
+      expect(response.status).toBe(201);
+
+      const retry = await supervisorAgent
+        .post('/api/shift-cards/closed')
+        .send(payload)
+        .expect(201);
+      const retried = (retry.body as ApiEnvelope<ShiftCardData>).data;
+      expect(retried.id).toBe(payload.id);
+
+      const fuelCount = await prisma.registroCombustible.count({
+        where: { registroHorometroId: payload.id as string },
+      });
+      expect(fuelCount).toBe(1);
+    });
+
+    it('un turno aún vivo se rechaza con SHIFT_NOT_FINISHED y no crea nada', async () => {
+      const equipo = await freshEquipment('CLOSEDV');
+      const { payload, response } = await registerClosed(equipo.id, {
+        shiftDate: todayShiftDate,
+      });
+      expect(response.status).toBe(400);
+      expect((response.body as ErrorEnvelope).code).toBe('SHIFT_NOT_FINISHED');
+      const count = await prisma.registroHorometro.count({
+        where: { id: payload.id as string },
+      });
+      expect(count).toBe(0);
+    });
+
+    it('checklist del día sin aceptar bloquea el backfill', async () => {
+      const equipo = await freshEquipment('CLOSEDK');
+      const checklist = await prisma.dailyChecklist.create({
+        data: {
+          equipmentId: equipo.id,
+          date: new Date(`${yesterday}T00:00:00.000Z`),
+          counter: 1000,
+          mechanicId: 'e2e-mech',
+          mechanicName: 'Mecánico e2e',
+        },
+      });
+      try {
+        const { response } = await registerClosed(equipo.id);
+        expect(response.status).toBe(409);
+        expect((response.body as ErrorEnvelope).code).toBe(
+          'CHECKLIST_NOT_ACCEPTED',
+        );
+      } finally {
+        await prisma.dailyChecklist.delete({ where: { id: checklist.id } });
+      }
+    });
+
+    it('valorFinal menor que valorInicial -> 400 HOURMETER_BELOW_INITIAL', async () => {
+      const equipo = await freshEquipment('CLOSEDH');
+      const { response } = await registerClosed(equipo.id, {
+        valorInicial: 1010,
+        valorFinal: 1000,
+      });
+      expect(response.status).toBe(400);
+      expect((response.body as ErrorEnvelope).code).toBe(
+        'HOURMETER_BELOW_INITIAL',
+      );
     });
   });
 
