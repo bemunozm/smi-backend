@@ -36,6 +36,21 @@ export const auth = betterAuth({
   // sacar esto de acá Y truncar/sanear ese `name` en los mismos puntos que
   // `ShiftReportsService` trunca `supervisorName` (PDF/correo).
   disabledPaths: ['/update-user'],
+  // Campos propios en `user`. Declararlos acá hace que el CLI de Better Auth
+  // los conserve si regenera el modelo, y que lleguen en `session.user` (el
+  // menú del frontend lo usa para «Mi camioneta»). `input: false`: no se
+  // puede fijar al crear una cuenta; solo lo cambia un ADMIN por
+  // `PATCH /api/users/:id`. Ver docs/rfc/RFC-camioneta-administradores.md.
+  user: {
+    additionalFields: {
+      usesLightVehicle: {
+        type: 'boolean',
+        required: false,
+        defaultValue: false,
+        input: false,
+      },
+    },
+  },
   // Rate limit nativo de Better Auth (para la prueba en terreno con túnel
   // HTTPS), `enabled` gobernado por
   // `AUTH_RATE_LIMIT_ENABLED` (ver env.ts) — `true` por defecto en

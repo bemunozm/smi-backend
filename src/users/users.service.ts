@@ -30,6 +30,7 @@ const USER_SELECT = {
   image: true,
   role: true,
   banned: true,
+  usesLightVehicle: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -42,6 +43,7 @@ interface SelectedUser {
   image: string | null;
   role: string;
   banned: boolean | null;
+  usesLightVehicle: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -61,6 +63,7 @@ interface AuthApiUserLike {
   image?: string | null | undefined;
   role?: string | string[] | undefined;
   banned?: boolean | null | undefined;
+  usesLightVehicle?: boolean | null | undefined;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -197,6 +200,14 @@ export class UsersService {
       }
     }
 
+    // No es credencial ni rol: va directo por Prisma (ver RFC-camioneta-administradores).
+    if (dto.usesLightVehicle !== undefined) {
+      await this.prisma.user.update({
+        where: { id },
+        data: { usesLightVehicle: dto.usesLightVehicle },
+      });
+    }
+
     this.logger.log(`Usuario actualizado: ${id}`);
     return this.findOne(id);
   }
@@ -246,6 +257,7 @@ export class UsersService {
       image: user.image ?? null,
       role: this.normalizeRole(user.role),
       banned: user.banned ?? null,
+      usesLightVehicle: user.usesLightVehicle ?? false,
       createdAt: user.createdAt.toISOString(),
       updatedAt: user.updatedAt.toISOString(),
     };

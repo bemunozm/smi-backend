@@ -16,6 +16,8 @@ export interface UserResponseDto {
   image: string | null;
   role: string;
   banned: boolean | null;
+  /** Un ADMIN que usa camioneta: aparece en «Asignado a» de los livianos. */
+  usesLightVehicle: boolean;
   createdAt: string;
   updatedAt: string;
 }

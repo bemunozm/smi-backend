@@ -977,7 +977,13 @@ export class EquipmentService {
   ): Promise<void> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, role: true, banned: true },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        banned: true,
+        usesLightVehicle: true,
+      },
     });
     if (!user) {
       throw new BadRequestException(`El usuario "${userId}" no existe`);
@@ -985,6 +991,13 @@ export class EquipmentService {
     if (!user.role || !roles.includes(user.role)) {
       throw new BadRequestException(
         `El usuario "${userId}" no tiene el rol ${roles.join(' o ')}`,
+      );
+    }
+    // Entre los administradores, solo quien tiene marcado «Usa camioneta»
+    // (RFC-camioneta-administradores). Solo llega acá un ADMIN si es un liviano.
+    if (user.role === ROLES.ADMIN && !user.usesLightVehicle) {
+      throw new BadRequestException(
+        `${user.name} no tiene marcado «Usa camioneta» en Usuarios: márcalo para asignarle un liviano`,
       );
     }
     if (user.banned) {
