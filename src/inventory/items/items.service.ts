@@ -24,7 +24,11 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StockService, type PendingStockEvents } from '../stock.service';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
-import { CreateItemDto, PACKAGED_UNITS } from './dto/create-item.dto';
+import {
+  CONTENT_UNITS_BY_UNIT,
+  CreateItemDto,
+  PACKAGED_UNITS,
+} from './dto/create-item.dto';
 import { QueryItemsDto } from './dto/query-items.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 
@@ -85,20 +89,19 @@ const INTENTOS_SKU = 3;
 
 /**
  * El contenido solo tiene sentido en un ítem contado por pieza (unidad o
- * envase): con litros, kilos o metros se limpia. Sin unidad del contenido,
- * litros. «Unidades» como contenido de una unidad no dice nada: se limpia.
+ * envase): con litros, kilos o metros se limpia. Sin unidad del contenido, la
+ * primera que admite esa forma de contar (litros; unidades en una caja). Una
+ * combinación sin sentido («una unidad contiene unidades», una tineta en
+ * metros) también se limpia. Ver `CONTENT_UNITS_BY_UNIT`.
  */
 function contenido(
   unit: UnitOfMeasure,
   contentPerUnit: number | null | undefined,
   contentUnit: UnitOfMeasure | null | undefined,
 ): { contentPerUnit: number | null; contentUnit: UnitOfMeasure | null } {
-  const medida = contentUnit ?? UnitOfMeasure.LITER;
-  if (
-    !PACKAGED_UNITS.includes(unit) ||
-    contentPerUnit == null ||
-    (unit === UnitOfMeasure.UNIT && medida === UnitOfMeasure.UNIT)
-  ) {
+  const validas = CONTENT_UNITS_BY_UNIT[unit] ?? [];
+  const medida = contentUnit ?? validas[0];
+  if (contentPerUnit == null || !medida || !validas.includes(medida)) {
     return { contentPerUnit: null, contentUnit: null };
   }
   return { contentPerUnit, contentUnit: medida };

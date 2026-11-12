@@ -41,6 +41,26 @@ export const CONTENT_UNITS: UnitOfMeasure[] = [
   UnitOfMeasure.UNIT,
 ];
 
+/**
+ * Qué medida admite el contenido según la forma de contar (la primera es la
+ * que se toma si no viene): una unidad en litros, kilos o metros; tineta,
+ * bidón y tambor en litros o kilos; una caja en unidades o kilos. Es la misma
+ * tabla que ofrece el formulario del frontend.
+ */
+export const CONTENT_UNITS_BY_UNIT: Partial<
+  Record<UnitOfMeasure, UnitOfMeasure[]>
+> = {
+  [UnitOfMeasure.UNIT]: [
+    UnitOfMeasure.LITER,
+    UnitOfMeasure.KILOGRAM,
+    UnitOfMeasure.METER,
+  ],
+  [UnitOfMeasure.PAIL]: [UnitOfMeasure.LITER, UnitOfMeasure.KILOGRAM],
+  [UnitOfMeasure.CAN]: [UnitOfMeasure.LITER, UnitOfMeasure.KILOGRAM],
+  [UnitOfMeasure.DRUM]: [UnitOfMeasure.LITER, UnitOfMeasure.KILOGRAM],
+  [UnitOfMeasure.BOX]: [UnitOfMeasure.UNIT, UnitOfMeasure.KILOGRAM],
+};
+
 export class CreateItemDto {
   /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
    * offline. Opcional para no romper a un cliente que no lo manda. */
