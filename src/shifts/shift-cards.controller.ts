@@ -17,6 +17,7 @@ import { ExpectedFields } from '../common/concurrency/expected-fields.decorator'
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
+import { RegisterClosedShiftCardDto } from './dto/register-closed-shift-card.dto';
 import { UpdateShiftCardDto } from './dto/update-shift-card.dto';
 import { ShiftsService } from './shifts.service';
 
@@ -54,6 +55,31 @@ export class ShiftCardsController {
     return {
       data: await this.service.openCard(dto, session, clientTime),
       message: 'Tarjeta abierta',
+    };
+  }
+
+  /**
+   * Registro histórico: la tarjeta de un turno YA TERMINADO nace cerrada en
+   * una sola transacción (no ocupa nunca el "slot" de tarjeta abierta del
+   * equipo). `201` también en el reintento (replay), igual que `open`.
+   */
+  @Post('closed')
+  // También MANTENEDOR/PREVENCIONISTA: mismo criterio que `open` (solo
+  // livianos, lo valida el service).
+  @Roles([
+    ROLES.SUPERVISOR,
+    ROLES.ADMIN,
+    ROLES.MANTENEDOR,
+    ROLES.PREVENCIONISTA,
+  ])
+  async registerClosed(
+    @Body() dto: RegisterClosedShiftCardDto,
+    @Session() session: UserSession,
+    @Headers('x-client-time') clientTime?: string,
+  ) {
+    return {
+      data: await this.service.registerClosedCard(dto, session, clientTime),
+      message: 'Turno pasado registrado',
     };
   }
 
