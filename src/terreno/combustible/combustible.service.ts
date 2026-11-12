@@ -7,6 +7,13 @@ import {
 
 import type { Prisma } from '@prisma/client';
 
+import {
+  ChangeLogService,
+  diffFields,
+  type ComparableField,
+  type Editor,
+} from '../../change-log/change-log.service';
+import { formatBusinessDateTime } from '../../common/dates/business-time';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -15,6 +22,34 @@ import { StorageService } from '../../storage/storage.service';
 import { resolveNombresUsuarios } from '../common/registrado-por.util';
 import { CreateCombustibleDto } from './dto/create-combustible.dto';
 import { UpdateCombustibleDto } from './dto/update-combustible.dto';
+
+/** Los datos de una carga manual que el panel puede corregir. */
+interface DatosCarga {
+  litros: number;
+  tipo: string;
+  fecha: Date;
+  lectura: number | null;
+}
+
+/** Cómo se lee cada dato en el historial de cambios del administrador. */
+const TIPO_LABEL: Record<string, string> = {
+  PETROLEO: 'Petróleo',
+  BENCINA: 'Bencina',
+};
+const CAMPOS_CARGA: readonly ComparableField<DatosCarga>[] = [
+  { field: 'litros', label: 'Litros' },
+  {
+    field: 'tipo',
+    label: 'Combustible',
+    format: (v) => (typeof v === 'string' && TIPO_LABEL[v]) || String(v),
+  },
+  {
+    field: 'fecha',
+    label: 'Fecha',
+    format: (v) => (v instanceof Date ? formatBusinessDateTime(v) : String(v)),
+  },
+  { field: 'lectura', label: 'Lectura' },
+];
 
 /**
  * Include compartido por TODOS los read paths (`create`/`findAll`/`findOne`/
@@ -92,6 +127,7 @@ export class CombustibleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly changeLog: ChangeLogService,
   ) {}
 
   async create(dto: CreateCombustibleDto, userId: string) {
@@ -215,9 +251,11 @@ export class CombustibleService {
    * la TARJETA (`PATCH /shift-cards/:id` sincroniza `litros` vía
    * `syncFuelRecord` y deja historial) — editarla por acá las haría divergir,
    * por eso se rechaza. Una `lectura` nueva reconcilia el contador del equipo
-   * en modo `warn`, igual que el alta: solo avanza, nunca retrocede.
+   * en modo `warn`, igual que el alta: solo avanza, nunca retrocede. El
+   * cambio queda en el historial (`ChangeLog`, entity `combustible`) en la
+   * misma transacción — es lo que el registro de actividad muestra.
    */
-  async update(id: string, dto: UpdateCombustibleDto) {
+  async update(id: string, dto: UpdateCombustibleDto, editor: Editor) {
     if (
       dto.litros === undefined &&
       dto.tipo === undefined &&
@@ -231,7 +269,14 @@ export class CombustibleService {
 
     const previa = await this.prisma.registroCombustible.findUnique({
       where: { id },
-      select: { equipoId: true, registroHorometroId: true },
+      select: {
+        equipoId: true,
+        registroHorometroId: true,
+        litros: true,
+        tipo: true,
+        fecha: true,
+        lectura: true,
+      },
     });
     if (!previa) throw new NotFoundException('Registro no encontrado');
     if (previa.registroHorometroId) {
@@ -242,16 +287,32 @@ export class CombustibleService {
       });
     }
 
-    const registro = await this.prisma.registroCombustible.update({
-      where: { id },
-      data: {
-        ...(dto.litros !== undefined ? { litros: dto.litros } : {}),
-        ...(dto.tipo !== undefined ? { tipo: dto.tipo } : {}),
-        ...(dto.fecha !== undefined ? { fecha: new Date(dto.fecha) } : {}),
-        ...(dto.lectura !== undefined ? { lectura: dto.lectura } : {}),
-      },
-      include: COMBUSTIBLE_INCLUDE,
-      omit: { createdById: false },
+    const despues: DatosCarga = {
+      litros: dto.litros ?? previa.litros,
+      tipo: dto.tipo ?? previa.tipo,
+      fecha: dto.fecha !== undefined ? new Date(dto.fecha) : previa.fecha,
+      lectura: dto.lectura ?? previa.lectura,
+    };
+    const cambios = diffFields<DatosCarga>(previa, despues, CAMPOS_CARGA);
+
+    // Edición + historial en UNA transacción: una corrección sin su registro
+    // es justo lo que el historial debe impedir.
+    const registro = await this.prisma.$transaction(async (tx) => {
+      const editado = await tx.registroCombustible.update({
+        where: { id },
+        data: {
+          ...(dto.litros !== undefined ? { litros: dto.litros } : {}),
+          ...(dto.tipo !== undefined ? { tipo: dto.tipo } : {}),
+          ...(dto.fecha !== undefined ? { fecha: new Date(dto.fecha) } : {}),
+          ...(dto.lectura !== undefined ? { lectura: dto.lectura } : {}),
+        },
+        include: COMBUSTIBLE_INCLUDE,
+        omit: { createdById: false },
+      });
+      if (cambios.length > 0) {
+        await this.changeLog.record(tx, 'combustible', id, editor, cambios);
+      }
+      return editado;
     });
 
     if (dto.lectura !== undefined) {

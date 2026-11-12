@@ -2,11 +2,15 @@ import { BadRequestException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 
+import { ChangeLogService } from '../../change-log/change-log.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { StorageService } from '../../storage/storage.service';
 import { CombustibleService } from './combustible.service';
 
 const USER_ID = 'user_1234567890123456789';
+
+/** Quién corrige — la firma del cambio en el historial. */
+const EDITOR = { id: 'adm1', name: 'Admin de Prueba' };
 
 /** Include + omit que TODOS los read paths comparten (Terreno + vista admin). */
 const INCLUDE_ESPERADO = {
@@ -44,6 +48,7 @@ describe('CombustibleService', () => {
   const claimTmp = jest.fn();
   const discard = jest.fn();
   const sign = jest.fn();
+  const changeLog = { record: jest.fn() };
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
@@ -54,11 +59,16 @@ describe('CombustibleService', () => {
           provide: StorageService,
           useValue: { claimTmp, discard, deleteBestEffort: jest.fn(), sign },
         },
+        { provide: ChangeLogService, useValue: changeLog },
       ],
     }).compile();
     service = mod.get(CombustibleService);
     jest.clearAllMocks();
     prisma.user.findMany.mockResolvedValue([]);
+    // Default: la transacción ejecuta el callback con el propio mock como tx.
+    prisma.$transaction.mockImplementation(
+      (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+    );
     // El create corre dentro de una transacción (carga + contador): el doble
     // la ejecuta sobre el mismo mock, propagando lo que la callback lance.
     prisma.$transaction.mockImplementation(
@@ -378,7 +388,7 @@ describe('CombustibleService', () => {
         fecha: new Date(),
       });
 
-      const res = await service.update('c1', { litros: 25 });
+      const res = await service.update('c1', { litros: 25 }, EDITOR);
 
       expect(prisma.registroCombustible.update).toHaveBeenCalledWith({
         where: { id: 'c1' },
@@ -395,10 +405,14 @@ describe('CombustibleService', () => {
   });
 
   describe('update — corrección desde el panel', () => {
+    const editor = { id: 'adm1', name: 'Admin de Prueba' };
     const filaManual = {
       id: 'c1',
       equipoId: 'e1',
       registroHorometroId: null,
+      litros: 100,
+      tipo: 'PETROLEO',
+      fecha: new Date('2026-10-30T12:00:00.000Z'),
       lectura: 1000,
     };
 
@@ -413,10 +427,14 @@ describe('CombustibleService', () => {
         fotoKey: null,
         fecha: new Date(),
       });
+      // La edición y su registro de cambios van en una sola transacción.
+      prisma.$transaction.mockImplementation(
+        (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+      );
     });
 
     it('sin ningún campo -> 400', async () => {
-      await expect(service.update('c1', {})).rejects.toMatchObject({
+      await expect(service.update('c1', {}, editor)).rejects.toMatchObject({
         status: 400,
       });
       expect(prisma.registroCombustible.update).not.toHaveBeenCalled();
@@ -429,12 +447,13 @@ describe('CombustibleService', () => {
       });
 
       await expect(
-        service.update('c1', { litros: 100.4 }),
+        service.update('c1', { litros: 100.4 }, editor),
       ).rejects.toMatchObject({
         status: 409,
         response: { code: 'FUEL_LOAD_FROM_CARD' },
       });
       expect(prisma.registroCombustible.update).not.toHaveBeenCalled();
+      expect(changeLog.record).not.toHaveBeenCalled();
     });
 
     it('una carga MANUAL corrige litros/tipo/fecha/lectura y la fecha viaja como Date', async () => {
@@ -445,12 +464,16 @@ describe('CombustibleService', () => {
         currentMileage: null,
       });
 
-      await service.update('c1', {
-        litros: 100.4,
-        tipo: 'BENCINA',
-        fecha: '2026-11-01T10:00:00.000Z',
-        lectura: 1200,
-      });
+      await service.update(
+        'c1',
+        {
+          litros: 100.4,
+          tipo: 'BENCINA',
+          fecha: '2026-11-01T10:00:00.000Z',
+          lectura: 1200,
+        },
+        editor,
+      );
 
       const [{ data }] = prisma.registroCombustible.update.mock.calls[0] as [
         { data: Record<string, unknown> },
@@ -466,6 +489,31 @@ describe('CombustibleService', () => {
       );
     });
 
+    it('la corrección queda en el historial con su antes y después legibles, en la transacción', async () => {
+      await service.update('c1', { litros: 120.5, tipo: 'BENCINA' }, editor);
+
+      expect(changeLog.record).toHaveBeenCalledWith(prisma, 'combustible', 'c1', editor, [
+        { field: 'litros', label: 'Litros', before: '100', after: '120,5' },
+        {
+          field: 'tipo',
+          label: 'Combustible',
+          before: 'Petróleo',
+          after: 'Bencina',
+        },
+      ]);
+    });
+
+    it('una corrección que deja todo igual no escribe historial', async () => {
+      await service.update(
+        'c1',
+        { litros: 100, tipo: 'PETROLEO', fecha: '2026-10-30T12:00:00.000Z' },
+        editor,
+      );
+
+      expect(prisma.registroCombustible.update).toHaveBeenCalled();
+      expect(changeLog.record).not.toHaveBeenCalled();
+    });
+
     it('una lectura nueva más alta adelanta el contador del equipo (warn)', async () => {
       prisma.equipment.findUnique.mockResolvedValue({
         id: 'e1',
@@ -474,7 +522,7 @@ describe('CombustibleService', () => {
         currentMileage: null,
       });
 
-      await service.update('c1', { lectura: 1200 });
+      await service.update('c1', { lectura: 1200 }, editor);
 
       expect(prisma.equipment.updateMany).toHaveBeenCalledWith({
         where: {
@@ -493,13 +541,13 @@ describe('CombustibleService', () => {
         currentMileage: null,
       });
 
-      await service.update('c1', { lectura: 1200 });
+      await service.update('c1', { lectura: 1200 }, editor);
 
       expect(prisma.equipment.updateMany).not.toHaveBeenCalled();
     });
 
     it('sin lectura en el body, el contador no se toca', async () => {
-      await service.update('c1', { litros: 100.4 });
+      await service.update('c1', { litros: 100.4 }, editor);
 
       expect(prisma.equipment.updateMany).not.toHaveBeenCalled();
     });
@@ -508,7 +556,7 @@ describe('CombustibleService', () => {
       prisma.registroCombustible.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.update('nope', { litros: 10 }),
+        service.update('nope', { litros: 10 }, EDITOR),
       ).rejects.toMatchObject({ status: 404 });
     });
   });
@@ -749,7 +797,7 @@ describe('CombustibleService', () => {
         USER_ID,
       );
       const leido = await service.findOne('c1');
-      const actualizado = await service.update('c1', { litros: 20 });
+      const actualizado = await service.update('c1', { litros: 20 }, EDITOR);
 
       for (const res of [creado, leido, actualizado]) {
         expect(res).toMatchObject({
