@@ -17,7 +17,8 @@ export type ChangeLogEntity =
   | 'hallazgo'
   | 'shift_card'
   | 'maintenance_plan'
-  | 'reporte_diario';
+  | 'reporte_diario'
+  | 'combustible';
 
 /** Qué pasó con el registro: corrección, o eliminación definitiva. En una
  * eliminación `changes` guarda el resumen de lo borrado (`after` en «—»). */

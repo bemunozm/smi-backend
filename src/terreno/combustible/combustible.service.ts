@@ -1,7 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import type { Prisma } from '@prisma/client';
 
+import {
+  ChangeLogService,
+  diffFields,
+  type ComparableField,
+  type Editor,
+} from '../../change-log/change-log.service';
+import { formatBusinessDateTime } from '../../common/dates/business-time';
+import { ERROR_CODES } from '../../common/errors/error-codes';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
@@ -9,6 +22,34 @@ import { StorageService } from '../../storage/storage.service';
 import { resolveNombresUsuarios } from '../common/registrado-por.util';
 import { CreateCombustibleDto } from './dto/create-combustible.dto';
 import { UpdateCombustibleDto } from './dto/update-combustible.dto';
+
+/** Los datos de una carga manual que el panel puede corregir. */
+interface DatosCarga {
+  litros: number;
+  tipo: string;
+  fecha: Date;
+  lectura: number | null;
+}
+
+/** Cómo se lee cada dato en el historial de cambios del administrador. */
+const TIPO_LABEL: Record<string, string> = {
+  PETROLEO: 'Petróleo',
+  BENCINA: 'Bencina',
+};
+const CAMPOS_CARGA: readonly ComparableField<DatosCarga>[] = [
+  { field: 'litros', label: 'Litros' },
+  {
+    field: 'tipo',
+    label: 'Combustible',
+    format: (v) => (typeof v === 'string' && TIPO_LABEL[v]) || String(v),
+  },
+  {
+    field: 'fecha',
+    label: 'Fecha',
+    format: (v) => (v instanceof Date ? formatBusinessDateTime(v) : String(v)),
+  },
+  { field: 'lectura', label: 'Lectura' },
+];
 
 /**
  * Include compartido por TODOS los read paths (`create`/`findAll`/`findOne`/
@@ -86,6 +127,7 @@ export class CombustibleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly changeLog: ChangeLogService,
   ) {}
 
   async create(dto: CreateCombustibleDto, userId: string) {
@@ -203,13 +245,94 @@ export class CombustibleService {
     return this.shapeSolo(reg);
   }
 
-  async update(id: string, dto: UpdateCombustibleDto) {
-    const registro = await this.prisma.registroCombustible.update({
+  /**
+   * Corrección de una carga MANUAL desde el panel (solo ADMIN en el
+   * controller). Una carga nacida de un cierre de tarjeta se corrige editando
+   * la TARJETA (`PATCH /shift-cards/:id` sincroniza `litros` vía
+   * `syncFuelRecord` y deja historial) — editarla por acá las haría divergir,
+   * por eso se rechaza. Una `lectura` nueva reconcilia el contador del equipo
+   * en modo `warn`, igual que el alta: solo avanza, nunca retrocede. El
+   * cambio queda en el historial (`ChangeLog`, entity `combustible`) en la
+   * misma transacción — es lo que el registro de actividad muestra.
+   */
+  async update(id: string, dto: UpdateCombustibleDto, editor: Editor) {
+    if (
+      dto.litros === undefined &&
+      dto.tipo === undefined &&
+      dto.fecha === undefined &&
+      dto.lectura === undefined
+    ) {
+      throw new BadRequestException(
+        'Indica al menos un dato a corregir de la carga',
+      );
+    }
+
+    const previa = await this.prisma.registroCombustible.findUnique({
       where: { id },
-      data: dto,
-      include: COMBUSTIBLE_INCLUDE,
-      omit: { createdById: false },
+      select: {
+        equipoId: true,
+        registroHorometroId: true,
+        litros: true,
+        tipo: true,
+        fecha: true,
+        lectura: true,
+      },
     });
+    if (!previa) throw new NotFoundException('Registro no encontrado');
+    if (previa.registroHorometroId) {
+      throw new ConflictException({
+        message:
+          'Esta carga nació del cierre de una tarjeta de turno: corrígela editando esa tarjeta.',
+        code: ERROR_CODES.FUEL_LOAD_FROM_CARD,
+      });
+    }
+
+    const despues: DatosCarga = {
+      litros: dto.litros ?? previa.litros,
+      tipo: dto.tipo ?? previa.tipo,
+      fecha: dto.fecha !== undefined ? new Date(dto.fecha) : previa.fecha,
+      lectura: dto.lectura ?? previa.lectura,
+    };
+    const cambios = diffFields<DatosCarga>(previa, despues, CAMPOS_CARGA);
+
+    // Edición + historial en UNA transacción: una corrección sin su registro
+    // es justo lo que el historial debe impedir.
+    const registro = await this.prisma.$transaction(async (tx) => {
+      const editado = await tx.registroCombustible.update({
+        where: { id },
+        data: {
+          ...(dto.litros !== undefined ? { litros: dto.litros } : {}),
+          ...(dto.tipo !== undefined ? { tipo: dto.tipo } : {}),
+          ...(dto.fecha !== undefined ? { fecha: new Date(dto.fecha) } : {}),
+          ...(dto.lectura !== undefined ? { lectura: dto.lectura } : {}),
+        },
+        include: COMBUSTIBLE_INCLUDE,
+        omit: { createdById: false },
+      });
+      if (cambios.length > 0) {
+        await this.changeLog.record(tx, 'combustible', id, editor, cambios);
+      }
+      return editado;
+    });
+
+    if (dto.lectura !== undefined) {
+      const equipo = await this.prisma.equipment.findUnique({
+        where: { id: previa.equipoId },
+        select: { controlUnit: true, currentHourmeter: true, currentMileage: true },
+      });
+      if (equipo) {
+        // `warn`: la lectura corregida hacia abajo no retrocede el contador
+        // (si quedó inflado por el typo, se corrige en la ficha del equipo).
+        await reconcileEquipmentCounter(
+          this.prisma,
+          previa.equipoId,
+          equipo,
+          dto.lectura,
+          'warn',
+        );
+      }
+    }
+
     return this.shapeSolo(registro);
   }
 
