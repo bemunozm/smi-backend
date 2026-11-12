@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AuthModule } from '@thallesp/nestjs-better-auth';
 
+import { ActivityLogModule } from './activity-log/activity-log.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { HealthModule } from './health/health.module';
@@ -60,6 +61,9 @@ import { auth } from './auth/auth';
     // Asistencia mensual de supervisores/operadores (grilla de la
     // secretaria, lectura agregada de tarjetas + Reports).
     AsistenciaModule,
+    // Registro de actividad del administrador (lectura agregada de todos
+    // los dominios + historial de cambios).
+    ActivityLogModule,
     // Almacenamiento de archivos de Flota y Terreno: sube a `tmp/` vía
     // POST /api/files. No existe ruta pública `/uploads` — ver
     // SECURITY-NOTES.md.

@@ -19,6 +19,10 @@ export type ChangeLogEntity =
   | 'maintenance_plan'
   | 'reporte_diario';
 
+/** Qué pasó con el registro: corrección, o eliminación definitiva. En una
+ * eliminación `changes` guarda el resumen de lo borrado (`after` en «—»). */
+export type ChangeLogAction = 'UPDATE' | 'DELETE';
+
 /** Un dato que cambió, con los valores ya legibles para una persona. */
 export interface FieldChange {
   field: string;
@@ -103,11 +107,13 @@ export class ChangeLogService {
     entityId: string,
     user: Editor,
     changes: FieldChange[],
+    action: ChangeLogAction = 'UPDATE',
   ) {
     return tx.changeLog.create({
       data: {
         entity,
         entityId,
+        action,
         userId: user.id,
         userName: user.name,
         changes: changes as unknown as Prisma.InputJsonValue,
