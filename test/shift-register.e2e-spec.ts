@@ -1246,6 +1246,65 @@ maybeDescribe('Supervisión en Terreno — tarjetas de turno (e2e)', () => {
       }
     });
 
+    it('la carga del backfill guarda CUÁNDO se registró (createdAt hoy) además de su fecha histórica', async () => {
+      const equipo = await freshEquipment('CLOSEDT');
+      const { payload, response } = await registerClosed(equipo.id);
+      expect(response.status).toBe(201);
+
+      const fuel = await prisma.registroCombustible.findUniqueOrThrow({
+        where: { registroHorometroId: payload.id as string },
+        select: { fecha: true, createdAt: true },
+      });
+      expect(fuel.createdAt).not.toBeNull();
+      expect(businessDayKey(fuel.createdAt as Date)).toBe(todayShiftDate);
+      expect(businessDayKey(fuel.fecha)).toBe(yesterday);
+
+      // Y la API del apartado admin lo expone.
+      const lista = await adminAgent.get('/api/combustible').expect(200);
+      const filas = (
+        lista.body as ApiEnvelope<
+          Array<{ equipoId: string; createdAt: string | null; fecha: string }>
+        >
+      ).data;
+      const fila = filas.find((c) => c.equipoId === equipo.id);
+      expect(fila).toBeTruthy();
+      expect(fila!.createdAt).toBeTruthy();
+      expect(businessDayKey(new Date(fila!.createdAt!))).toBe(todayShiftDate);
+    });
+
+    it('el reporte de salida del turno PASADO se puede enviar e incluye la tarjeta backfilleada', async () => {
+      const equipo = await freshEquipment('CLOSEDP');
+      const { payload, response } = await registerClosed(equipo.id);
+      expect(response.status).toBe(201);
+
+      const reportResponse = await supervisorAgent
+        .post('/api/shift-reports')
+        .send({
+          id: randomUUID(),
+          shiftDate: yesterday,
+          shiftType: 'DIURNO',
+          cardIds: [payload.id],
+          requestedAt: new Date().toISOString(),
+        })
+        .expect(201);
+      const report = (
+        reportResponse.body as ApiEnvelope<{
+          id: string;
+          cardCount: number;
+          missingCardIds: string[];
+          shiftId: string;
+        }>
+      ).data;
+      expect(report.cardCount).toBe(1);
+      expect(report.missingCardIds).toEqual([]);
+      createdShiftIds.add(report.shiftId);
+
+      const row = await prisma.shiftExitReport.findUnique({
+        where: { id: report.id },
+      });
+      expect(row).not.toBeNull();
+    });
+
     it('valorFinal menor que valorInicial -> 400 HOURMETER_BELOW_INITIAL', async () => {
       const equipo = await freshEquipment('CLOSEDH');
       const { response } = await registerClosed(equipo.id, {

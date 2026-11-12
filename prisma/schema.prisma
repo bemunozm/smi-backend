@@ -651,6 +651,13 @@ model RegistroCombustible {
   fotoKey  String?
   fecha    DateTime  @default(now())
 
+  /// Cuándo se REGISTRÓ la fila — distinto de `fecha` (el día de negocio de
+  /// la carga): en una carga histórica (backfill de turno pasado, o alta
+  /// manual con fecha pasada) difieren, y el panel muestra ambos. Backfill de
+  /// la migración para filas viejas: cargas de tarjeta ← `closedAt` de su
+  /// tarjeta; manuales ← su propia `fecha` (mejor aproximación disponible).
+  createdAt DateTime? @default(now()) @map("created_at")
+
   /// Lectura del contador del equipo AL CARGAR, según su `controlUnit`:
   /// horómetro (h) en pesados, kilometraje (km) en livianos. La llena el alta
   /// manual del panel (pesado → horómetro, liviano → km, pedido del cliente);
