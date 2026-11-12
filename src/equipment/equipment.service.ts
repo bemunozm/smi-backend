@@ -38,6 +38,14 @@ export interface ResumenFlota {
 
 const ESTADOS: readonly EquipmentStatus[] = Object.values(EquipmentStatus);
 
+/** Quiénes pueden quedar a cargo de un liviano (camioneta). Ver `updateAssignment`. */
+const LIGHT_ASSIGNEE_ROLES: readonly string[] = [
+  ROLES.SUPERVISOR,
+  ROLES.MANTENEDOR,
+  ROLES.ADMIN,
+  ROLES.PREVENCIONISTA,
+];
+
 /**
  * `include` compartido por `findAll`/`findOne`/`create`/`update`/`updateStatus`/
  * `updateAssignment` para poder derivar `currentFuelLevel`: el último
@@ -563,9 +571,13 @@ export class EquipmentService {
       if (dto.supervisorId === null) {
         data.currentSupervisorId = null;
       } else {
+        // Una camioneta la usa cualquiera que se mueva en faena: supervisor,
+        // mantenedor, el administrador (Sergio la pidió para él) o el
+        // prevencionista, cuya única pantalla es justo «Mi camioneta». Un
+        // pesado sigue siendo solo del supervisor de la cuadrilla.
         await this.assertSupervisor(
           dto.supervisorId,
-          liviano ? [ROLES.SUPERVISOR, ROLES.MANTENEDOR] : [ROLES.SUPERVISOR],
+          liviano ? LIGHT_ASSIGNEE_ROLES : [ROLES.SUPERVISOR],
         );
         data.currentSupervisorId = dto.supervisorId;
       }

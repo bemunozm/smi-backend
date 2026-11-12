@@ -1161,6 +1161,41 @@ describe('EquipmentService', () => {
       });
     });
 
+    it.each([ROLES.ADMIN, ROLES.PREVENCIONISTA])(
+      'liviano: acepta un %s a cargo (la camioneta la usa quien se mueve en faena)',
+      async (role) => {
+        findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'LIGHT' });
+        userFindUnique.mockResolvedValue({ id: 'user_admin', role });
+        update.mockResolvedValue({
+          id: 'eq_1',
+          equipmentClass: 'LIGHT',
+          currentOperatorId: null,
+          currentOperator: null,
+          currentSupervisorId: 'user_admin',
+          horometros: [],
+        });
+        userFindMany.mockResolvedValue([{ id: 'user_admin', name: 'Sergio' }]);
+
+        const result = await service.updateAssignment('eq_1', {
+          supervisorId: 'user_admin',
+        });
+
+        expect(result).toMatchObject({
+          inUse: true,
+          supervisor: { id: 'user_admin', name: 'Sergio' },
+        });
+      },
+    );
+
+    it('pesado: un administrador no puede quedar como supervisor a cargo', async () => {
+      findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'HEAVY' });
+      userFindUnique.mockResolvedValue({ id: 'user_admin', role: ROLES.ADMIN });
+
+      await expect(
+        service.updateAssignment('eq_1', { supervisorId: 'user_admin' }),
+      ).rejects.toThrow('no tiene el rol');
+    });
+
     it('pesado: un mantenedor no puede quedar como supervisor a cargo', async () => {
       findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'HEAVY' });
       userFindUnique.mockResolvedValue({
