@@ -539,7 +539,7 @@ export class DashboardService {
             operador: true,
             supervisorId: true,
             nivelCombustible: true,
-            equipo: { select: { internalCode: true } },
+            equipo: { select: { internalCode: true, controlUnit: true } },
           },
         }),
         this.prisma.registroCombustible.findMany({
@@ -595,6 +595,11 @@ export class DashboardService {
     const turnoDeTarjeta = new Map<string, string>();
     for (const t of tarjetas) {
       turnoDeTarjeta.set(t.id, t.turno);
+      // Un liviano (controlUnit KM) registra KILOMETRAJE en la misma tabla:
+      // sus km no son horas máquina — fuera de HM operacionales y de
+      // Lecturas de horómetro (abajo). Su diésel sí cuenta, atribuido al
+      // turno de su tarjeta, y por eso el turno ya quedó en `turnoDeTarjeta`.
+      if (t.equipo.controlUnit === 'KM') continue;
       // Operación refleja consumo consumado (tarjetas cerradas + diésel), como la
       // lámina de fin de día del cliente; la tarjeta en curso se ve en Lecturas.
       if (t.valorFinal == null) continue;
@@ -684,6 +689,8 @@ export class DashboardService {
           total: par(o.total),
         })),
       lecturas: tarjetas
+        // Las tarjetas de livianos traen km, no lecturas de horómetro.
+        .filter((t) => t.equipo.controlUnit !== 'KM')
         .map((t) => ({
           id: t.id,
           equipmentId: t.equipoId,

@@ -665,13 +665,14 @@ describe('DashboardService.resumenDia', () => {
     turno: string,
     valorInicial: number,
     valorFinal: number | null,
+    controlUnit: 'HOURS' | 'KM' = 'HOURS',
   ) => ({
     id,
     equipoId,
     turno,
     valorInicial,
     valorFinal,
-    equipo: { internalCode: code },
+    equipo: { internalCode: code, controlUnit },
   });
   const carga = (
     equipoId: string,
@@ -737,6 +738,53 @@ describe('DashboardService.resumenDia', () => {
       0,
     ).where;
     expect(where.fecha).toEqual(limitesDeHoy());
+  });
+
+  it('una camioneta (controlUnit KM) no entra a hm ni a lecturas; su diésel sí cuenta', async () => {
+    // `flotaHoy` (corre porque la fecha es hoy) lista la flota aparte.
+    prisma.equipment.findMany.mockResolvedValue([]);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      card('t1', 'e1', 'CG-002', 'DIURNO', 100, 106),
+      // La tarjeta del liviano trae KILOMETRAJE en valorInicial/valorFinal.
+      card('t9', 'e9', 'CM-NUV', 'DIURNO', 2788, 3694, 'KM'),
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      {
+        equipoId: 'e9',
+        litros: 112,
+        registroHorometroId: 't9',
+        fecha: HOY,
+        equipo: { internalCode: 'CM-NUV' },
+      },
+    ]);
+    const res = await service.resumenDia();
+    // Los km de la camioneta no son horas máquina.
+    expect(res.hm).toEqual({ total: 6, dia: 6, noche: 0 });
+    expect(res.lecturas.map((l) => l.internalCode)).toEqual(['CG-002']);
+    // Su diésel sí es diésel del día, atribuido al turno de su tarjeta, y la
+    // camioneta sigue en Operación por equipo con hm 0 (solo litros).
+    expect(res.diesel).toEqual({
+      total: 112,
+      dia: 112,
+      noche: 0,
+      porHm: 18.67,
+    });
+    expect(res.operacionPorEquipo).toEqual([
+      {
+        equipmentId: 'e1',
+        internalCode: 'CG-002',
+        dia: { hm: 6, litros: 0 },
+        noche: { hm: 0, litros: 0 },
+        total: { hm: 6, litros: 0 },
+      },
+      {
+        equipmentId: 'e9',
+        internalCode: 'CM-NUV',
+        dia: { hm: 0, litros: 112 },
+        noche: { hm: 0, litros: 0 },
+        total: { hm: 0, litros: 112 },
+      },
+    ]);
   });
 
   it('diésel: vinculada va al turno de su tarjeta, sin vínculo solo al total; porHm', async () => {
