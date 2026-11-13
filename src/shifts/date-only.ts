@@ -17,6 +17,7 @@ import {
 } from 'class-validator';
 
 import {
+  businessDayInstant,
   businessHour,
   isPastBusinessDay,
   todayInBusinessTimeZone,
@@ -79,7 +80,30 @@ export function isPastShift(
   ayer.setUTCDate(ayer.getUTCDate() - 1);
   const esNocturnoDeAnoche = shiftDate === formatDateOnly(ayer);
   // Hasta las 08:00 en Chile, el nocturno de anoche sigue vivo.
-  return !(esNocturnoDeAnoche && businessHour(now) < 8);
+  return !(esNocturnoDeAnoche && businessHour(now) < SHIFT_DAY_START_HOUR);
+}
+
+/** Hora chilena a la que cambia el día de turno: el DIURNO abre a las 08:00 y
+ * el NOCTURNO (20:00–08:00) pertenece al día en que ABRE. Antes de las 08:00
+ * el día de turno es el ANTERIOR — espejo del frontend
+ * `lib/turno.ts#fechaDeTurno`. */
+export const SHIFT_DAY_START_HOUR = 8;
+
+/**
+ * Instante con que se fecha la carga de combustible de un cierre VIVO de
+ * tarjeta (pedido del cliente, 13-11: el término del nocturno pertenece al día
+ * en que abrió el turno). Si el cierre cae entre las 00:00 y las 07:59 de
+ * Chile, la carga se fecha con un instante sintético DENTRO del día anterior
+ * (`businessDayInstant(día, '20:30')` — mismo patrón que el backfill
+ * histórico); a partir de las 08:00 el instante real queda tal cual. La hora
+ * real del registro sobrevive en `createdAt`, que el panel ya muestra como
+ * «registrada el …».
+ */
+export function liveCloseFuelDate(at: Date): Date {
+  if (businessHour(at) >= SHIFT_DAY_START_HOUR) return at;
+  const dia = parseDateOnlyUtc(todayInBusinessTimeZone(at));
+  dia.setUTCDate(dia.getUTCDate() - 1);
+  return businessDayInstant(formatDateOnly(dia), '20:30');
 }
 
 /**

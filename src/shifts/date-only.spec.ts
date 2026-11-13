@@ -7,6 +7,7 @@ import {
   formatDateOnly,
   IsDateOnly,
   isValidDateOnly,
+  liveCloseFuelDate,
   parseDateOnlyUtc,
   SHIFT_DATE_MAX_FUTURE_DAYS,
   SHIFT_DATE_MAX_PAST_DAYS,
@@ -144,6 +145,38 @@ describe('assertShiftDateWithinWindow', () => {
         assertShiftDateWithinWindow('2026-08-28', NOW_ACROSS_UTC_MIDNIGHT),
       ).toThrow(BadRequestException);
     });
+  });
+});
+
+describe('liveCloseFuelDate', () => {
+  it('un cierre de madrugada chilena (03:59, verano UTC-3) fecha la carga en el día ANTERIOR, 20:30 −03', () => {
+    expect(
+      liveCloseFuelDate(new Date('2026-11-13T06:59:00.000Z')).toISOString(),
+    ).toBe('2026-11-12T23:30:00.000Z');
+  });
+
+  it('a las 08:00 chilenas exactas ya corre el turno diurno: el instante queda tal cual (misma referencia)', () => {
+    const d = new Date('2026-11-13T11:00:00.000Z'); // 08:00 en Chile (UTC-3)
+    expect(liveCloseFuelDate(d)).toBe(d);
+  });
+
+  it('un cierre de mediodía queda tal cual', () => {
+    const d = new Date('2026-11-13T15:00:00.000Z'); // 12:00 en Chile
+    expect(liveCloseFuelDate(d)).toBe(d);
+  });
+
+  it('en invierno chileno (UTC-4) la hora se evalúa en el reloj de Chile, no en UTC', () => {
+    // 2026-06-15T10:00:00Z = 06:00 en Chile → nocturno que abrió el 14.
+    expect(
+      liveCloseFuelDate(new Date('2026-06-15T10:00:00.000Z')).toISOString(),
+    ).toBe('2026-06-14T23:30:00.000Z');
+  });
+
+  it('cruza mes y año: la madrugada del 1 de enero pertenece al 31 de diciembre', () => {
+    // 2026-01-01T05:00:00Z = 02:00 en Chile (verano, UTC-3).
+    expect(
+      liveCloseFuelDate(new Date('2026-01-01T05:00:00.000Z')).toISOString(),
+    ).toBe('2025-12-31T23:30:00.000Z');
   });
 });
 
