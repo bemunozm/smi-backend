@@ -120,7 +120,10 @@ export function fuelDateForShiftDay(
   shiftType: string,
 ): Date {
   if (todayInBusinessTimeZone(at) === shiftDay) return at;
-  return businessDayInstant(shiftDay, shiftType === 'NOCTURNO' ? '20:30' : '12:00');
+  return businessDayInstant(
+    shiftDay,
+    shiftType === 'NOCTURNO' ? '20:30' : '12:00',
+  );
 }
 
 /**
