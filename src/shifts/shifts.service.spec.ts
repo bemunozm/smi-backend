@@ -1814,6 +1814,21 @@ describe('ShiftsService', () => {
         });
       });
 
+      it('0 -> 20 L en una tarjeta cerrada de MADRUGADA: la carga creada cae en el día anterior (regla del día de turno)', async () => {
+        // 06:30Z = 03:30 en Chile (UTC-3): el nocturno que abrió el 28.
+        givenCard(
+          closedCard({ fechaSalida: new Date('2026-09-29T06:30:00.000Z') }),
+        );
+
+        await service.update('card_1', { fuelLiters: 20 }, owner);
+
+        expect(
+          (
+            lastCallData(tx.registroCombustible.create).fecha as Date
+          ).toISOString(),
+        ).toBe('2026-09-28T23:30:00.000Z');
+      });
+
       it('20 -> 35 L con carga vinculada: actualiza los litros de esa fila', async () => {
         givenCard(closedCard({ fuelLiters: 20 }));
         tx.registroCombustible.findUnique.mockResolvedValue({ id: 'fuel_1' });

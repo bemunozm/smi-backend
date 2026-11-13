@@ -1247,7 +1247,12 @@ export class ShiftsService {
           litros: liters,
           tipo: DEFAULT_SHIFT_CLOSE_FUEL_TYPE,
           fotoKey: card.pumpPhotoKey,
-          fecha: card.fechaSalida ?? card.closedAt ?? new Date(),
+          // Misma regla del día de turno que el cierre: un cierre de
+          // madrugada fecha la carga en el día anterior. Idempotente sobre
+          // instantes ya sintéticos (20:30/12:00 −03, hora ≥ 08).
+          fecha: liveCloseFuelDate(
+            card.fechaSalida ?? card.closedAt ?? new Date(),
+          ),
           registroHorometroId: card.id,
         },
       });
