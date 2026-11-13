@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   Param,
@@ -67,5 +68,12 @@ export class TrabajosExtraController {
   @Get(':id/changes')
   async findChanges(@Param('id') id: string) {
     return { data: await this.service.findChanges(id), message: 'ok' };
+  }
+
+  @Delete(':id')
+  @Roles([ROLES.ADMIN])
+  async remove(@Param('id') id: string) {
+    await this.service.remove(id);
+    return { data: null, message: 'Report eliminado' };
   }
 }

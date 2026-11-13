@@ -552,6 +552,26 @@ export class TrabajosExtraService {
   }
 
   /**
+   * Elimina un trabajo — solo el administrador (ver controller). La foto del
+   * report se suelta best-effort DESPUÉS de borrar la fila (si el borrado
+   * falla, la foto sigue donde debe); el historial de cambios (`ChangeLog`)
+   * se conserva como traza. Mismo criterio que `HallazgosService.remove`.
+   */
+  async remove(id: string) {
+    const registro = await this.prisma.trabajoExtraordinario.findUnique({
+      where: { id },
+      select: { fotoKey: true },
+    });
+    if (!registro) throw new NotFoundException('Registro no encontrado');
+
+    await this.prisma.trabajoExtraordinario.delete({ where: { id } });
+
+    if (registro.fotoKey) {
+      await this.storage.deleteBestEffort(registro.fotoKey);
+    }
+  }
+
+  /**
    * Reglas de un trabajo completo, al crearlo o después de editarlo, y el
    * total de horas recalculado. Devuelve los datos listos para guardar.
    */

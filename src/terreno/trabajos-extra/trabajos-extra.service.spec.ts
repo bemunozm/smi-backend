@@ -49,6 +49,7 @@ describe('TrabajosExtraService', () => {
       findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      delete: jest.fn(),
     },
     // Se mockea para probar que un turno abierto no bloquea el trabajo.
     registroHorometro: { findFirst: jest.fn() },
@@ -63,9 +64,10 @@ describe('TrabajosExtraService', () => {
   const eventEmitter = { emit: jest.fn() };
   const changeLog = { record: jest.fn(), findFor: jest.fn() };
   // La foto del report: el create reclama la key tmp y las respuestas firman
-  // la URL (nunca exponen la key).
+  // la URL (nunca exponen la key); el remove la suelta best-effort.
   const claimTmp = jest.fn();
   const sign = jest.fn();
+  const deleteBestEffort = jest.fn();
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
@@ -75,7 +77,10 @@ describe('TrabajosExtraService', () => {
         { provide: OperatorsService, useValue: { assertActive } },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: ChangeLogService, useValue: changeLog },
-        { provide: StorageService, useValue: { claimTmp, sign } },
+        {
+          provide: StorageService,
+          useValue: { claimTmp, sign, deleteBestEffort },
+        },
       ],
     }).compile();
     service = mod.get(TrabajosExtraService);
@@ -1150,6 +1155,58 @@ describe('TrabajosExtraService', () => {
         where: { id: ID },
         select: { createdById: true },
       });
+    });
+  });
+
+  describe('remove', () => {
+    it('borra la fila y suelta la foto del bucket (best-effort, después del delete)', async () => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        fotoKey: 'trabajo-extra-photo/u1/report.jpg',
+      });
+
+      await service.remove('t1');
+
+      expect(prisma.trabajoExtraordinario.delete).toHaveBeenCalledWith({
+        where: { id: 't1' },
+      });
+      expect(deleteBestEffort).toHaveBeenCalledWith(
+        'trabajo-extra-photo/u1/report.jpg',
+      );
+    });
+
+    it('sin foto no toca el storage', async () => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        fotoKey: null,
+      });
+
+      await service.remove('t1');
+
+      expect(prisma.trabajoExtraordinario.delete).toHaveBeenCalledWith({
+        where: { id: 't1' },
+      });
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('un id inexistente da 404 sin borrar nada', async () => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove('nope')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.trabajoExtraordinario.delete).not.toHaveBeenCalled();
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('si el delete falla, la foto NO se suelta', async () => {
+      prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+        fotoKey: 'trabajo-extra-photo/u1/report.jpg',
+      });
+      prisma.trabajoExtraordinario.delete.mockRejectedValue(
+        new Error('db caída'),
+      );
+
+      await expect(service.remove('t1')).rejects.toThrow('db caída');
+      expect(deleteBestEffort).not.toHaveBeenCalled();
     });
   });
 });
