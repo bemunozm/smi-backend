@@ -68,6 +68,7 @@ import {
   assertShiftDateWithinWindow,
   formatDateOnly,
   isPastShift,
+  liveCloseFuelDate,
   parseDateOnlyUtc,
 } from './date-only';
 import { adBlueError } from './adblue';
@@ -734,7 +735,11 @@ export class ShiftsService {
               // sola en la ficha y en el historial de combustible sin
               // duplicar la foto.
               fotoKey: pumpPhotoKey,
-              fecha: esCargaHistorica ? card.fecha : photoCapturedAt,
+              // Cierre vivo: antes de las 08:00 de Chile la carga pertenece al
+              // día en que abrió el nocturno (pedido del cliente, 13-11).
+              fecha: esCargaHistorica
+                ? card.fecha
+                : liveCloseFuelDate(photoCapturedAt),
               registroHorometroId: id,
             },
           });
