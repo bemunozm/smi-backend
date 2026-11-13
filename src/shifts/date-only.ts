@@ -17,6 +17,7 @@ import {
 } from 'class-validator';
 
 import {
+  businessDayInstant,
   businessHour,
   isPastBusinessDay,
   todayInBusinessTimeZone,
@@ -79,7 +80,50 @@ export function isPastShift(
   ayer.setUTCDate(ayer.getUTCDate() - 1);
   const esNocturnoDeAnoche = shiftDate === formatDateOnly(ayer);
   // Hasta las 08:00 en Chile, el nocturno de anoche sigue vivo.
-  return !(esNocturnoDeAnoche && businessHour(now) < 8);
+  return !(esNocturnoDeAnoche && businessHour(now) < SHIFT_DAY_START_HOUR);
+}
+
+/** Hora chilena a la que cambia el día de turno: el DIURNO abre a las 08:00 y
+ * el NOCTURNO (20:00–08:00) pertenece al día en que ABRE. Antes de las 08:00
+ * el día de turno es el ANTERIOR — espejo del frontend
+ * `lib/turno.ts#fechaDeTurno`. */
+export const SHIFT_DAY_START_HOUR = 8;
+
+/**
+ * Día de turno (`YYYY-MM-DD`) que el RELOJ asigna al instante `at`: antes de
+ * las 08:00 de Chile sigue corriendo el turno que abrió el día anterior.
+ * Espejo del frontend `lib/turno.ts#fechaDeTurno`. Es el fallback para fechar
+ * una tarjeta sin `Shift` vinculado; cuando el `Shift` existe, manda su
+ * `date`.
+ */
+export function shiftDayOf(at: Date): string {
+  const dia = parseDateOnlyUtc(todayInBusinessTimeZone(at));
+  if (businessHour(at) < SHIFT_DAY_START_HOUR) {
+    dia.setUTCDate(dia.getUTCDate() - 1);
+  }
+  return formatDateOnly(dia);
+}
+
+/**
+ * Instante con que se fecha la carga de combustible de un cierre/edición de
+ * tarjeta (pedido del cliente, 13-11: la carga pertenece al día del turno en
+ * que queda reportada la tarjeta, aunque el cierre real caiga en otro día —
+ * incluso pasadas las 08:00 del día siguiente). Si el instante real `at` cae
+ * dentro del día chileno `shiftDay`, queda tal cual; si no, un instante
+ * sintético DENTRO de ese día (20:30 −03 NOCTURNO, 12:00 −03 DIURNO — mismo
+ * patrón que el backfill histórico). La hora real del registro sobrevive en
+ * `createdAt`, que el panel ya muestra como «registrada el …».
+ */
+export function fuelDateForShiftDay(
+  at: Date,
+  shiftDay: string,
+  shiftType: string,
+): Date {
+  if (todayInBusinessTimeZone(at) === shiftDay) return at;
+  return businessDayInstant(
+    shiftDay,
+    shiftType === 'NOCTURNO' ? '20:30' : '12:00',
+  );
 }
 
 /**

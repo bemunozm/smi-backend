@@ -15,7 +15,12 @@ import { StorageService } from '../storage/storage.service';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { ShiftsService } from './shifts.service';
-import { businessDayKey } from '../common/dates/business-time';
+import {
+  businessDayKey,
+  businessHour,
+  todayInBusinessTimeZone,
+} from '../common/dates/business-time';
+import { formatDateOnly, parseDateOnlyUtc } from './date-only';
 
 /**
  * Captura el `data` de la ÚLTIMA llamada a un mock `jest.fn()` sin tipar.
@@ -53,6 +58,20 @@ function todayShiftDate(offsetDays = 0): string {
  * partir de `dto.shiftDate` (mismo criterio que `parseDateOnlyUtc`). */
 function todayShiftDateUtc(offsetDays = 0): Date {
   return new Date(`${todayShiftDate(offsetDays)}T00:00:00.000Z`);
+}
+
+/** Instante reciente (≤24 h atrás, dentro de la ventana de `capturedAt`) cuya
+ * hora CHILENA es `hour` — independiente de la hora a la que corra Jest. */
+function instantAtBusinessHour(hour: number): Date {
+  const horasAtras = (businessHour(new Date()) - hour + 24) % 24;
+  return new Date(Date.now() - horasAtras * 3_600_000);
+}
+
+/** El día de negocio chileno ANTERIOR al del instante dado (`YYYY-MM-DD`). */
+function previousBusinessDay(at: Date): string {
+  const dia = parseDateOnlyUtc(todayInBusinessTimeZone(at));
+  dia.setUTCDate(dia.getUTCDate() - 1);
+  return formatDateOnly(dia);
 }
 
 const EQUIPO_INCLUDE = {
@@ -120,6 +139,9 @@ describe('ShiftsService', () => {
       delete: jest.fn(),
     },
     user: { findUnique: jest.fn() },
+    // Turno de quien cerró un liviano (`closedShiftId`, soft ref): lo
+    // resuelve `syncFuelRecord` para fechar la carga editada.
+    shift: { findUnique: jest.fn() },
     // Checklist diario del equipo (Módulo 3): sin fila, el equipo está libre.
     dailyChecklist: { findUnique: jest.fn() },
     // Bloqueo de la fila (`FOR UPDATE`) al editar una tarjeta.
@@ -860,6 +882,7 @@ describe('ShiftsService', () => {
         equipoId: 'e1',
         valorInicial: 100,
         valorFinal: null,
+        turno: 'NOCTURNO',
         supervisorId: 'sup_1',
         closeClientId: null,
         closedAt: null,
@@ -886,7 +909,62 @@ describe('ShiftsService', () => {
         );
       });
 
-      it('un NOCTURNO vivo de anoche cerrado en la mañana NO se re-fecha', async () => {
+      it('cierre VIVO de madrugada (antes de las 08:00 de Chile): el combustible cae en el día ANTERIOR y fechaSalida conserva la hora real', async () => {
+        const madrugada = instantAtBusinessHour(3);
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          ...cardBase,
+          fecha: new Date(madrugada.getTime() - 6 * 3_600_000), // abierta ~21:00 de anoche
+          createdAt: new Date(madrugada.getTime() - 6 * 3_600_000),
+        });
+
+        await service.closeCard(
+          'card_1',
+          { ...dto, capturedAt: madrugada.toISOString() },
+          session,
+        );
+
+        const fuel = lastCallData(tx.registroCombustible.create);
+        expect((fuel.fecha as Date).toISOString()).toBe(
+          `${previousBusinessDay(madrugada)}T23:30:00.000Z`,
+        );
+        const update = lastCallData(tx.registroHorometro.updateMany);
+        expect((update.fechaSalida as Date).toISOString()).toBe(
+          madrugada.toISOString(),
+        );
+      });
+
+      it('cierre PASADAS las 08:00 del día siguiente: el combustible igual cae en el día en que abrió el turno (shift de la tarjeta)', async () => {
+        const cierreTarde = instantAtBusinessHour(9); // 09:xx — ya corre el diurno siguiente
+        const apertura = new Date(cierreTarde.getTime() - 12 * 3_600_000); // ~21:xx del día del turno
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          ...cardBase,
+          fecha: apertura,
+          createdAt: apertura,
+          shift: {
+            id: 'shift_1',
+            date: parseDateOnlyUtc(previousBusinessDay(cierreTarde)),
+            type: 'NOCTURNO',
+            exitReports: [],
+          },
+        });
+
+        await service.closeCard(
+          'card_1',
+          { ...dto, capturedAt: cierreTarde.toISOString() },
+          session,
+        );
+
+        const fuel = lastCallData(tx.registroCombustible.create);
+        expect((fuel.fecha as Date).toISOString()).toBe(
+          `${previousBusinessDay(cierreTarde)}T23:30:00.000Z`,
+        );
+        const update = lastCallData(tx.registroHorometro.updateMany);
+        expect((update.fechaSalida as Date).toISOString()).toBe(
+          cierreTarde.toISOString(),
+        );
+      });
+
+      it('un NOCTURNO vivo de anoche cerrado en la mañana: la SALIDA (fechaSalida) conserva la hora real', async () => {
         // Apertura real hace 11 h: según la hora en que corra Jest cae en
         // ayer (día pasado, pero createdAt de ayer) o en hoy — en ambos
         // casos el cierre es VIVO y conserva la hora real.
@@ -1104,10 +1182,40 @@ describe('ShiftsService', () => {
     });
 
     describe('photoCapturedAt (EXIF del dispositivo)', () => {
-      it('un photoCapturedAt válido y dentro de rango se usa como fecha de la carga', async () => {
-        const photoCapturedAt = iso(-60_000); // 1 minuto antes de "ahora"
+      // Instantes DIURNOS chilenos alineados con la apertura de la tarjeta:
+      // el passthrough solo aplica cuando el instante real cae DENTRO del día
+      // de turno de la tarjeta (`fuelDateForShiftDay`). Con `iso()` a secas
+      // estos tests dependerían de la hora a la que corra Jest.
+      const capturadoDeDia = instantAtBusinessHour(12).toISOString();
 
-        await service.closeCard('card_1', { ...dto, photoCapturedAt }, session);
+      beforeEach(() => {
+        // Tarjeta DIURNA abierta el mismo día de negocio que los instantes
+        // de captura (sin `shift` vinculado: cubre el fallback por reloj).
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          id: 'card_1',
+          equipoId: 'e1',
+          valorInicial: 100,
+          valorFinal: null,
+          turno: 'DIURNO',
+          supervisorId: 'sup_1',
+          closeClientId: null,
+          closedAt: null,
+          fecha: new Date(capturadoDeDia),
+          createdAt: new Date(capturadoDeDia),
+          shift: null,
+        });
+      });
+
+      it('un photoCapturedAt válido y dentro de rango se usa como fecha de la carga', async () => {
+        const photoCapturedAt = new Date(
+          new Date(capturadoDeDia).getTime() - 60_000,
+        ).toISOString(); // 1 minuto antes
+
+        await service.closeCard(
+          'card_1',
+          { ...dto, capturedAt: capturadoDeDia, photoCapturedAt },
+          session,
+        );
 
         expect(
           (
@@ -1120,7 +1228,7 @@ describe('ShiftsService', () => {
         await expect(
           service.closeCard(
             'card_1',
-            { ...dto, photoCapturedAt: '2026-W01' },
+            { ...dto, capturedAt: capturadoDeDia, photoCapturedAt: '2026-W01' },
             session,
           ),
         ).resolves.toBeDefined();
@@ -1129,7 +1237,7 @@ describe('ShiftsService', () => {
           (
             lastCallData(tx.registroCombustible.create).fecha as Date
           ).toISOString(),
-        ).toBe(new Date(dto.capturedAt).toISOString());
+        ).toBe(capturadoDeDia);
       });
 
       it('un photoCapturedAt fuera de la ventana razonable (EXIF con reloj mal configurado) NO rechaza — cae a capturedAt', async () => {
@@ -1140,7 +1248,11 @@ describe('ShiftsService', () => {
         await expect(
           service.closeCard(
             'card_1',
-            { ...dto, photoCapturedAt: photoCapturedAtAbsurdo },
+            {
+              ...dto,
+              capturedAt: capturadoDeDia,
+              photoCapturedAt: photoCapturedAtAbsurdo,
+            },
             session,
           ),
         ).resolves.toBeDefined();
@@ -1149,17 +1261,21 @@ describe('ShiftsService', () => {
           (
             lastCallData(tx.registroCombustible.create).fecha as Date
           ).toISOString(),
-        ).toBe(new Date(dto.capturedAt).toISOString());
+        ).toBe(capturadoDeDia);
       });
 
       it('sin photoCapturedAt, usa capturedAt (comportamiento previo intacto)', async () => {
-        await service.closeCard('card_1', dto, session);
+        await service.closeCard(
+          'card_1',
+          { ...dto, capturedAt: capturadoDeDia },
+          session,
+        );
 
         expect(
           (
             lastCallData(tx.registroCombustible.create).fecha as Date
           ).toISOString(),
-        ).toBe(new Date(dto.capturedAt).toISOString());
+        ).toBe(capturadoDeDia);
       });
     });
 
@@ -1749,6 +1865,65 @@ describe('ShiftsService', () => {
           fecha: new Date('2026-09-28T19:55:00.000Z'),
           registroHorometroId: 'card_1',
         });
+      });
+
+      it('0 -> 20 L en una tarjeta NOCTURNA cerrada de MADRUGADA: la carga creada cae en el día del turno (regla del día de turno)', async () => {
+        // 06:30Z = 03:30 en Chile (UTC-3): el nocturno que abrió el 28.
+        givenCard(
+          closedCard({
+            turno: 'NOCTURNO',
+            fechaSalida: new Date('2026-09-29T06:30:00.000Z'),
+            shift: {
+              id: 'shift_1',
+              date: new Date('2026-09-28T00:00:00.000Z'),
+              type: 'NOCTURNO',
+              exitReports: [],
+            },
+          }),
+        );
+
+        await service.update('card_1', { fuelLiters: 20 }, owner);
+
+        expect(
+          (
+            lastCallData(tx.registroCombustible.create).fecha as Date
+          ).toISOString(),
+        ).toBe('2026-09-28T23:30:00.000Z');
+      });
+
+      it('0 -> 20 L en un liviano cerrado en el turno de OTRO supervisor: la carga respeta el turno de quien cerró (closedShiftId)', async () => {
+        givenCard(
+          closedCard({
+            closedShiftId: 'shift_2',
+            // Cerrada a las 03:30 de Chile del 30 por un supervisor nocturno
+            // cuyo turno es el del 29.
+            fechaSalida: new Date('2026-09-30T06:30:00.000Z'),
+          }),
+        );
+        tx.shift.findUnique.mockResolvedValue({
+          date: new Date('2026-09-29T00:00:00.000Z'),
+          type: 'NOCTURNO',
+        });
+        // `shapeCards` resuelve el turno de cierre (soft ref) para la respuesta.
+        prisma.shift.findMany.mockResolvedValue([
+          {
+            id: 'shift_2',
+            date: new Date('2026-09-29T00:00:00.000Z'),
+            type: 'NOCTURNO',
+          },
+        ]);
+
+        await service.update('card_1', { fuelLiters: 20 }, owner);
+
+        expect(tx.shift.findUnique).toHaveBeenCalledWith({
+          where: { id: 'shift_2' },
+          select: { date: true, type: true },
+        });
+        expect(
+          (
+            lastCallData(tx.registroCombustible.create).fecha as Date
+          ).toISOString(),
+        ).toBe('2026-09-29T23:30:00.000Z');
       });
 
       it('20 -> 35 L con carga vinculada: actualiza los litros de esa fila', async () => {

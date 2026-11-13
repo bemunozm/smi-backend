@@ -67,8 +67,10 @@ import {
 import {
   assertShiftDateWithinWindow,
   formatDateOnly,
+  fuelDateForShiftDay,
   isPastShift,
   parseDateOnlyUtc,
+  shiftDayOf,
 } from './date-only';
 import { adBlueError } from './adblue';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
@@ -543,6 +545,9 @@ export class ShiftsService {
 
     const card = await this.prisma.registroHorometro.findUnique({
       where: { id },
+      // `shift` para fechar la carga de combustible en el día del turno en
+      // que se ABRIÓ la tarjeta (ver `fuelShiftDay` más abajo).
+      include: { shift: { select: { date: true, type: true } } },
     });
     if (!card) {
       throw new NotFoundException({
@@ -595,6 +600,14 @@ export class ShiftsService {
 
     // El liviano entra en el reporte de salida del turno de quien lo cierra.
     let closedShiftId: string | null = null;
+    // Día de turno al que queda REPORTADA la tarjeta — ahí se fecha la carga
+    // de combustible aunque el cierre real caiga en otro día de calendario,
+    // incluso pasadas las 08:00 del día siguiente (pedido del cliente,
+    // 13-11): pesados → el turno en que se abrió (`card.shift`, con fallback
+    // por reloj de apertura); livianos → el turno de quien cierra (abajo).
+    let fuelShiftDay = card.shift
+      ? { day: formatDateOnly(card.shift.date), type: card.shift.type }
+      : { day: shiftDayOf(card.fecha), type: card.turno };
     if (esLiviano) {
       if (!dto.shiftDate || !dto.shiftType) {
         throw new BadRequestException(
@@ -605,6 +618,7 @@ export class ShiftsService {
       closedShiftId = (
         await this.upsertShift(session.user.id, dto.shiftDate, dto.shiftType)
       ).id;
+      fuelShiftDay = { day: dto.shiftDate, type: dto.shiftType };
     }
 
     const { at: capturedAt, discardedSkewMs } = resolveCapturedAt(
@@ -734,7 +748,15 @@ export class ShiftsService {
               // sola en la ficha y en el historial de combustible sin
               // duplicar la foto.
               fotoKey: pumpPhotoKey,
-              fecha: esCargaHistorica ? card.fecha : photoCapturedAt,
+              // Cierre vivo: la carga se fecha en el día del turno reportado
+              // (`fuelShiftDay`), no en el día de calendario del cierre.
+              fecha: esCargaHistorica
+                ? card.fecha
+                : fuelDateForShiftDay(
+                    photoCapturedAt,
+                    fuelShiftDay.day,
+                    fuelShiftDay.type,
+                  ),
               registroHorometroId: id,
             },
           });
@@ -1236,13 +1258,35 @@ export class ShiftsService {
         data: { litros: liters },
       });
     } else if (liters > 0) {
+      // Misma regla del día de turno que el cierre: la carga se fecha en el
+      // día del turno en que quedó reportada la tarjeta — el turno de quien
+      // cerró el liviano (`closedShiftId`, soft ref sin relación Prisma: se
+      // resuelve acá) o el turno de la tarjeta.
+      const closedShift = card.closedShiftId
+        ? await tx.shift.findUnique({
+            where: { id: card.closedShiftId },
+            select: { date: true, type: true },
+          })
+        : null;
+      const reportedShift = closedShift ?? card.shift;
+      const realInstant = card.fechaSalida ?? card.closedAt ?? new Date();
       await tx.registroCombustible.create({
         data: {
           equipoId: card.equipoId,
           litros: liters,
           tipo: DEFAULT_SHIFT_CLOSE_FUEL_TYPE,
           fotoKey: card.pumpPhotoKey,
-          fecha: card.fechaSalida ?? card.closedAt ?? new Date(),
+          fecha: reportedShift
+            ? fuelDateForShiftDay(
+                realInstant,
+                formatDateOnly(reportedShift.date),
+                reportedShift.type,
+              )
+            : fuelDateForShiftDay(
+                realInstant,
+                shiftDayOf(card.fecha),
+                card.turno,
+              ),
           registroHorometroId: card.id,
         },
       });
