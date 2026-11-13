@@ -93,35 +93,61 @@ type DatosTrabajo = Pick<
 export interface DetalleActividad {
   actividad: string;
   lugar: string;
+  /** Las plantas unidas por «, » (`PP1, PP4`): lo que leen el registro de
+   * cambios, el Excel y las versiones anteriores de la app. */
   planta: string | null;
+  /** Las plantas por separado — ausente en filas anteriores (13-11), que
+   * tenían una sola en `planta`. */
+  plantas?: string[];
   horas: number;
+  /** Qué se hizo en esta actividad — `null` si no se escribió; ausente en
+   * filas anteriores al campo (13-11). */
+  descripcion?: string | null;
 }
 
 /**
- * Reglas POR FILA del desglose (cliente, 05-11) + normalización: solo una
- * limpieza de silos puede hacerse EN PLANTA y entonces dice en cuál; en el
- * resto la planta se descarta para que no quede un nombre huérfano.
+ * Reglas POR FILA del desglose (cliente, 05-11 y 13-11) + normalización:
+ * - `lugar` es el TIPO de tarea, que define cómo se paga;
+ * - una limpieza de silos es SIEMPRE de tipo Planta y es la única que lo es:
+ *   el servidor fija PLANTA aunque llegue otro tipo (había limpiezas de silos
+ *   marcadas como Transporte) y rechaza PLANTA en cualquier otra actividad;
+ * - si llega PLANTA, dice en cuál; en el resto la planta se descarta para que
+ *   no quede un nombre huérfano.
  */
 function normalizarDetalle(filas: ActividadDetalleDto[]): DetalleActividad[] {
   return filas.map((f) => {
-    const planta = f.planta?.trim();
+    // Varias plantas (`plantas`) o, de una versión anterior, una sola (`planta`).
+    const nombres = [
+      ...new Set(
+        (f.plantas ?? (f.planta != null ? [f.planta] : []))
+          .map((p) => p.trim())
+          .filter((p) => p !== ''),
+      ),
+    ];
+    const esSilos = f.actividad === 'LIMPIEZA_SILOS';
     if (f.lugar === 'PLANTA') {
-      if (f.actividad !== 'LIMPIEZA_SILOS') {
+      if (!esSilos) {
         throw new BadRequestException(
-          'Solo una limpieza de silos puede hacerse en planta: para el resto usá Transporte o Variado.',
+          'Solo una limpieza de silos es de tipo Planta: para el resto usá Transporte o Variado.',
         );
       }
-      if (!planta) {
+      if (nombres.length === 0) {
         throw new BadRequestException(
           'Indicá en qué planta se hizo la limpieza de silos.',
         );
       }
     }
+    // Un cliente anterior pudo mandar la limpieza de silos como otro tipo y
+    // sin planta: se corrige el tipo y la planta queda sin dato.
+    const lugar = esSilos ? 'PLANTA' : f.lugar;
+    const plantas = lugar === 'PLANTA' ? nombres : [];
     return {
       actividad: f.actividad,
-      lugar: f.lugar,
-      planta: f.lugar === 'PLANTA' ? (planta ?? null) : null,
+      lugar,
+      planta: plantas.length > 0 ? plantas.join(', ') : null,
+      plantas,
       horas: Number(f.horas.toFixed(2)),
+      descripcion: f.descripcion?.trim() || null,
     };
   });
 }
@@ -144,7 +170,7 @@ function resumenDetalle(detalle: unknown, actividades: string[]): string {
       (d) =>
         `${ACTIVIDAD_LABEL[d.actividad] ?? d.actividad} · ${DESTINO_LABEL[d.lugar] ?? d.lugar}${
           d.planta ? ` (${d.planta})` : ''
-        } · ${formatNumber(d.horas)} h`,
+        } · ${formatNumber(d.horas)} h${d.descripcion ? ` · ${d.descripcion}` : ''}`,
     )
     .join('; ');
 }

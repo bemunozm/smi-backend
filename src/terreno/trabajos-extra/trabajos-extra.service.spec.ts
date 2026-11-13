@@ -285,12 +285,12 @@ describe('TrabajosExtraService', () => {
       expect('fotoKey' in res).toBe(false);
     });
 
-    it('la planta de una fila se descarta cuando su lugar no es PLANTA', async () => {
+    it('la planta de una fila se descarta cuando su tipo no es PLANTA', async () => {
       const res = await createAs({
         ...base,
         detalle: [
           {
-            actividad: 'LIMPIEZA_SILOS',
+            actividad: 'REGULACION_CARGA',
             lugar: 'VARIADO',
             planta: 'Planta 1',
             horas: 1,
@@ -299,12 +299,103 @@ describe('TrabajosExtraService', () => {
       });
       expect(res.detalleActividades).toEqual([
         {
-          actividad: 'LIMPIEZA_SILOS',
+          actividad: 'REGULACION_CARGA',
           lugar: 'VARIADO',
           planta: null,
+          plantas: [],
           horas: 1,
+          descripcion: null,
         },
       ]);
+    });
+
+    it('una limpieza de silos es siempre de tipo Planta, aunque llegue otro tipo', async () => {
+      const res = await createAs({
+        ...base,
+        detalle: [
+          {
+            actividad: 'LIMPIEZA_SILOS',
+            lugar: 'TRANSPORTE',
+            horas: 1,
+          },
+        ],
+      });
+      expect(res.detalleActividades).toEqual([
+        {
+          actividad: 'LIMPIEZA_SILOS',
+          lugar: 'PLANTA',
+          planta: null,
+          plantas: [],
+          horas: 1,
+          descripcion: null,
+        },
+      ]);
+    });
+
+    it('guarda la descripción de cada actividad, sin espacios sobrantes', async () => {
+      const res = await createAs({
+        ...base,
+        detalle: [
+          {
+            actividad: 'LIMPIEZA_SILOS',
+            lugar: 'PLANTA',
+            planta: 'Planta 4',
+            horas: 2,
+            descripcion: '  Silo 2 de la planta 4  ',
+          },
+        ],
+      });
+      expect(res.detalleActividades).toEqual([
+        {
+          actividad: 'LIMPIEZA_SILOS',
+          lugar: 'PLANTA',
+          planta: 'Planta 4',
+          plantas: ['Planta 4'],
+          horas: 2,
+          descripcion: 'Silo 2 de la planta 4',
+        },
+      ]);
+    });
+
+    it('una limpieza de silos puede abarcar varias plantas', async () => {
+      const res = await createAs({
+        ...base,
+        detalle: [
+          {
+            actividad: 'LIMPIEZA_SILOS',
+            lugar: 'PLANTA',
+            plantas: [' PP1 ', 'PP4', 'PP1', ''],
+            horas: 3,
+            descripcion: 'Silos de ambas plantas',
+          },
+        ],
+      });
+      expect(res.detalleActividades).toEqual([
+        {
+          actividad: 'LIMPIEZA_SILOS',
+          lugar: 'PLANTA',
+          planta: 'PP1, PP4',
+          plantas: ['PP1', 'PP4'],
+          horas: 3,
+          descripcion: 'Silos de ambas plantas',
+        },
+      ]);
+    });
+
+    it('tipo Planta con la lista de plantas vacía se rechaza', async () => {
+      await expect(
+        createAs({
+          ...base,
+          detalle: [
+            {
+              actividad: 'LIMPIEZA_SILOS',
+              lugar: 'PLANTA',
+              plantas: [' '],
+              horas: 1,
+            },
+          ],
+        }),
+      ).rejects.toThrow(/en qué planta/i);
     });
   });
 
