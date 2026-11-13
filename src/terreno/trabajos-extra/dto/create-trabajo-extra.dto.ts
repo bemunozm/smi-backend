@@ -73,7 +73,9 @@ export class ActividadDetalleDto {
   @IsIn(ACTIVIDADES)
   actividad!: string;
 
-  @IsIn(DESTINOS, { message: 'Indicá dónde se hizo la actividad' })
+  /** Tipo de tarea (define cómo se paga): Transporte, Planta o Variado. Una
+   * limpieza de silos es SIEMPRE Planta: el servidor lo fija aunque llegue otro. */
+  @IsIn(DESTINOS, { message: 'Indicá el tipo de la actividad' })
   lugar!: string;
 
   /** Nombre de la planta (catálogo `Planta`) cuando `lugar` es PLANTA; se
@@ -89,6 +91,14 @@ export class ActividadDetalleDto {
   @Min(0.1, { message: 'Las horas de la actividad deben ser mayores a 0' })
   @Max(24)
   horas!: number;
+
+  /** Qué se hizo en ESTA actividad (p. ej. en qué silo o planta). Opcional en
+   * el servidor para no trabar reenvíos offline de versiones anteriores de la
+   * app; el formulario la pide al registrar. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  descripcion?: string;
 }
 
 export class CreateTrabajoExtraDto {

@@ -285,12 +285,12 @@ describe('TrabajosExtraService', () => {
       expect('fotoKey' in res).toBe(false);
     });
 
-    it('la planta de una fila se descarta cuando su lugar no es PLANTA', async () => {
+    it('la planta de una fila se descarta cuando su tipo no es PLANTA', async () => {
       const res = await createAs({
         ...base,
         detalle: [
           {
-            actividad: 'LIMPIEZA_SILOS',
+            actividad: 'REGULACION_CARGA',
             lugar: 'VARIADO',
             planta: 'Planta 1',
             horas: 1,
@@ -299,10 +299,57 @@ describe('TrabajosExtraService', () => {
       });
       expect(res.detalleActividades).toEqual([
         {
-          actividad: 'LIMPIEZA_SILOS',
+          actividad: 'REGULACION_CARGA',
           lugar: 'VARIADO',
           planta: null,
           horas: 1,
+          descripcion: null,
+        },
+      ]);
+    });
+
+    it('una limpieza de silos es siempre de tipo Planta, aunque llegue otro tipo', async () => {
+      const res = await createAs({
+        ...base,
+        detalle: [
+          {
+            actividad: 'LIMPIEZA_SILOS',
+            lugar: 'TRANSPORTE',
+            horas: 1,
+          },
+        ],
+      });
+      expect(res.detalleActividades).toEqual([
+        {
+          actividad: 'LIMPIEZA_SILOS',
+          lugar: 'PLANTA',
+          planta: null,
+          horas: 1,
+          descripcion: null,
+        },
+      ]);
+    });
+
+    it('guarda la descripción de cada actividad, sin espacios sobrantes', async () => {
+      const res = await createAs({
+        ...base,
+        detalle: [
+          {
+            actividad: 'LIMPIEZA_SILOS',
+            lugar: 'PLANTA',
+            planta: 'Planta 4',
+            horas: 2,
+            descripcion: '  Silo 2 de la planta 4  ',
+          },
+        ],
+      });
+      expect(res.detalleActividades).toEqual([
+        {
+          actividad: 'LIMPIEZA_SILOS',
+          lugar: 'PLANTA',
+          planta: 'Planta 4',
+          horas: 2,
+          descripcion: 'Silo 2 de la planta 4',
         },
       ]);
     });
