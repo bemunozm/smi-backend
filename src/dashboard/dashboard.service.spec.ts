@@ -672,6 +672,11 @@ describe('DashboardService.resumenDia', () => {
     turno,
     valorInicial,
     valorFinal,
+    // Campos del select real que estos tests no ejercitan: valores neutros.
+    fecha: HOY,
+    fechaSalida: null,
+    operador: 'Op',
+    supervisorId: null,
     equipo: { internalCode: code, controlUnit },
   });
   const carga = (
@@ -681,10 +686,19 @@ describe('DashboardService.resumenDia', () => {
   ) => ({
     equipoId,
     litros,
+    tipo: 'PETROLEO',
     registroHorometroId,
+    registroHorometro: null,
     fecha: HOY,
     equipo: { internalCode: { e0: 'AA-001', e1: 'CG-002' }[equipoId] },
   });
+  /** Lo que agrega el mapeo de `lecturas` sobre una tarjeta de la factoría. */
+  const lecturaBase = {
+    operador: 'Op',
+    registradoPor: null,
+    horaEntrada: HOY.toISOString(),
+    horaSalida: null,
+  };
 
   beforeEach(() => {
     prisma.registroHorometro.findMany.mockResolvedValue([]);
@@ -712,6 +726,7 @@ describe('DashboardService.resumenDia', () => {
         inicial: 100,
         final: 106,
         avance: 6,
+        ...lecturaBase,
       },
       {
         id: 't3',
@@ -721,6 +736,7 @@ describe('DashboardService.resumenDia', () => {
         inicial: 106,
         final: null,
         avance: null,
+        ...lecturaBase,
       },
       {
         id: 't2',
@@ -730,6 +746,7 @@ describe('DashboardService.resumenDia', () => {
         inicial: 50,
         final: 54.5,
         avance: 4.5,
+        ...lecturaBase,
       },
     ]);
     const where = argDe<{ where: { fecha: unknown } }>(
@@ -850,8 +867,8 @@ describe('DashboardService.resumenDia', () => {
     expect(res.reports).toEqual({
       totalHoras: 6.5,
       porEquipo: [
-        { internalCode: 'EX-001', horas: 4 },
-        { internalCode: 'CG-002', horas: 2.5 },
+        { equipmentId: 'e2', internalCode: 'EX-001', horas: 4 },
+        { equipmentId: 'e1', internalCode: 'CG-002', horas: 2.5 },
       ],
     });
   });
@@ -924,6 +941,105 @@ describe('DashboardService.resumenDia', () => {
       });
     const res = await service.resumenDia();
     expect(res.adBlue).toMatchObject({ itemId: 'i2', stock: 0 });
+  });
+
+  it('lecturas traen operador, quién registró (nombre resuelto) y horas de entrada/salida', async () => {
+    const entrada = new Date('2026-11-13T08:00:00.000Z');
+    const salida = new Date('2026-11-13T18:30:00.000Z');
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        ...card('t1', 'e1', 'CG-002', 'DIURNO', 100, 106),
+        fecha: entrada,
+        fechaSalida: salida,
+        operador: 'P. Rojas',
+        supervisorId: 'u1',
+      },
+      {
+        ...card('t2', 'e1', 'CG-002', 'NOCTURNO', 106, null),
+        fecha: salida,
+        fechaSalida: null,
+        operador: 'J. Soto',
+        supervisorId: null,
+      },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.lecturas[0]).toMatchObject({
+      id: 't1',
+      operador: 'P. Rojas',
+      registradoPor: 'Limbert V.',
+      horaEntrada: '2026-11-13T08:00:00.000Z',
+      horaSalida: '2026-11-13T18:30:00.000Z',
+    });
+    // Tarjeta sin supervisor (fila vieja) y aún abierta: nulos, no revienta.
+    expect(res.lecturas[1]).toMatchObject({
+      id: 't2',
+      operador: 'J. Soto',
+      registradoPor: null,
+      horaSalida: null,
+    });
+  });
+
+  it('cargas[]: detalle del día con operador y cargadoPor de la tarjeta vinculada; manual queda en null', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        ...card('t1', 'e1', 'CG-002', 'DIURNO', 100, 106),
+        fecha: HOY,
+        fechaSalida: null,
+        operador: 'P. Rojas',
+        supervisorId: 'u1',
+      },
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      {
+        ...carga('e1', 40, 't1'),
+        tipo: 'PETROLEO',
+        registroHorometro: { operador: 'P. Rojas', supervisorId: 'u1' },
+      },
+      { ...carga('e0', 20, null), tipo: 'BENCINA', registroHorometro: null },
+      // Fuera del día de negocio (ventana ampliada): no aparece.
+      {
+        ...carga('e0', 99, null),
+        tipo: 'PETROLEO',
+        registroHorometro: null,
+        fecha: new Date(Date.now() - 3 * 86_400_000),
+      },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.cargas).toEqual([
+      {
+        equipmentId: 'e0',
+        internalCode: 'AA-001',
+        litros: 20,
+        tipo: 'BENCINA',
+        hora: HOY.toISOString(),
+        operador: null,
+        cargadoPor: null,
+      },
+      {
+        equipmentId: 'e1',
+        internalCode: 'CG-002',
+        litros: 40,
+        tipo: 'PETROLEO',
+        hora: HOY.toISOString(),
+        operador: 'P. Rojas',
+        cargadoPor: 'Limbert V.',
+      },
+    ]);
+  });
+
+  it('reports.porEquipo trae equipmentId para navegar a la vista Report', async () => {
+    prisma.trabajoExtraordinario.findMany.mockResolvedValue([
+      {
+        equipoId: 'e2',
+        totalHoras: 4,
+        fecha: HOY,
+        equipo: { internalCode: 'EX-001' },
+      },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.reports.porEquipo).toEqual([
+      { equipmentId: 'e2', internalCode: 'EX-001', horas: 4 },
+    ]);
   });
 
   describe('filtro por fecha', () => {
