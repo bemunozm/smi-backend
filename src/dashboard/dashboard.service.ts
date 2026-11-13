@@ -85,7 +85,7 @@ export type ResumenDia = {
   };
   reports: {
     totalHoras: number;
-    porEquipo: { internalCode: string; horas: number }[];
+    porEquipo: { equipmentId: string; internalCode: string; horas: number }[];
   };
   produccion: { internos: number; minaCaleta: number; mineras: number };
   adBlue: {
@@ -112,6 +112,23 @@ export type ResumenDia = {
     inicial: number;
     final: number | null;
     avance: number | null;
+    operador: string;
+    /** Nombre del supervisor que abrió la tarjeta; null en filas sin supervisor. */
+    registradoPor: string | null;
+    horaEntrada: string; // ISO
+    horaSalida: string | null; // ISO; null = turno abierto
+  }[];
+  /** Detalle de cada carga de diésel del día (popup Diésel). `operador` y
+   * `cargadoPor` (supervisor) vienen de la tarjeta vinculada; una carga
+   * manual sin tarjeta queda con ambos en null. */
+  cargas: {
+    equipmentId: string;
+    internalCode: string;
+    litros: number;
+    tipo: string;
+    hora: string; // ISO
+    operador: string | null;
+    cargadoPor: string | null;
   }[];
 };
 
@@ -536,6 +553,7 @@ export class DashboardService {
             valorInicial: true,
             valorFinal: true,
             fecha: true,
+            fechaSalida: true,
             operador: true,
             supervisorId: true,
             nivelCombustible: true,
@@ -547,14 +565,21 @@ export class DashboardService {
           select: {
             equipoId: true,
             litros: true,
+            tipo: true,
             registroHorometroId: true,
             fecha: true,
             equipo: { select: { internalCode: true } },
+            // Quién cargó y qué operador estaba a cargo salen de la tarjeta
+            // vinculada; una carga manual (sin tarjeta) no los tiene.
+            registroHorometro: {
+              select: { operador: true, supervisorId: true },
+            },
           },
         }),
         this.prisma.trabajoExtraordinario.findMany({
           where: { fecha: ventana },
           select: {
+            equipoId: true,
             totalHoras: true,
             fecha: true,
             equipo: { select: { internalCode: true } },
@@ -569,6 +594,12 @@ export class DashboardService {
         esHoy ? this.flotaHoy() : Promise.resolve(null),
       ]);
     const flota: FlotaDia[] = flotaHoy ?? (await this.flotaPasada(tarjetas));
+
+    // Nombres para «quién registró» (lecturas) y «quién cargó» (cargas), en UNA consulta.
+    const nombres = await this.nombresDe([
+      ...tarjetas.map((t) => t.supervisorId),
+      ...cargas.map((c) => c.registroHorometro?.supervisorId ?? null),
+    ]);
 
     type Op = {
       equipmentId: string;
@@ -630,16 +661,21 @@ export class DashboardService {
       }
     }
 
-    const horasPorEquipo = new Map<string, number>();
+    const horasPorEquipo = new Map<
+      string,
+      { equipmentId: string; horas: number }
+    >();
     let totalHoras = 0;
     for (const t of trabajos) {
       if (businessDayKey(t.fecha) !== fecha) continue;
       const h = t.totalHoras ?? 0;
       totalHoras += h;
-      horasPorEquipo.set(
-        t.equipo.internalCode,
-        (horasPorEquipo.get(t.equipo.internalCode) ?? 0) + h,
-      );
+      const r = horasPorEquipo.get(t.equipo.internalCode) ?? {
+        equipmentId: t.equipoId,
+        horas: 0,
+      };
+      r.horas += h;
+      horasPorEquipo.set(t.equipo.internalCode, r);
     }
 
     const vueltas: Record<string, number> = {};
@@ -669,7 +705,11 @@ export class DashboardService {
       reports: {
         totalHoras: round2(totalHoras),
         porEquipo: [...horasPorEquipo.entries()]
-          .map(([internalCode, h]) => ({ internalCode, horas: round2(h) }))
+          .map(([internalCode, r]) => ({
+            equipmentId: r.equipmentId,
+            internalCode,
+            horas: round2(r.horas),
+          }))
           .sort((a, b) => b.horas - a.horas),
       },
       produccion: {
@@ -700,11 +740,37 @@ export class DashboardService {
           final: t.valorFinal,
           avance:
             t.valorFinal == null ? null : round2(t.valorFinal - t.valorInicial),
+          operador: t.operador,
+          registradoPor:
+            t.supervisorId == null
+              ? null
+              : (nombres.get(t.supervisorId) ?? null),
+          horaEntrada: t.fecha.toISOString(),
+          horaSalida: t.fechaSalida?.toISOString() ?? null,
         }))
         .sort(
           (a, b) =>
             a.internalCode.localeCompare(b.internalCode) ||
             a.turno.localeCompare(b.turno),
+        ),
+      cargas: cargas
+        .filter((c) => businessDayKey(c.fecha) === fecha)
+        .map((c) => ({
+          equipmentId: c.equipoId,
+          internalCode: c.equipo.internalCode,
+          litros: c.litros,
+          tipo: c.tipo,
+          hora: c.fecha.toISOString(),
+          operador: c.registroHorometro?.operador ?? null,
+          cargadoPor:
+            c.registroHorometro?.supervisorId == null
+              ? null
+              : (nombres.get(c.registroHorometro.supervisorId) ?? null),
+        }))
+        .sort(
+          (a, b) =>
+            a.internalCode.localeCompare(b.internalCode) ||
+            a.hora.localeCompare(b.hora),
         ),
     };
   }
