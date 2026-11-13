@@ -7,8 +7,9 @@ import {
   formatDateOnly,
   IsDateOnly,
   isValidDateOnly,
-  liveCloseFuelDate,
+  fuelDateForShiftDay,
   parseDateOnlyUtc,
+  shiftDayOf,
   SHIFT_DATE_MAX_FUTURE_DAYS,
   SHIFT_DATE_MAX_PAST_DAYS,
 } from './date-only';
@@ -148,35 +149,67 @@ describe('assertShiftDateWithinWindow', () => {
   });
 });
 
-describe('liveCloseFuelDate', () => {
-  it('un cierre de madrugada chilena (03:59, verano UTC-3) fecha la carga en el día ANTERIOR, 20:30 −03', () => {
-    expect(
-      liveCloseFuelDate(new Date('2026-11-13T06:59:00.000Z')).toISOString(),
-    ).toBe('2026-11-12T23:30:00.000Z');
+describe('shiftDayOf', () => {
+  it('antes de las 08:00 chilenas (03:59, verano UTC-3) sigue corriendo el turno del día ANTERIOR', () => {
+    expect(shiftDayOf(new Date('2026-11-13T06:59:00.000Z'))).toBe('2026-11-12');
   });
 
-  it('a las 08:00 chilenas exactas ya corre el turno diurno: el instante queda tal cual (misma referencia)', () => {
-    const d = new Date('2026-11-13T11:00:00.000Z'); // 08:00 en Chile (UTC-3)
-    expect(liveCloseFuelDate(d)).toBe(d);
-  });
-
-  it('un cierre de mediodía queda tal cual', () => {
-    const d = new Date('2026-11-13T15:00:00.000Z'); // 12:00 en Chile
-    expect(liveCloseFuelDate(d)).toBe(d);
+  it('a las 08:00 chilenas exactas ya corre el turno del propio día', () => {
+    expect(shiftDayOf(new Date('2026-11-13T11:00:00.000Z'))).toBe('2026-11-13');
   });
 
   it('en invierno chileno (UTC-4) la hora se evalúa en el reloj de Chile, no en UTC', () => {
-    // 2026-06-15T10:00:00Z = 06:00 en Chile → nocturno que abrió el 14.
-    expect(
-      liveCloseFuelDate(new Date('2026-06-15T10:00:00.000Z')).toISOString(),
-    ).toBe('2026-06-14T23:30:00.000Z');
+    // 2026-06-15T10:00:00Z = 06:00 en Chile → turno que abrió el 14.
+    expect(shiftDayOf(new Date('2026-06-15T10:00:00.000Z'))).toBe('2026-06-14');
   });
 
   it('cruza mes y año: la madrugada del 1 de enero pertenece al 31 de diciembre', () => {
     // 2026-01-01T05:00:00Z = 02:00 en Chile (verano, UTC-3).
+    expect(shiftDayOf(new Date('2026-01-01T05:00:00.000Z'))).toBe('2025-12-31');
+  });
+});
+
+describe('fuelDateForShiftDay', () => {
+  it('si el instante real cae dentro del día del turno, queda tal cual (misma referencia)', () => {
+    const d = new Date('2026-11-12T23:00:00.000Z'); // 20:00 en Chile, día 12
+    expect(fuelDateForShiftDay(d, '2026-11-12', 'NOCTURNO')).toBe(d);
+  });
+
+  it('nocturno cerrado de madrugada: cae en otro día chileno → sintético 20:30 −03 del día del turno', () => {
     expect(
-      liveCloseFuelDate(new Date('2026-01-01T05:00:00.000Z')).toISOString(),
-    ).toBe('2025-12-31T23:30:00.000Z');
+      fuelDateForShiftDay(
+        new Date('2026-11-13T06:59:00.000Z'),
+        '2026-11-12',
+        'NOCTURNO',
+      ).toISOString(),
+    ).toBe('2026-11-12T23:30:00.000Z');
+  });
+
+  it('nocturno cerrado PASADAS las 08:00 del día siguiente: igual va al día en que abrió el turno', () => {
+    // 2026-11-13T12:30:00Z = 09:30 en Chile — el caso del cliente.
+    expect(
+      fuelDateForShiftDay(
+        new Date('2026-11-13T12:30:00.000Z'),
+        '2026-11-12',
+        'NOCTURNO',
+      ).toISOString(),
+    ).toBe('2026-11-12T23:30:00.000Z');
+  });
+
+  it('tarjeta DIURNA cerrada otro día: sintético 12:00 −03 (patrón del backfill diurno)', () => {
+    expect(
+      fuelDateForShiftDay(
+        new Date('2026-11-13T15:00:00.000Z'),
+        '2026-11-12',
+        'DIURNO',
+      ).toISOString(),
+    ).toBe('2026-11-12T15:00:00.000Z');
+  });
+
+  it('en invierno chileno (UTC-4) el "mismo día" se evalúa con el calendario de Chile', () => {
+    // 2026-06-15T02:00:00Z = 22:00 del 14 en Chile → mismo día del turno 14.
+    const d = new Date('2026-06-15T02:00:00.000Z');
+    expect(fuelDateForShiftDay(d, '2026-06-14', 'NOCTURNO')).toBe(d);
   });
 });
 
