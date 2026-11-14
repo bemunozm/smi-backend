@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../common/prisma/prisma.service';
 import { businessDayKey } from '../common/dates/business-time';
-import { parseDateOnlyUtc } from '../shifts/date-only';
+import { cardShiftDay, parseDateOnlyUtc } from '../shifts/date-only';
 import { DashboardRangeDto } from './dto/dashboard-range.dto';
 import { SECCIONES } from '../terreno/reporte-diario/dto/create-reporte-diario.dto';
 
@@ -291,6 +291,7 @@ export class DashboardService {
               valorInicial: true,
               valorFinal: true,
               fecha: true,
+              shift: { select: { date: true } },
             },
           }),
       dias.length === 0
@@ -301,10 +302,11 @@ export class DashboardService {
           }),
     ]);
 
-    // horas por equipo+día, solo días dentro del rango de negocio
+    // horas por equipo+día de TURNO (la madrugada es del día en que abrió el
+    // turno), solo días dentro del rango de negocio
     const horasPorEquipoDia = new Map<string, Map<string, number>>();
     for (const t of tarjetas) {
-      const dia = businessDayKey(t.fecha);
+      const dia = cardShiftDay(t);
       if (!diasSet.has(dia)) continue;
       const delta = (t.valorFinal as number) - t.valorInicial;
       const porDia =
@@ -360,6 +362,7 @@ export class DashboardService {
               valorInicial: true,
               valorFinal: true,
               fecha: true,
+              shift: { select: { date: true } },
             },
           }),
       dias.length === 0
@@ -376,8 +379,9 @@ export class DashboardService {
     };
     const supAcc = new Map<string, { horas: number; equipos: Set<string> }>();
     for (const t of tarjetas) {
-      // Ventana SQL ampliada: recortar al día de negocio.
-      if (!diasSet.has(businessDayKey(t.fecha))) continue;
+      // Ventana SQL ampliada: recortar al día de TURNO (la madrugada es del
+      // día en que abrió el turno).
+      if (!diasSet.has(cardShiftDay(t))) continue;
       const delta = (t.valorFinal as number) - t.valorInicial;
       const clave = t.turno === 'NOCTURNO' ? 'NOCTURNO' : 'DIURNO';
       turnoAcc[clave].horas += delta;
@@ -540,12 +544,14 @@ export class DashboardService {
 
     const esHoy = fecha === hoyClave;
 
-    const [tarjetas, cargas, trabajos, produccion, adBlue, flotaHoy] =
+    const [tarjetasVentana, cargas, trabajos, produccion, adBlue, flotaHoy] =
       await Promise.all([
-        // Tarjetas de hoy UNA vez (cerradas y abiertas); de aquí salen hm,
-        // lecturas y operación por equipo.
+        // Tarjetas del día UNA vez (cerradas y abiertas); de aquí salen hm,
+        // lecturas y operación por equipo. La ventana va ampliada ±12h para
+        // captar la nocturna abierta de MADRUGADA (su `fecha` cae en el día
+        // calendario siguiente); el día fino lo decide `cardShiftDay` abajo.
         this.prisma.registroHorometro.findMany({
-          where: { fecha: limites },
+          where: { fecha: ventana },
           select: {
             id: true,
             equipoId: true,
@@ -557,6 +563,7 @@ export class DashboardService {
             operador: true,
             supervisorId: true,
             nivelCombustible: true,
+            shift: { select: { date: true } },
             equipo: { select: { internalCode: true, controlUnit: true } },
           },
         }),
@@ -593,6 +600,11 @@ export class DashboardService {
         this.adBlueStock(), // saldo ACTUAL (balance vivo, no histórico) aunque se consulte otro día
         esHoy ? this.flotaHoy() : Promise.resolve(null),
       ]);
+    // El resumen atribuye cada tarjeta a su DÍA DE TURNO (pedido del cliente,
+    // 14-11: el HM de la madrugada pertenece al día en que abrió el turno,
+    // igual que la carga de combustible del cierre, #83). La hora de entrada
+    // real sigue visible en Lecturas.
+    const tarjetas = tarjetasVentana.filter((t) => cardShiftDay(t) === fecha);
     const flota: FlotaDia[] = flotaHoy ?? (await this.flotaPasada(tarjetas));
 
     // Nombres para «quién registró» (lecturas) y «quién cargó» (cargas), en UNA consulta.
