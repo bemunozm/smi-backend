@@ -165,13 +165,22 @@ export class ReporteDiarioService {
     await this.validarCatalogos(dto);
 
     const fecha = parseDateOnlyUtc(dto.fecha);
+    // El reporte es único por turno POR SUPERVISOR: dos supervisores del
+    // mismo turno reportan cada uno el suyo, pero el mismo supervisor no
+    // puede reportar dos veces el mismo turno (eso es una corrección).
     const ocupado = await this.prisma.reporteDiario.findUnique({
-      where: { fecha_turno: { fecha, turno: dto.turno } },
+      where: {
+        fecha_turno_supervisorId: {
+          fecha,
+          turno: dto.turno,
+          supervisorId: userId,
+        },
+      },
       select: { id: true },
     });
     if (ocupado) {
       throw new ConflictException(
-        `Ya existe el reporte del turno ${dto.turno} del ${dto.fecha}.`,
+        `Ya enviaste el reporte del turno ${dto.turno} del ${dto.fecha}. Ábrelo en el historial para corregirlo.`,
       );
     }
 
@@ -200,10 +209,10 @@ export class ReporteDiarioService {
       });
       return this.sinCreatedById(creado);
     } catch (e) {
-      // Carrera: dos envíos del mismo turno pasaron el chequeo previo a la vez.
+      // Carrera: dos envíos del mismo supervisor pasaron el chequeo a la vez.
       if (esP2002(e)) {
         throw new ConflictException(
-          `Ya existe el reporte del turno ${dto.turno} del ${dto.fecha}.`,
+          `Ya enviaste el reporte del turno ${dto.turno} del ${dto.fecha}. Ábrelo en el historial para corregirlo.`,
         );
       }
       throw e;
@@ -366,6 +375,54 @@ export class ReporteDiarioService {
   /** Los cambios de un reporte, del más reciente al más viejo. */
   findChanges(id: string) {
     return this.changeLog.findFor('reporte_diario', id);
+  }
+
+  /**
+   * Elimina un reporte — solo el administrador (ver controller). El resumen
+   * completo queda en el historial de cambios (`ChangeLog` DELETE) escrito en
+   * la misma transacción que el borrado: producción que respalda un cobro no
+   * puede desaparecer sin traza. Mismo criterio que `CombustibleService.remove`;
+   * los bloques hijos caen por el `onDelete: Cascade` del schema.
+   */
+  async remove(id: string, editor: Editor): Promise<void> {
+    const reporte = await this.prisma.reporteDiario.findUnique({
+      where: { id },
+      include: REPORTE_INCLUDE,
+    });
+    if (!reporte) throw new NotFoundException('Reporte no encontrado');
+
+    const resumen = resumir(reporte);
+    const borrado = (field: string, label: string, before: string) => ({
+      field,
+      label,
+      before,
+      after: VACIO,
+    });
+    const cambios = [
+      // `fecha` es @db.Date (UTC medianoche): se formatea en UTC para no
+      // retroceder un día al convertir a la zona de negocio.
+      borrado(
+        'fecha',
+        'Fecha',
+        reporte.fecha.toLocaleDateString('es-CL', { timeZone: 'UTC' }),
+      ),
+      borrado('turno', 'Turno', reporte.turno),
+      borrado('supervisor', 'Supervisor', reporte.supervisorNombre),
+      ...CAMPOS_REPORTE.map(({ field, label }) =>
+        borrado(field, label, resumen[field]),
+      ),
+    ];
+    await this.prisma.$transaction(async (tx) => {
+      await this.changeLog.record(
+        tx,
+        'reporte_diario',
+        id,
+        editor,
+        cambios,
+        'DELETE',
+      );
+      await tx.reporteDiario.delete({ where: { id } });
+    });
   }
 
   /** El tipo ya lo omite, pero Prisma devuelve la columna: se quita en runtime. */
