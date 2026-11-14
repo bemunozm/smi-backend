@@ -15,6 +15,7 @@ import type { UserSession } from '@thallesp/nestjs-better-auth';
 import { ROLES } from '../auth/roles';
 import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
+import { AdminCloseShiftCardDto } from './dto/admin-close-shift-card.dto';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { RegisterClosedShiftCardDto } from './dto/register-closed-shift-card.dto';
@@ -101,6 +102,25 @@ export class ShiftCardsController {
     return {
       data: await this.service.closeCard(id, dto, session),
       message: 'Tarjeta cerrada',
+    };
+  }
+
+  /**
+   * El administrador cierra un uso que quedó colgado (equipo que pasó a
+   * fuera de servicio, supervisor que no cerró): sin foto ni combustible,
+   * solo la lectura final. Libera también la asignación del equipo.
+   */
+  @Post(':id/admin-close')
+  @HttpCode(HttpStatus.OK)
+  @Roles([ROLES.ADMIN])
+  async adminClose(
+    @Param('id') id: string,
+    @Body() dto: AdminCloseShiftCardDto,
+    @Session() session: UserSession,
+  ) {
+    return {
+      data: await this.service.adminCloseCard(id, dto, session),
+      message: 'Uso cerrado',
     };
   }
 

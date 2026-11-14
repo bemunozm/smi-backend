@@ -73,6 +73,7 @@ import {
   shiftDayOf,
 } from './date-only';
 import { adBlueError } from './adblue';
+import { AdminCloseShiftCardDto } from './dto/admin-close-shift-card.dto';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { RegisterClosedShiftCardDto } from './dto/register-closed-shift-card.dto';
 import { UpdateShiftCardDto } from './dto/update-shift-card.dto';
@@ -1541,6 +1542,109 @@ export class ShiftsService {
           code: ERROR_CODES.ALREADY_CLOSED,
         }),
     });
+  }
+
+  /**
+   * `POST /api/shift-cards/:id/admin-close` — el ADMINISTRADOR cierra un uso
+   * que quedó colgado: el equipo pasó a fuera de servicio con la tarjeta
+   * abierta, o el supervisor se fue sin cerrarla (pedido del 13/11/2026,
+   * SANY 02). Sin foto ni combustible: se cierra con la lectura final que
+   * diga el administrador (la inicial = 0 h si no trabajó) y queda anotado
+   * quién y por qué. También suelta la asignación del equipo (operador y
+   * supervisor a cargo), para que deje de figurar «En uso».
+   */
+  async adminCloseCard(
+    id: string,
+    dto: AdminCloseShiftCardDto,
+    session: UserSession,
+  ): Promise<ShiftCardResponse> {
+    const card = await this.prisma.registroHorometro.findUnique({
+      where: { id },
+      select: {
+        equipoId: true,
+        valorInicial: true,
+        valorFinal: true,
+        closedAt: true,
+        observaciones: true,
+        belowPreviousReading: true,
+      },
+    });
+    if (!card) {
+      throw new NotFoundException({
+        message: 'Tarjeta no encontrada',
+        code: ERROR_CODES.CARD_NOT_FOUND,
+      });
+    }
+    if (card.valorFinal != null) {
+      throw new ConflictException({
+        message: this.buildAlreadyClosedMessage(card.closedAt),
+        code: ERROR_CODES.ALREADY_CLOSED,
+      });
+    }
+    if (dto.valorFinal < card.valorInicial) {
+      throw new BadRequestException({
+        message: `La lectura final (${formatNumber(dto.valorFinal)}) no puede ser menor que la inicial (${formatNumber(card.valorInicial)})`,
+        code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
+      });
+    }
+
+    const now = new Date();
+    const adminName = session.user.name?.trim() || session.user.email;
+    const nota = `Cerrada por la administración (${adminName}): ${dto.motivo || 'uso sin cerrar'}.`;
+    const observaciones = card.observaciones
+      ? `${card.observaciones}\n${nota}`
+      : nota;
+
+    await this.prisma.$transaction(async (tx) => {
+      const result = await tx.registroHorometro.updateMany({
+        where: { id, valorFinal: null },
+        data: {
+          valorFinal: dto.valorFinal,
+          fechaSalida: now,
+          closedAt: now,
+          closedById: session.user.id,
+          closedByName: adminName,
+          observaciones,
+        },
+      });
+      if (result.count !== 1) {
+        throw new ConflictException({
+          message: 'La tarjeta ya fue cerrada',
+          code: ERROR_CODES.ALREADY_CLOSED,
+        });
+      }
+
+      const equipo = await tx.equipment.findUnique({
+        where: { id: card.equipoId },
+        select: {
+          controlUnit: true,
+          currentHourmeter: true,
+          currentMileage: true,
+        },
+      });
+      if (equipo) {
+        // `warn`, igual que el cierre normal: solo audita, nunca bloquea.
+        const { belowPrevious } = await reconcileEquipmentCounter(
+          tx,
+          card.equipoId,
+          equipo,
+          dto.valorFinal,
+          'warn',
+        );
+        if (belowPrevious && !card.belowPreviousReading) {
+          await tx.registroHorometro.update({
+            where: { id },
+            data: { belowPreviousReading: true },
+          });
+        }
+        await tx.equipment.update({
+          where: { id: card.equipoId },
+          data: { currentOperatorId: null, currentSupervisorId: null },
+        });
+      }
+    });
+
+    return this.shapeCard(await this.reloadCard(id));
   }
 
   private async reloadCard(id: string): Promise<ShiftCardRecord> {

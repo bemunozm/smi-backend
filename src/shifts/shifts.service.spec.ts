@@ -131,7 +131,11 @@ describe('ShiftsService', () => {
       update: jest.fn(),
       updateMany: jest.fn(),
     },
-    equipment: { findUnique: jest.fn(), updateMany: jest.fn() },
+    equipment: {
+      findUnique: jest.fn(),
+      updateMany: jest.fn(),
+      update: jest.fn(),
+    },
     registroCombustible: {
       findUnique: jest.fn(),
       create: jest.fn(),
@@ -802,6 +806,78 @@ describe('ShiftsService', () => {
           session,
         ),
       ).resolves.toBeDefined();
+    });
+  });
+
+  describe('adminCloseCard', () => {
+    const admin = buildSession('adm_1', 'ADMIN', 'Joaquín Admin');
+    const abierta = {
+      equipoId: 'e1',
+      valorInicial: 14676.7,
+      valorFinal: null,
+      closedAt: null,
+      observaciones: null,
+      belowPreviousReading: false,
+    };
+
+    beforeEach(() => {
+      prisma.registroHorometro.findUnique
+        .mockResolvedValueOnce(abierta)
+        .mockResolvedValueOnce(
+          buildCardRecord({ id: 'card_1', valorFinal: 14676.7 }),
+        );
+      tx.equipment.findUnique.mockResolvedValue({
+        controlUnit: 'HOURS',
+        currentHourmeter: 14676.7,
+        currentMileage: null,
+      });
+    });
+
+    it('cierra sin foto ni combustible, deja la nota y suelta la asignación del equipo', async () => {
+      await service.adminCloseCard(
+        'card_1',
+        { valorFinal: 14676.7, motivo: 'equipo fuera de servicio' },
+        admin,
+      );
+
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(tx.registroCombustible.create).not.toHaveBeenCalled();
+      expect(tx.registroHorometro.updateMany).toHaveBeenCalledWith({
+        where: { id: 'card_1', valorFinal: null },
+        data: expect.objectContaining({
+          valorFinal: 14676.7,
+          closedById: 'adm_1',
+          closedByName: 'Joaquín Admin',
+          observaciones:
+            'Cerrada por la administración (Joaquín Admin): equipo fuera de servicio.',
+        }) as unknown,
+      });
+      expect(tx.equipment.update).toHaveBeenCalledWith({
+        where: { id: 'e1' },
+        data: { currentOperatorId: null, currentSupervisorId: null },
+      });
+    });
+
+    it('rechaza una lectura final menor que la inicial', async () => {
+      await expect(
+        service.adminCloseCard('card_1', { valorFinal: 100 }, admin),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(tx.registroHorometro.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('una tarjeta ya cerrada da 409 ALREADY_CLOSED', async () => {
+      prisma.registroHorometro.findUnique.mockReset();
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        ...abierta,
+        valorFinal: 14680,
+        closedAt: new Date('2026-11-13T23:00:00.000Z'),
+      });
+
+      await expect(
+        service.adminCloseCard('card_1', { valorFinal: 14680 }, admin),
+      ).rejects.toMatchObject({
+        response: { code: 'ALREADY_CLOSED' },
+      });
     });
   });
 
@@ -2346,9 +2422,16 @@ describe('ShiftsService', () => {
 
       expect(shift.cards[0].equipo).toMatchObject({ equipmentClass: 'HEAVY' });
       const [args] = prisma.shift.findMany.mock.calls[0] as [
-        { include: { cards: { include: { equipo: { select: Record<string, boolean> } } } } },
+        {
+          include: {
+            cards: { include: { equipo: { select: Record<string, boolean> } } };
+          };
+        },
       ];
-      expect(args.include.cards.include.equipo.select).toHaveProperty('equipmentClass', true);
+      expect(args.include.cards.include.equipo.select).toHaveProperty(
+        'equipmentClass',
+        true,
+      );
     });
 
     it('incluye los reportes de salida ya enviados del turno', async () => {
