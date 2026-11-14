@@ -15,6 +15,7 @@ import type {
   LightServiceDueEvent,
   ChecklistSubmittedEvent,
   RecordEditedEvent,
+  ShiftEndedWithOpenCardsEvent,
   ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
 import { formatNumber } from '../common/format/number';
@@ -119,6 +120,29 @@ export function buildItemLowStockTemplate(
     // La bodega va en el cuerpo porque es lo que vuelve accionable el aviso:
     // sin ella, quien lo lee no sabe si le toca a él reponer.
     cuerpo: `Quedan ${formatNumber(event.quantity)} en ${event.branchName} (mínimo ${formatNumber(event.minimumQuantity)})`,
+  };
+}
+
+/** `shift.open-cards` → solo al supervisor dueño del turno (`createForUser`). */
+export function buildShiftEndedWithOpenCardsTemplate(
+  event: ShiftEndedWithOpenCardsEvent,
+): NotificationTemplate {
+  const turnoLegible = event.shiftType === 'DIURNO' ? 'diurno' : 'nocturno';
+  const [anio, mes, dia] = event.shiftDate.split('-');
+  const codigos = event.equipmentCodes.join(', ');
+  const cuantos =
+    event.equipmentCodes.length === 1
+      ? `Te quedó abierto ${codigos}`
+      : `Te quedaron abiertos ${event.equipmentCodes.length} equipos (${codigos})`;
+  return {
+    tipo: DOMAIN_EVENTS.SHIFT_ENDED_WITH_OPEN_CARDS,
+    titulo:
+      event.equipmentCodes.length === 1
+        ? 'Terminó tu turno con un equipo abierto'
+        : 'Terminó tu turno con equipos abiertos',
+    cuerpo:
+      `${cuantos} del turno ${turnoLegible} del ${dia}-${mes}-${anio}. ` +
+      'Ciérralos con el horómetro final: mientras sigan abiertos, el turno siguiente no los puede registrar.',
   };
 }
 

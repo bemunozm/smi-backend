@@ -17,7 +17,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
+import { EquipmentClass, Prisma } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../auth/roles';
@@ -118,6 +118,24 @@ function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
 
+/**
+ * Tarjetas que entran en el reporte de salida: los PESADOS del turno. Las
+ * camionetas no «salen» por turno (quedan abiertas hasta la carga de
+ * combustible) y no van al reporte (decisión del 13/11/2026; antes entraban
+ * las que el supervisor cerraba en su turno, y eso le pedía avisar a la
+ * administración sin tener ningún pesado abierto).
+ */
+function reportCardsWhere(
+  shiftId: string,
+  cardIds: readonly string[],
+): Prisma.RegistroHorometroWhereInput {
+  return {
+    id: { in: [...cardIds] },
+    shiftId,
+    equipo: { equipmentClass: EquipmentClass.HEAVY },
+  };
+}
+
 @Injectable()
 export class ShiftReportsService {
   constructor(
@@ -201,12 +219,7 @@ export class ShiftReportsService {
     }
 
     const cards = await this.prisma.registroHorometro.findMany({
-      // Las del turno, más los livianos que este supervisor CERRÓ en él (los
-      // pudo abrir otro, en otro turno).
-      where: {
-        id: { in: dto.cardIds },
-        OR: [{ shiftId: shift.id }, { closedShiftId: shift.id }],
-      },
+      where: reportCardsWhere(shift.id, dto.cardIds),
       include: CARDS_INCLUDE,
       orderBy: { equipo: { internalCode: 'asc' } },
     });
@@ -447,10 +460,7 @@ export class ShiftReportsService {
     cardIds: readonly string[],
   ): Promise<string[]> {
     const found = await this.prisma.registroHorometro.findMany({
-      where: {
-        id: { in: [...cardIds] },
-        OR: [{ shiftId }, { closedShiftId: shiftId }],
-      },
+      where: reportCardsWhere(shiftId, cardIds),
       select: { id: true },
     });
     const foundIds = new Set(found.map((card) => card.id));

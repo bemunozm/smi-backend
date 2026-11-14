@@ -19,6 +19,7 @@ import {
   type LightServiceDueEvent,
   type ChecklistSubmittedEvent,
   type RecordEditedEvent,
+  type ShiftEndedWithOpenCardsEvent,
   type ShiftExitReportSentEvent,
 } from '../common/events/domain-events';
 import { MailService } from '../mail/mail.service';
@@ -45,6 +46,7 @@ import {
   buildItemLowStockTemplate,
   buildOrdenAssignedTemplate,
   buildOrdenCompletedTemplate,
+  buildShiftEndedWithOpenCardsTemplate,
   buildShiftExitReportSentTemplate,
 } from './notifications.constants';
 
@@ -153,6 +155,21 @@ export class NotificationsListener {
     await this.notifications.createForRoles(VENCIMIENTO_ROLES, {
       ...buildLightServiceDueTemplate(event),
       data: { equipmentId: event.equipmentId, ordenId: event.ordenId },
+    });
+  }
+
+  /** Solo al supervisor del turno: es él quien tiene que cerrar sus tarjetas. */
+  @OnEvent(DOMAIN_EVENTS.SHIFT_ENDED_WITH_OPEN_CARDS)
+  async onShiftEndedWithOpenCards(
+    event: ShiftEndedWithOpenCardsEvent,
+  ): Promise<void> {
+    await this.notifications.createForUser(event.supervisorId, {
+      ...buildShiftEndedWithOpenCardsTemplate(event),
+      data: {
+        shiftId: event.shiftId,
+        shiftDate: event.shiftDate,
+        shiftType: event.shiftType,
+      },
     });
   }
 

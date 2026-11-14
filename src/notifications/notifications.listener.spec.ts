@@ -230,6 +230,30 @@ describe('NotificationsListener', () => {
     );
   });
 
+  it('shift.open-cards avisa SOLO al supervisor del turno, con los equipos abiertos', async () => {
+    await listener.onShiftEndedWithOpenCards({
+      supervisorId: 'sup_1',
+      shiftId: 'shift_1',
+      shiftDate: '2026-11-13',
+      shiftType: 'DIURNO',
+      equipmentCodes: ['CA-11', 'EX-02'],
+    });
+
+    expect(createForRoles).not.toHaveBeenCalled();
+    expect(createForUser).toHaveBeenCalledWith('sup_1', {
+      tipo: 'shift.open-cards',
+      titulo: 'Terminó tu turno con equipos abiertos',
+      cuerpo:
+        'Te quedaron abiertos 2 equipos (CA-11, EX-02) del turno diurno del 13-11-2026. ' +
+        'Ciérralos con el horómetro final: mientras sigan abiertos, el turno siguiente no los puede registrar.',
+      data: {
+        shiftId: 'shift_1',
+        shiftDate: '2026-11-13',
+        shiftType: 'DIURNO',
+      },
+    });
+  });
+
   describe('shift.exit-report', () => {
     const EVENT = {
       reportId: 'report-1',

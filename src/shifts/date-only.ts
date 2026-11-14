@@ -89,6 +89,31 @@ export function isPastShift(
  * `lib/turno.ts#fechaDeTurno`. */
 export const SHIFT_DAY_START_HOUR = 8;
 
+/** Hora chilena en que termina el DIURNO (y empieza el NOCTURNO). */
+export const DIURNO_END_HOUR = 20;
+
+/**
+ * ¿Ya terminó el turno (`shiftDate`, `shiftType`) en el reloj chileno de
+ * `now`? El DIURNO termina a las 20:00 de su día; el NOCTURNO, a las 08:00
+ * del día SIGUIENTE. Compara día y hora de Chile por separado, así no
+ * depende del horario de verano.
+ */
+export function hasShiftEnded(
+  shiftDate: string,
+  shiftType: string,
+  now: Date = new Date(),
+): boolean {
+  const hoy = todayInBusinessTimeZone(now);
+  const hora = businessHour(now);
+  if (shiftType !== 'NOCTURNO') {
+    return hoy > shiftDate || (hoy === shiftDate && hora >= DIURNO_END_HOUR);
+  }
+  const siguiente = parseDateOnlyUtc(shiftDate);
+  siguiente.setUTCDate(siguiente.getUTCDate() + 1);
+  const finDia = formatDateOnly(siguiente);
+  return hoy > finDia || (hoy === finDia && hora >= SHIFT_DAY_START_HOUR);
+}
+
 /**
  * Día de turno (`YYYY-MM-DD`) que el RELOJ asigna al instante `at`: antes de
  * las 08:00 de Chile sigue corriendo el turno que abrió el día anterior.

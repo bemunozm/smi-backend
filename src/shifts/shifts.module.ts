@@ -4,6 +4,7 @@ import { ChangeLogModule } from '../change-log/change-log.module';
 import { OperatorsModule } from '../operators/operators.module';
 import { StorageModule } from '../storage/storage.module';
 import { ShiftCardsController } from './shift-cards.controller';
+import { ShiftEndRemindersService } from './shift-end-reminders.service';
 import { ShiftReportsController } from './shift-reports.controller';
 import { ShiftReportsService } from './shift-reports.service';
 import { ShiftsController } from './shifts.controller';
@@ -22,7 +23,7 @@ import { ShiftsService } from './shifts.service';
 @Module({
   imports: [StorageModule, OperatorsModule, ChangeLogModule],
   controllers: [ShiftCardsController, ShiftsController, ShiftReportsController],
-  providers: [ShiftsService, ShiftReportsService],
+  providers: [ShiftsService, ShiftReportsService, ShiftEndRemindersService],
   // `ShiftReportsService` se exporta para que `NotificationsModule` marque
   // `emailStatus` y lea el adjunto del PDF sin conocer `PrismaService` ni
   // `StorageService` — Shifts es dueño de `ShiftExitReport`, Notifications
