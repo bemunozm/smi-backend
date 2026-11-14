@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 
 import { PrismaService } from '../common/prisma/prisma.service';
 import { businessDayKey } from '../common/dates/business-time';
+import { parseDateOnlyUtc } from '../shifts/date-only';
 import { DashboardService, limitesDeHoy } from './dashboard.service';
 
 // Mocks compartidos a nivel de archivo: las Tasks 2-4 agregan describes
@@ -464,14 +465,15 @@ describe('DashboardService.equipos', () => {
     expect(res.find((x) => x.equipmentId === 'e1')?.litros).toBe(15);
   });
 
-  it('tarjeta cerrada dentro de la ventana SQL pero fuera del día de negocio se descarta', async () => {
-    // 2026-10-02T06:00Z = 2026-10-02 03:00 Chile: día siguiente al rango 10-01
+  it('tarjeta cerrada de MADRUGADA cuenta en el día en que abrió su turno, no en el día calendario', async () => {
+    // 2026-10-02T06:00Z = 03:00 Chile del 02: el turno abrió el 01.
     prisma.registroHorometro.findMany.mockResolvedValue([
       {
         equipoId: 'e1',
         valorInicial: 100,
         valorFinal: 106,
         fecha: new Date('2026-10-02T06:00:00.000Z'),
+        shift: null,
       },
     ]);
     const res = await service.equipos({
@@ -479,8 +481,29 @@ describe('DashboardService.equipos', () => {
       hasta: '2026-10-01',
     });
     const e1 = res.find((x) => x.equipmentId === 'e1')!;
-    expect(e1.horas).toBe(0);
-    expect(e1.serieDiaria[0].opero).toBe(false);
+    expect(e1.horas).toBe(6);
+    expect(e1.serieDiaria[0]).toEqual({
+      fecha: '2026-10-01',
+      horas: 6,
+      opero: true,
+    });
+  });
+
+  it('el Shift vinculado manda sobre el reloj: tarjeta REPORTADA a un día fuera del rango no cuenta', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        valorInicial: 100,
+        valorFinal: 106,
+        fecha: new Date('2026-10-01T15:00:00.000Z'), // mediodía Chile del 01…
+        shift: { date: parseDateOnlyUtc('2026-09-30') }, // …pero reportada al 30
+      },
+    ]);
+    const res = await service.equipos({
+      desde: '2026-10-01',
+      hasta: '2026-10-01',
+    });
+    expect(res.find((x) => x.equipmentId === 'e1')?.horas).toBe(0);
   });
 
   it('desde > hasta devuelve equipos con serie vacía, no error', async () => {
@@ -555,6 +578,27 @@ describe('DashboardService.supervisores', () => {
     });
     expect(res.porTurno.DIURNO).toEqual({ horas: 0, equipos: 0 });
     expect(res.porTurno.NOCTURNO).toEqual({ horas: 0, equipos: 0 });
+  });
+
+  it('nocturno registrado de madrugada suma al día del turno reportado', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        turno: 'NOCTURNO',
+        supervisorId: 'u2',
+        valorInicial: 0,
+        valorFinal: 5,
+        fecha: new Date('2026-10-06T04:30:00.000Z'), // 01:30 Chile del 06
+        shift: { date: parseDateOnlyUtc('2026-10-05') },
+      },
+    ]);
+    prisma.shift.findMany.mockResolvedValue([]);
+    prisma.user.findMany.mockResolvedValue([{ id: 'u2', name: 'José' }]);
+    const res = await service.supervisores({
+      desde: '2026-10-01',
+      hasta: '2026-10-05',
+    });
+    expect(res.porTurno.NOCTURNO).toEqual({ horas: 5, equipos: 1 });
   });
 
   it('supervisor sin usuario sale como (sin asignar)', async () => {
@@ -677,6 +721,10 @@ describe('DashboardService.resumenDia', () => {
     fechaSalida: null,
     operador: 'Op',
     supervisorId: null,
+    // Turno REPORTADO del día del resumen: la atribución por día usa
+    // `cardShiftDay` (shift.date manda) y estos tests corren "hoy" — sin
+    // esto, una corrida de madrugada movería la tarjeta al día anterior.
+    shift: { date: parseDateOnlyUtc(businessDayKey(HOY)) },
     equipo: { internalCode: code, controlUnit },
   });
   const carga = (
@@ -754,7 +802,69 @@ describe('DashboardService.resumenDia', () => {
       0,
       0,
     ).where;
-    expect(where.fecha).toEqual(limitesDeHoy());
+    // La consulta amplía ±12h para captar la tarjeta nocturna abierta de
+    // madrugada; el día fino lo decide `cardShiftDay` en memoria.
+    const lim = limitesDeHoy();
+    expect(where.fecha).toEqual({
+      gte: new Date(lim.gte.getTime() - 12 * 3_600_000),
+      lt: new Date(lim.lt.getTime() + 12 * 3_600_000),
+    });
+  });
+
+  it('tarjeta nocturna abierta de MADRUGADA: su HM cae al día en que abrió el turno, no al día calendario', async () => {
+    prisma.equipment.findMany.mockResolvedValue([]);
+    // Entrada 01:30 Chile del 14 (04:30Z), turno REPORTADO del 13 — el caso
+    // del cliente (14-11): «se hicieron en la madrugada, quedan para el día
+    // anterior», igual que la carga de combustible (#83).
+    const madrugada = {
+      ...card('t1', 'e2', 'EX-001', 'NOCTURNO', 50, 58.2),
+      fecha: new Date('2026-11-14T04:30:00.000Z'),
+      shift: { date: parseDateOnlyUtc('2026-11-13') },
+    };
+    prisma.registroHorometro.findMany.mockResolvedValue([madrugada]);
+
+    const res13 = await service.resumenDia('2026-11-13');
+    expect(res13.hm).toEqual({ total: 8.2, dia: 0, noche: 8.2 });
+    expect(res13.lecturas.map((l) => l.id)).toEqual(['t1']);
+    // La hora de entrada sigue siendo la REAL (madrugada), solo cambia el día
+    // al que se atribuye.
+    expect(res13.lecturas[0].horaEntrada).toBe('2026-11-14T04:30:00.000Z');
+    expect(res13.operacionPorEquipo).toHaveLength(1);
+
+    const res14 = await service.resumenDia('2026-11-14');
+    expect(res14.hm).toEqual({ total: 0, dia: 0, noche: 0 });
+    expect(res14.lecturas).toEqual([]);
+    expect(res14.operacionPorEquipo).toEqual([]);
+  });
+
+  it('tarjeta de madrugada SIN turno vinculado cae al día del turno por reloj (shiftDayOf)', async () => {
+    prisma.equipment.findMany.mockResolvedValue([]);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        ...card('t1', 'e1', 'CG-002', 'NOCTURNO', 10, 14),
+        fecha: new Date('2026-11-14T04:30:00.000Z'), // 01:30 Chile
+        shift: null,
+      },
+    ]);
+    const res = await service.resumenDia('2026-11-13');
+    expect(res.hm.noche).toBe(4);
+  });
+
+  it('diésel del cierre nocturno re-fechado (#83) recupera su split día/noche: su tarjeta de madrugada está en el mismo día', async () => {
+    prisma.equipment.findMany.mockResolvedValue([]);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        ...card('t1', 'e1', 'CG-002', 'NOCTURNO', 10, 14),
+        fecha: new Date('2026-11-14T04:30:00.000Z'),
+        shift: { date: parseDateOnlyUtc('2026-11-13') },
+      },
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      // Sintético 20:30 −03 del 13: así la fecha #83 al cerrar de madrugada.
+      { ...carga('e1', 60, 't1'), fecha: new Date('2026-11-13T23:30:00.000Z') },
+    ]);
+    const res = await service.resumenDia('2026-11-13');
+    expect(res.diesel).toEqual({ total: 60, dia: 0, noche: 60, porHm: 15 });
   });
 
   it('una camioneta (controlUnit KM) no entra a hm ni a lecturas; su diésel sí cuenta', async () => {
@@ -1045,18 +1155,19 @@ describe('DashboardService.resumenDia', () => {
   describe('filtro por fecha', () => {
     const primerWhere = (m: jest.Mock): Record<string, unknown> =>
       (m.mock.calls[0] as [{ where: Record<string, unknown> }])[0].where;
-    it('el param fecha fija los límites de tarjetas y el eco de fecha', async () => {
+    it('el param fecha fija la ventana de tarjetas (±12h) y el eco de fecha', async () => {
       const res = await service.resumenDia('2026-10-15');
       expect(res.fecha).toBe('2026-10-15');
       const { gte, lt } = primerWhere(prisma.registroHorometro.findMany)
         .fecha as { gte: Date; lt: Date };
-      // Una tarjeta del 15 (mediodía Chile) entra; una del 16 no.
-      const del15 = new Date('2026-10-15T15:00:00.000Z');
-      const del16 = new Date('2026-10-16T15:00:00.000Z');
+      // La ventana trae de más (±12h) para captar la nocturna abierta de
+      // madrugada del día siguiente; el día fino lo decide `cardShiftDay`.
+      const del15 = new Date('2026-10-15T15:00:00.000Z'); // mediodía Chile del 15
+      const madrugada16 = new Date('2026-10-16T04:30:00.000Z'); // 01:30 Chile del 16
+      const tarde16 = new Date('2026-10-16T18:00:00.000Z');
       expect(del15 >= gte && del15 < lt).toBe(true);
-      expect(del16 >= gte && del16 < lt).toBe(false);
-      expect(businessDayKey(gte)).toBe('2026-10-15');
-      expect(businessDayKey(lt)).toBe('2026-10-16');
+      expect(madrugada16 >= gte && madrugada16 < lt).toBe(true);
+      expect(tarde16 >= gte && tarde16 < lt).toBe(false);
     });
 
     it('descarta cargas fuera del día objetivo', async () => {

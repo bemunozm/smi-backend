@@ -130,6 +130,24 @@ export function shiftDayOf(at: Date): string {
 }
 
 /**
+ * Día de turno (`YYYY-MM-DD`) al que se ATRIBUYE una tarjeta en las vistas
+ * por día (resumen del día, métricas de equipos/supervisores): manda el
+ * `date` del `Shift` vinculado — el día REPORTADO por quien la abrió — y sin
+ * turno vinculado decide el reloj de su hora de entrada (`shiftDayOf`).
+ * Misma regla con que se fecha la carga de combustible del cierre
+ * (`fuelDateForShiftDay`, pedido del cliente 13/14-11): la tarjeta nocturna
+ * abierta de MADRUGADA pertenece al día ANTERIOR, no al día calendario de su
+ * `fecha`. La `fecha` (hora real de entrada) no se toca: solo cambia el día
+ * al que se atribuye.
+ */
+export function cardShiftDay(card: {
+  fecha: Date;
+  shift?: { date: Date } | null;
+}): string {
+  return card.shift ? formatDateOnly(card.shift.date) : shiftDayOf(card.fecha);
+}
+
+/**
  * Instante con que se fecha la carga de combustible de un cierre/edición de
  * tarjeta (pedido del cliente, 13-11: la carga pertenece al día del turno en
  * que queda reportada la tarjeta, aunque el cierre real caiga en otro día —

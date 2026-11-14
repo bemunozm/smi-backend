@@ -4,6 +4,7 @@ import { validate } from 'class-validator';
 
 import {
   assertShiftDateWithinWindow,
+  cardShiftDay,
   formatDateOnly,
   IsDateOnly,
   isValidDateOnly,
@@ -166,6 +167,34 @@ describe('shiftDayOf', () => {
   it('cruza mes y año: la madrugada del 1 de enero pertenece al 31 de diciembre', () => {
     // 2026-01-01T05:00:00Z = 02:00 en Chile (verano, UTC-3).
     expect(shiftDayOf(new Date('2026-01-01T05:00:00.000Z'))).toBe('2025-12-31');
+  });
+});
+
+describe('cardShiftDay', () => {
+  it('con Shift vinculado manda su date (el día REPORTADO), no el reloj de entrada', () => {
+    // Tarjeta nocturna abierta de MADRUGADA: entrada 01:30 Chile del 14,
+    // turno reportado del 13 — el caso del cliente (14-11).
+    expect(
+      cardShiftDay({
+        fecha: new Date('2026-11-14T04:30:00.000Z'),
+        shift: { date: parseDateOnlyUtc('2026-11-13') },
+      }),
+    ).toBe('2026-11-13');
+  });
+
+  it('sin Shift vinculado decide el reloj de entrada: la madrugada es del día ANTERIOR', () => {
+    expect(
+      cardShiftDay({
+        fecha: new Date('2026-11-14T04:30:00.000Z'),
+        shift: null,
+      }),
+    ).toBe('2026-11-13');
+  });
+
+  it('sin Shift y entrada después de las 08:00 chilenas: el propio día', () => {
+    expect(cardShiftDay({ fecha: new Date('2026-11-14T15:00:00.000Z') })).toBe(
+      '2026-11-14',
+    );
   });
 });
 
