@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 
@@ -56,6 +60,7 @@ const prisma = {
     findUnique: jest.fn(),
     findMany: jest.fn(),
     update: jest.fn(),
+    delete: jest.fn(),
   },
   planta: { findMany: jest.fn() },
   empresaExterna: { findMany: jest.fn() },
@@ -154,18 +159,18 @@ describe('ReporteDiarioService.create', () => {
     );
   });
 
-  it('ya existe el turno (otro id) → 409 con fecha y turno en el mensaje', async () => {
+  it('el MISMO supervisor ya reportó el turno (otro id) → 409 con fecha y turno', async () => {
     // El primer findUnique es la búsqueda por id (replay) — null; el segundo,
-    // por fecha+turno — ocupado.
+    // por fecha+turno+supervisor — ocupado.
     prisma.reporteDiario.findUnique
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'otro', createdById: 'u2' });
+      .mockResolvedValueOnce({ id: 'otro', createdById: USER.id });
     const err = await service
       .create(base(), USER.id, USER.name)
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ConflictException);
     expect((err as ConflictException).message).toBe(
-      `Ya existe el reporte del turno DIURNO del ${FECHA_BASE}.`,
+      `Ya enviaste el reporte del turno DIURNO del ${FECHA_BASE}. Ábrelo en el historial para corregirlo.`,
     );
   });
 
@@ -216,11 +221,15 @@ describe('ReporteDiarioService.create', () => {
     expect(res).not.toHaveProperty('createdById');
   });
 
-  it('el chequeo previo usa el unique compuesto fecha_turno', async () => {
+  it('el chequeo previo usa el unique compuesto fecha+turno+supervisor: otro supervisor no choca', async () => {
     await service.create(base(), USER.id, USER.name);
     expect(prisma.reporteDiario.findUnique).toHaveBeenCalledWith({
       where: {
-        fecha_turno: { fecha: new Date(FECHA_BASE), turno: 'DIURNO' },
+        fecha_turno_supervisorId: {
+          fecha: new Date(FECHA_BASE),
+          turno: 'DIURNO',
+          supervisorId: USER.id,
+        },
       },
       select: { id: true },
     });
@@ -442,5 +451,69 @@ describe('ReporteDiarioService.update', () => {
   it('findChanges delega en ChangeLogService.findFor', async () => {
     await service.findChanges('r1');
     expect(changeLog.findFor).toHaveBeenCalledWith('reporte_diario', 'r1');
+  });
+});
+
+describe('ReporteDiarioService.remove', () => {
+  const EDITOR = { id: 'admin1', name: 'Administrador SMI' };
+  const guardado = () => ({
+    id: 'r1',
+    fecha: new Date('2026-11-13'),
+    turno: 'DIURNO',
+    supervisorNombre: 'Supervisor SMI',
+    observaciones: null,
+    produccion: [
+      { seccion: 'INTERNOS', camiones: 5, vueltasPorCamion: 4 },
+      { seccion: 'MINA_CALETA', camiones: 16, vueltasPorCamion: 3 },
+      { seccion: 'MINERAS', camiones: 34, vueltasPorCamion: 1 },
+    ],
+    tolvas: [],
+    plantas: [],
+    traspasos: [],
+    empresas: [],
+    personal: [],
+  });
+
+  beforeEach(() => {
+    prisma.$transaction.mockImplementation(
+      (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    );
+  });
+
+  it('un id inexistente → 404 sin tocar ChangeLog', async () => {
+    prisma.reporteDiario.findUnique.mockResolvedValue(null);
+    await expect(service.remove('nope', EDITOR)).rejects.toThrow(
+      NotFoundException,
+    );
+    expect(changeLog.record).not.toHaveBeenCalled();
+    expect(prisma.reporteDiario.delete).not.toHaveBeenCalled();
+  });
+
+  it('borra la fila y deja el resumen completo como traza DELETE', async () => {
+    prisma.reporteDiario.findUnique.mockResolvedValue(guardado());
+    await service.remove('r1', EDITOR);
+    expect(prisma.reporteDiario.delete).toHaveBeenCalledWith({
+      where: { id: 'r1' },
+    });
+    expect(changeLog.record).toHaveBeenCalledWith(
+      prisma,
+      'reporte_diario',
+      'r1',
+      EDITOR,
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Fecha',
+          // El formato es-CL cambia entre ICU (13-11-2026 o 13/11/2026).
+          before: expect.stringMatching(/13[-/]11[-/]2026/) as unknown,
+        }),
+        expect.objectContaining({ label: 'Turno', before: 'DIURNO' }),
+        expect.objectContaining({
+          label: 'Supervisor',
+          before: 'Supervisor SMI',
+        }),
+        expect.objectContaining({ label: 'Camiones', after: '—' }),
+      ]),
+      'DELETE',
+    );
   });
 });

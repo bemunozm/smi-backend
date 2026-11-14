@@ -1085,7 +1085,9 @@ model ReporteDiario {
   empresas   ReporteEmpresa[]
   personal   ReporteDiarioPersonal[]
 
-  @@unique([fecha, turno])
+  /// Un reporte por turno POR SUPERVISOR: cada supervisor del turno reporta
+  /// lo suyo (dos cuadrillas del mismo turno son dos reportes distintos).
+  @@unique([fecha, turno, supervisorId])
   @@map("reporte_diario")
 }
 

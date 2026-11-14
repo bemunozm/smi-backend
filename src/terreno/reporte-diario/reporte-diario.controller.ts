@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -62,5 +63,14 @@ export class ReporteDiarioController {
   @Get(':id/changes')
   async findChanges(@Param('id') id: string) {
     return { data: await this.service.findChanges(id), message: 'ok' };
+  }
+
+  /** Eliminación definitiva, solo el administrador; el resumen del reporte
+   * queda como traza en el Registro de actividad. */
+  @Delete(':id')
+  @Roles([ROLES.ADMIN])
+  async remove(@Param('id') id: string, @CurrentEditor() editor: Editor) {
+    await this.service.remove(id, editor);
+    return { data: null, message: 'Reporte eliminado' };
   }
 }
