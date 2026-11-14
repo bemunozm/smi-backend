@@ -830,6 +830,11 @@ model Shift {
   /// Soft ref a `user.id` — mismo criterio que `RegistroHorometro.supervisorId`.
   supervisorId String @map("supervisor_id")
 
+  /// Cuándo se le avisó al supervisor que terminó el turno con pesados
+  /// todavía abiertos (`ShiftEndRemindersService`). `null` = no se avisó: el
+  /// aviso sale una sola vez por turno.
+  openCardsReminderSentAt DateTime? @map("open_cards_reminder_sent_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

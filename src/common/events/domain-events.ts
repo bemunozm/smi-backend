@@ -22,6 +22,7 @@ export const DOMAIN_EVENTS = {
   CHECKLIST_REVIEWED: 'checklist.reviewed',
   DOCUMENT_EXPIRING: 'document.expiring',
   LIGHT_SERVICE_DUE: 'light-service.due',
+  SHIFT_ENDED_WITH_OPEN_CARDS: 'shift.open-cards',
 } as const;
 
 export type DomainEventName =
@@ -175,4 +176,19 @@ export interface LightServiceDueEvent {
   /** El kilometraje en que toca (30.000). */
   nextKm: number;
   remainingKm: number;
+}
+
+/**
+ * Terminó el turno de un supervisor y le quedaron pesados abiertos: el turno
+ * siguiente no los ve para registrarlos. Lo emite `ShiftEndRemindersService`,
+ * una sola vez por turno.
+ */
+export interface ShiftEndedWithOpenCardsEvent {
+  supervisorId: string;
+  shiftId: string;
+  /** `YYYY-MM-DD` */
+  shiftDate: string;
+  shiftType: string;
+  /** Códigos de los pesados que siguen abiertos (`CA-011`), ordenados. */
+  equipmentCodes: string[];
 }
