@@ -105,6 +105,9 @@ export interface RecordEditedEvent {
   /** Cómo se nombra el registro en el aviso: `trabajo extra de CM-003 del 01-10-2026`. */
   entityLabel: string;
   editedBy: string;
+  /** `true` cuando el registro se ELIMINÓ (el aviso dice «eliminó» y los
+   * `changes` resumen lo borrado, con `after` en «—»). Sin él, edición. */
+  deleted?: boolean;
   changes: { label: string; before: string; after: string }[];
 }
 

@@ -1,6 +1,8 @@
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
+  IsIn,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsPositive,
@@ -14,6 +16,8 @@ import {
 import { normalizeObservaciones } from '../../common/normalize-observaciones';
 import { ADBLUE_MAX_LITERS } from '../adblue';
 import { FUEL_LITERS_MAX, FUEL_LITERS_MAX_MESSAGE } from '../fuel';
+import { SHIFT_TYPES } from '../shift-type';
+import type { ShiftType } from '../shift-type';
 
 /** Los campos que un `null` explícito no puede tocar: solo `undefined` los omite. */
 const isPresent = (_: unknown, value: unknown): boolean => value !== undefined;
@@ -31,6 +35,19 @@ export class UpdateShiftCardDto {
   @ValidateIf(isPresent)
   @IsString()
   operatorId?: string;
+
+  /** Corrige en qué turno salió el equipo (solo tarjeta ya cerrada): la
+   * tarjeta se mueve al turno del MISMO día y supervisor con el otro tipo. */
+  @ValidateIf(isPresent)
+  @IsIn(SHIFT_TYPES, { message: 'El turno debe ser DIURNO o NOCTURNO.' })
+  turno?: ShiftType;
+
+  /** Corrige qué máquina salió (solo tarjeta ya cerrada); debe ser de la
+   * misma clase (pesado/liviano) que la original. */
+  @ValidateIf(isPresent)
+  @IsString()
+  @IsNotEmpty({ message: 'Indica el equipo.' })
+  equipoId?: string;
 
   @ValidateIf(isPresent)
   @IsNumber({ allowNaN: false, allowInfinity: false })

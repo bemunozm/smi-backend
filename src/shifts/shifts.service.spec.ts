@@ -20,7 +20,11 @@ import {
   businessHour,
   todayInBusinessTimeZone,
 } from '../common/dates/business-time';
-import { formatDateOnly, parseDateOnlyUtc } from './date-only';
+import {
+  formatDateOnly,
+  fuelDateForShiftDay,
+  parseDateOnlyUtc,
+} from './date-only';
 
 /**
  * Captura el `data` de la ÚLTIMA llamada a un mock `jest.fn()` sin tipar.
@@ -78,6 +82,7 @@ const EQUIPO_INCLUDE = {
   internalCode: 'EX-001',
   type: 'Excavadora',
   controlUnit: 'HOURS',
+  equipmentClass: 'HEAVY',
 };
 
 function buildCardRecord(overrides: Record<string, unknown> = {}) {
@@ -130,6 +135,7 @@ describe('ShiftsService', () => {
       create: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
+      delete: jest.fn(),
     },
     equipment: {
       findUnique: jest.fn(),
@@ -158,6 +164,8 @@ describe('ShiftsService', () => {
       findFirst: jest.fn(),
       findMany: jest.fn(),
     },
+    // Carga vinculada de una tarjeta a eliminar (`removeCard`, fuera de tx).
+    registroCombustible: { findUnique: jest.fn() },
     shift: { upsert: jest.fn(), findUnique: jest.fn(), findMany: jest.fn() },
     user: { findUnique: jest.fn(), findMany: jest.fn() },
     // Pre-check de solo lectura del equipo, ANTES del upsert del `Shift`
@@ -171,6 +179,7 @@ describe('ShiftsService', () => {
   const claimTmp = jest.fn();
   const sign = jest.fn();
   const discard = jest.fn();
+  const deleteBestEffort = jest.fn();
   const assertActive = jest.fn();
   const changeLog = { record: jest.fn(), findFor: jest.fn() };
   const eventEmitter = { emit: jest.fn() };
@@ -180,7 +189,10 @@ describe('ShiftsService', () => {
       providers: [
         ShiftsService,
         { provide: PrismaService, useValue: prisma },
-        { provide: StorageService, useValue: { claimTmp, sign, discard } },
+        {
+          provide: StorageService,
+          useValue: { claimTmp, sign, discard, deleteBestEffort },
+        },
         { provide: OperatorsService, useValue: { assertActive } },
         { provide: ChangeLogService, useValue: changeLog },
         { provide: EventEmitter2, useValue: eventEmitter },
@@ -1657,10 +1669,20 @@ describe('ShiftsService', () => {
     }
 
     function givenCard(card: ReturnType<typeof closedCard>) {
+      const shift = card.shift as { type: string; date: Date } | null;
       prisma.registroHorometro.findUnique.mockResolvedValue({
         supervisorId: card.supervisorId,
         operatorId: card.operatorId,
         valorFinal: card.valorFinal,
+        // `findOwnedCard` trae el turno: la clave del `Shift` de destino
+        // cuando la edición corrige `turno`.
+        shift: shift
+          ? {
+              type: shift.type,
+              date: shift.date,
+              supervisorId: card.supervisorId,
+            }
+          : null,
       });
       tx.registroHorometro.findUnique.mockResolvedValue(card);
     }
@@ -2148,6 +2170,214 @@ describe('ShiftsService', () => {
       });
     });
 
+    describe('turno y equipo', () => {
+      it.each([
+        ['turno', { turno: 'NOCTURNO' as const }],
+        ['equipoId', { equipoId: 'e2' }],
+      ])(
+        '409 CARD_NOT_CLOSED si la tarjeta sigue abierta y se toca %s',
+        async (_name, body) => {
+          givenCard(closedCard({ valorFinal: null }));
+
+          expect(
+            await errorOf(service.update('card_1', body, owner)),
+          ).toMatchObject({ code: 'CARD_NOT_CLOSED' });
+          expect(prisma.$transaction).not.toHaveBeenCalled();
+        },
+      );
+
+      it('mover el turno upsertea el Shift de destino (mismo día y supervisor) y mueve shiftId y closedShiftId', async () => {
+        givenCard(closedCard({ closedShiftId: 'shift_1' }));
+        prisma.shift.upsert.mockResolvedValue({
+          id: 'shift_2',
+          supervisorId: 'sup_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'NOCTURNO',
+        });
+
+        await service.update('card_1', { turno: 'NOCTURNO' }, owner);
+
+        expect(prisma.shift.upsert).toHaveBeenCalledWith({
+          where: {
+            supervisorId_date_type: {
+              supervisorId: 'sup_1',
+              date: new Date('2026-09-28T00:00:00.000Z'),
+              type: 'NOCTURNO',
+            },
+          },
+          create: {
+            supervisorId: 'sup_1',
+            date: new Date('2026-09-28T00:00:00.000Z'),
+            type: 'NOCTURNO',
+          },
+          update: {},
+        });
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          turno: 'NOCTURNO',
+          shiftId: 'shift_2',
+          closedShiftId: 'shift_2',
+        });
+        expect(changeLog.record).toHaveBeenCalledWith(
+          tx,
+          'shift_card',
+          'card_1',
+          expect.anything(),
+          [
+            {
+              field: 'turno',
+              label: 'Turno',
+              before: 'Diurno',
+              after: 'Nocturno',
+            },
+          ],
+        );
+      });
+
+      it('el cierre hecho en el turno de OTRO supervisor (liviano) no se mueve', async () => {
+        givenCard(closedCard({ closedShiftId: 'shift_9' }));
+        prisma.shift.upsert.mockResolvedValue({
+          id: 'shift_2',
+          supervisorId: 'sup_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'NOCTURNO',
+        });
+
+        await service.update('card_1', { turno: 'NOCTURNO' }, owner);
+
+        const data = lastCallData(tx.registroHorometro.update);
+        expect(data.shiftId).toBe('shift_2');
+        expect(data.closedShiftId).toBeUndefined();
+      });
+
+      it('la carga vinculada se re-fecha con la regla del día de turno del destino', async () => {
+        givenCard(closedCard({ fuelLiters: 20, closedShiftId: 'shift_1' }));
+        tx.registroCombustible.findUnique.mockResolvedValue({ id: 'fuel_1' });
+        prisma.shift.upsert.mockResolvedValue({
+          id: 'shift_2',
+          supervisorId: 'sup_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'NOCTURNO',
+        });
+
+        await service.update('card_1', { turno: 'NOCTURNO' }, owner);
+
+        expect(tx.registroCombustible.update).toHaveBeenCalledWith({
+          where: { id: 'fuel_1' },
+          data: {
+            fecha: fuelDateForShiftDay(
+              new Date('2026-09-28T19:55:00.000Z'),
+              '2026-09-28',
+              'NOCTURNO',
+            ),
+          },
+        });
+      });
+
+      it('si el turno del cierre es ajeno, la carga vinculada conserva su fecha', async () => {
+        givenCard(closedCard({ fuelLiters: 20, closedShiftId: 'shift_9' }));
+        tx.registroCombustible.findUnique.mockResolvedValue({ id: 'fuel_1' });
+        prisma.shift.upsert.mockResolvedValue({
+          id: 'shift_2',
+          supervisorId: 'sup_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'NOCTURNO',
+        });
+
+        await service.update('card_1', { turno: 'NOCTURNO' }, owner);
+
+        expect(tx.registroCombustible.update).not.toHaveBeenCalled();
+      });
+
+      it('una tarjeta legacy sin Shift solo corrige la columna turno (sin upsert)', async () => {
+        givenCard(closedCard({ shift: null, shiftId: null }));
+
+        await service.update('card_1', { turno: 'NOCTURNO' }, owner);
+
+        expect(prisma.shift.upsert).not.toHaveBeenCalled();
+        const data = lastCallData(tx.registroHorometro.update);
+        expect(data.turno).toBe('NOCTURNO');
+        expect(data.shiftId).toBeUndefined();
+      });
+
+      it('cambiar la máquina actualiza la tarjeta y la carga vinculada, y reconcilia el contador del equipo nuevo', async () => {
+        givenCard(closedCard({ fuelLiters: 20 }));
+        tx.equipment.findUnique.mockResolvedValue({
+          internalCode: 'EX-002',
+          equipmentClass: 'HEAVY',
+          controlUnit: 'HOURS',
+          currentHourmeter: 100,
+          currentMileage: null,
+        });
+        tx.registroCombustible.findUnique.mockResolvedValue({ id: 'fuel_1' });
+
+        await service.update('card_1', { equipoId: 'e2' }, owner);
+
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          equipoId: 'e2',
+        });
+        // La lectura final (130) vale sobre el equipo nuevo: su contador sube.
+        expect(tx.equipment.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({ data: { currentHourmeter: 130 } }),
+        );
+        expect(tx.registroCombustible.update).toHaveBeenCalledWith({
+          where: { id: 'fuel_1' },
+          data: { equipoId: 'e2' },
+        });
+        expect(changeLog.record).toHaveBeenCalledWith(
+          tx,
+          'shift_card',
+          'card_1',
+          expect.anything(),
+          [
+            {
+              field: 'equipoId',
+              label: 'Equipo',
+              before: 'EX-001',
+              after: 'EX-002',
+            },
+          ],
+        );
+      });
+
+      it('404 si el equipo nuevo no existe', async () => {
+        tx.equipment.findUnique.mockResolvedValue(null);
+
+        await expect(
+          service.update('card_1', { equipoId: 'e9' }, owner),
+        ).rejects.toBeInstanceOf(NotFoundException);
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+      });
+
+      it('400 si el equipo nuevo es de otra clase (pesado vs liviano)', async () => {
+        tx.equipment.findUnique.mockResolvedValue({
+          internalCode: 'CAM-01',
+          equipmentClass: 'LIGHT',
+          controlUnit: 'KILOMETERS',
+          currentHourmeter: null,
+          currentMileage: 10,
+        });
+
+        await expect(
+          service.update('card_1', { equipoId: 'e2' }, owner),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+      });
+
+      it('X-Expected sobre el equipo: 409 STALE_UPDATE si cambió por otro lado', async () => {
+        const body = await errorOf(
+          service.update('card_1', { equipoId: 'e2' }, owner, {
+            equipoId: 'e_viejo',
+          }),
+        );
+
+        expect(body).toMatchObject({
+          code: 'STALE_UPDATE',
+          message: expect.stringContaining('Equipo') as string,
+        });
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+      });
+    });
+
     describe('X-Expected', () => {
       it('con la base vigente aplica', async () => {
         await service.update('card_1', { valorFinal: 140 }, owner, {
@@ -2206,6 +2436,189 @@ describe('ShiftsService', () => {
       await service.update('card_1', { observaciones: 'a' }, owner);
 
       expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('removeCard (DELETE)', () => {
+    const owner = buildSession('sup_1', 'SUPERVISOR', 'Ana Soto');
+
+    function deletableCard(overrides: Record<string, unknown> = {}) {
+      return buildCardRecord({
+        valorFinal: 130,
+        fuelLiters: 20,
+        pumpPhotoKey: 'fuel-photos/final.jpg',
+        closedAt: new Date('2026-09-28T20:00:00.000Z'),
+        fechaSalida: new Date('2026-09-28T19:55:00.000Z'),
+        ...overrides,
+      });
+    }
+
+    async function errorOf(promise: Promise<unknown>): Promise<unknown> {
+      try {
+        await promise;
+      } catch (error: unknown) {
+        return (error as { getResponse: () => unknown }).getResponse();
+      }
+      throw new Error('se esperaba un error');
+    }
+
+    beforeEach(() => {
+      prisma.registroHorometro.findUnique.mockResolvedValue(deletableCard());
+      prisma.registroCombustible.findUnique.mockResolvedValue(null);
+      tx.registroHorometro.delete.mockResolvedValue({});
+      tx.registroCombustible.delete.mockResolvedValue({});
+      changeLog.record.mockResolvedValue({});
+      deleteBestEffort.mockResolvedValue(undefined);
+    });
+
+    it('404 CARD_NOT_FOUND si no existe', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue(null);
+
+      expect(await errorOf(service.removeCard('x', owner))).toMatchObject({
+        code: 'CARD_NOT_FOUND',
+      });
+    });
+
+    it('403 NOT_OWNER para otro supervisor', async () => {
+      expect(
+        await errorOf(service.removeCard('card_1', buildSession('sup_2'))),
+      ).toMatchObject({ code: 'NOT_OWNER' });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('un ADMIN puede eliminar la tarjeta de otro', async () => {
+      await service.removeCard(
+        'card_1',
+        buildSession('adm_1', 'ADMIN', 'Admin'),
+      );
+
+      expect(tx.registroHorometro.delete).toHaveBeenCalledWith({
+        where: { id: 'card_1' },
+      });
+    });
+
+    it('409 CARD_NOT_CLOSED si la tarjeta sigue en curso', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue(
+        deletableCard({ valorFinal: null }),
+      );
+
+      expect(await errorOf(service.removeCard('card_1', owner))).toMatchObject({
+        code: 'CARD_NOT_CLOSED',
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('borra la tarjeta y su carga vinculada, deja el rastro DELETE y avisa con «eliminó»', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        id: 'fuel_1',
+        litros: 20,
+        fecha: new Date('2026-09-28T19:55:00.000Z'),
+      });
+
+      await service.removeCard('card_1', owner);
+
+      expect(changeLog.record).toHaveBeenCalledWith(
+        tx,
+        'shift_card',
+        'card_1',
+        { id: 'sup_1', name: 'Ana Soto' },
+        [
+          { field: 'equipoId', label: 'Equipo', before: 'EX-001', after: '—' },
+          {
+            field: 'operatorId',
+            label: 'Operador',
+            before: 'Patricio Rojas',
+            after: '—',
+          },
+          {
+            field: 'turno',
+            label: 'Turno',
+            before: 'Diurno del 28-09-2026',
+            after: '—',
+          },
+          {
+            field: 'valorInicial',
+            label: 'Lectura inicial',
+            before: '100',
+            after: '—',
+          },
+          {
+            field: 'valorFinal',
+            label: 'Lectura final',
+            before: '130',
+            after: '—',
+          },
+          {
+            field: 'fuelLiters',
+            label: 'Litros de combustible',
+            before: '20',
+            after: '—',
+          },
+        ],
+        'DELETE',
+      );
+      expect(changeLog.record).toHaveBeenCalledWith(
+        tx,
+        'combustible',
+        'fuel_1',
+        { id: 'sup_1', name: 'Ana Soto' },
+        [
+          { field: 'equipo', label: 'Equipo', before: 'EX-001', after: '—' },
+          { field: 'litros', label: 'Litros', before: '20', after: '—' },
+          {
+            field: 'fecha',
+            label: 'Fecha',
+            before: expect.any(String) as string,
+            after: '—',
+          },
+          {
+            field: 'origen',
+            label: 'Origen',
+            before: 'Cierre de tarjeta',
+            after: '—',
+          },
+        ],
+        'DELETE',
+      );
+      expect(tx.registroCombustible.delete).toHaveBeenCalledWith({
+        where: { id: 'fuel_1' },
+      });
+      expect(tx.registroHorometro.delete).toHaveBeenCalledWith({
+        where: { id: 'card_1' },
+      });
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'record.edited',
+        expect.objectContaining({
+          entity: 'shift_card',
+          entityId: 'card_1',
+          deleted: true,
+          editedBy: 'Ana Soto',
+          entityLabel: 'tarjeta de turno de EX-001 del 28-09-2026',
+        }),
+      );
+      expect(deleteBestEffort).toHaveBeenCalledWith('fuel-photos/final.jpg');
+    });
+
+    it('sin carga vinculada ni foto no toca combustible ni el bucket', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue(
+        deletableCard({ pumpPhotoKey: null }),
+      );
+
+      await service.removeCard('card_1', owner);
+
+      expect(tx.registroCombustible.delete).not.toHaveBeenCalled();
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+      expect(tx.registroHorometro.delete).toHaveBeenCalledTimes(1);
+    });
+
+    it('si la transacción falla no avisa ni suelta la foto', async () => {
+      changeLog.record.mockRejectedValue(new Error('db caída'));
+
+      await expect(service.removeCard('card_1', owner)).rejects.toThrow(
+        'db caída',
+      );
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(deleteBestEffort).not.toHaveBeenCalled();
     });
   });
 

@@ -182,7 +182,7 @@ export function buildRecordEditedTemplate(
 ): NotificationTemplate {
   return {
     tipo: DOMAIN_EVENTS.RECORD_EDITED,
-    titulo: `${event.editedBy} modificó ${event.entityArticle} ${event.entityLabel}`,
+    titulo: `${event.editedBy} ${event.deleted ? 'eliminó' : 'modificó'} ${event.entityArticle} ${event.entityLabel}`,
     cuerpo: event.changes
       .map((c) => `${c.label}: ${c.before} → ${c.after}`)
       .join('\n'),

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpCode,
@@ -140,6 +141,18 @@ export class ShiftCardsController {
       data: await this.service.update(id, dto, session, expected),
       message: 'Tarjeta actualizada. Se avisó al administrador.',
     };
+  }
+
+  /**
+   * Elimina una tarjeta CERRADA — dueño o ADMIN (lo verifica el service).
+   * Arrastra la carga de combustible nacida de su cierre, deja el rastro
+   * `DELETE` en el historial y avisa al administrador.
+   */
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  async remove(@Param('id') id: string, @Session() session: UserSession) {
+    await this.service.removeCard(id, session);
+    return { data: null, message: 'Tarjeta eliminada' };
   }
 
   /** Quién cambió qué y cuándo, del cambio más reciente al más viejo. */
