@@ -36,14 +36,15 @@ export class UpdateShiftCardDto {
   @IsString()
   operatorId?: string;
 
-  /** Corrige en qué turno salió el equipo (solo tarjeta ya cerrada): la
-   * tarjeta se mueve al turno del MISMO día y supervisor con el otro tipo. */
+  /** Corrige en qué turno salió el equipo (abierta o cerrada): la tarjeta se
+   * mueve al turno del MISMO día y supervisor con el otro tipo. */
   @ValidateIf(isPresent)
   @IsIn(SHIFT_TYPES, { message: 'El turno debe ser DIURNO o NOCTURNO.' })
   turno?: ShiftType;
 
-  /** Corrige qué máquina salió (solo tarjeta ya cerrada); debe ser de la
-   * misma clase (pesado/liviano) que la original. */
+  /** Corrige qué máquina salió (abierta o cerrada); debe ser de la misma
+   * clase (pesado/liviano) que la original, y en una abierta el equipo
+   * destino no puede tener otra tarjeta abierta (`EQUIPMENT_BUSY`). */
   @ValidateIf(isPresent)
   @IsString()
   @IsNotEmpty({ message: 'Indica el equipo.' })
