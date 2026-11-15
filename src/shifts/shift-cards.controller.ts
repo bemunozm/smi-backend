@@ -144,9 +144,10 @@ export class ShiftCardsController {
   }
 
   /**
-   * Elimina una tarjeta CERRADA — dueño o ADMIN (lo verifica el service).
-   * Arrastra la carga de combustible nacida de su cierre, deja el rastro
-   * `DELETE` en el historial y avisa al administrador.
+   * Elimina una tarjeta, abierta o cerrada — dueño o ADMIN (lo verifica el
+   * service). Arrastra la carga de combustible nacida de su cierre (si la
+   * hay), libera el equipo si seguía en uso, deja el rastro `DELETE` en el
+   * historial y avisa al administrador.
    */
   @Delete(':id')
   @HttpCode(HttpStatus.OK)

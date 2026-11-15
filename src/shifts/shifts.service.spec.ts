@@ -2171,20 +2171,77 @@ describe('ShiftsService', () => {
     });
 
     describe('turno y equipo', () => {
-      it.each([
-        ['turno', { turno: 'NOCTURNO' as const }],
-        ['equipoId', { equipoId: 'e2' }],
-      ])(
-        '409 CARD_NOT_CLOSED si la tarjeta sigue abierta y se toca %s',
-        async (_name, body) => {
-          givenCard(closedCard({ valorFinal: null }));
+      it('en una ABIERTA también se corrige el turno: se mueve el shiftId sin tocar cierre ni contador', async () => {
+        givenCard(
+          closedCard({
+            valorFinal: null,
+            closedAt: null,
+            fechaSalida: null,
+            closedShiftId: null,
+          }),
+        );
+        prisma.shift.upsert.mockResolvedValue({
+          id: 'shift_2',
+          supervisorId: 'sup_1',
+          date: new Date('2026-09-28T00:00:00.000Z'),
+          type: 'NOCTURNO',
+        });
 
-          expect(
-            await errorOf(service.update('card_1', body, owner)),
-          ).toMatchObject({ code: 'CARD_NOT_CLOSED' });
-          expect(prisma.$transaction).not.toHaveBeenCalled();
-        },
-      );
+        await service.update('card_1', { turno: 'NOCTURNO' }, owner);
+
+        const data = lastCallData(tx.registroHorometro.update);
+        expect(data.turno).toBe('NOCTURNO');
+        expect(data.shiftId).toBe('shift_2');
+        expect(data.closedShiftId).toBeUndefined();
+        expect(tx.equipment.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('mover una ABIERTA a otro equipo exige que el destino esté libre: 409 EQUIPMENT_BUSY', async () => {
+        givenCard(
+          closedCard({ valorFinal: null, closedAt: null, fechaSalida: null }),
+        );
+        tx.equipment.findUnique.mockResolvedValue({
+          internalCode: 'EX-002',
+          equipmentClass: 'HEAVY',
+          controlUnit: 'HOURS',
+          currentHourmeter: 100,
+          currentMileage: null,
+        });
+        tx.registroHorometro.findFirst.mockResolvedValue({
+          supervisorId: 'sup_2',
+          fecha: new Date('2026-09-28T08:00:00.000Z'),
+        });
+        tx.user.findUnique.mockResolvedValue({ name: 'Marta Díaz' });
+
+        expect(
+          await errorOf(service.update('card_1', { equipoId: 'e2' }, owner)),
+        ).toMatchObject({ code: 'EQUIPMENT_BUSY' });
+        expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+      });
+
+      it('mover una ABIERTA a un equipo libre reconcilia su contador con la lectura INICIAL (como la apertura)', async () => {
+        givenCard(
+          closedCard({ valorFinal: null, closedAt: null, fechaSalida: null }),
+        );
+        tx.equipment.findUnique.mockResolvedValue({
+          internalCode: 'EX-002',
+          equipmentClass: 'HEAVY',
+          controlUnit: 'HOURS',
+          currentHourmeter: 50,
+          currentMileage: null,
+        });
+        tx.registroHorometro.findFirst.mockResolvedValue(null);
+
+        await service.update('card_1', { equipoId: 'e2' }, owner);
+
+        expect(lastCallData(tx.registroHorometro.update)).toMatchObject({
+          equipoId: 'e2',
+        });
+        // valorInicial = 100 sobre un contador en 50: sube a 100.
+        expect(tx.equipment.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({ data: { currentHourmeter: 100 } }),
+        );
+      });
 
       it('mover el turno upsertea el Shift de destino (mismo día y supervisor) y mueve shiftId y closedShiftId', async () => {
         givenCard(closedCard({ closedShiftId: 'shift_1' }));
@@ -2497,15 +2554,40 @@ describe('ShiftsService', () => {
       });
     });
 
-    it('409 CARD_NOT_CLOSED si la tarjeta sigue en curso', async () => {
+    it('una ABIERTA también se elimina: libera el slot y la asignación del equipo, con «—» en lo que no tiene', async () => {
       prisma.registroHorometro.findUnique.mockResolvedValue(
-        deletableCard({ valorFinal: null }),
+        deletableCard({
+          valorFinal: null,
+          fuelLiters: null,
+          pumpPhotoKey: null,
+          closedAt: null,
+          fechaSalida: null,
+        }),
       );
 
-      expect(await errorOf(service.removeCard('card_1', owner))).toMatchObject({
-        code: 'CARD_NOT_CLOSED',
+      await service.removeCard('card_1', owner);
+
+      expect(tx.registroHorometro.delete).toHaveBeenCalledWith({
+        where: { id: 'card_1' },
       });
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(tx.equipment.update).toHaveBeenCalledWith({
+        where: { id: 'e1' },
+        data: { currentOperatorId: null, currentSupervisorId: null },
+      });
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+      const llamada = changeLog.record.mock.calls.find(
+        (c) => c[1] === 'shift_card',
+      ) as unknown[];
+      expect(llamada[4]).toEqual(
+        expect.arrayContaining([
+          {
+            field: 'valorFinal',
+            label: 'Lectura final',
+            before: '—',
+            after: '—',
+          },
+        ]),
+      );
     });
 
     it('borra la tarjeta y su carga vinculada, deja el rastro DELETE y avisa con «eliminó»', async () => {
@@ -2597,6 +2679,8 @@ describe('ShiftsService', () => {
         }),
       );
       expect(deleteBestEffort).toHaveBeenCalledWith('fuel-photos/final.jpg');
+      // Cerrada: el equipo ya estaba libre, su asignación no se toca.
+      expect(tx.equipment.update).not.toHaveBeenCalled();
     });
 
     it('sin carga vinculada ni foto no toca combustible ni el bucket', async () => {

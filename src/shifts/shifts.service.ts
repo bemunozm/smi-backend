@@ -97,6 +97,10 @@ const MINE_CLOSED_WINDOW_MS = 48 * 60 * 60 * 1000;
 class ShiftCardIdRaceError extends Error {}
 /** Mismo criterio que `ShiftCardIdRaceError`, para `closeCard`'s tx. */
 class ShiftCardCloseRaceError extends Error {}
+/** Mismo criterio, para la edición que mueve una tarjeta ABIERTA a otro
+ * equipo: el P2002 del índice parcial de tarjeta abierta se traduce AFUERA
+ * de la tx abortada (409 `EQUIPMENT_BUSY`). */
+class ShiftCardMoveRaceError extends Error {}
 
 const SHIFT_CARD_INCLUDE = {
   equipo: {
@@ -1067,7 +1071,6 @@ export class ShiftsService {
 
     const previa = await this.findOwnedCard(id, session);
     this.assertClosedFieldsAllowed(dto, previa.valorFinal);
-    this.assertClosedForMove(dto, previa.valorFinal);
 
     // Si el operador no cambia no se exige que siga activo: se conserva lo
     // guardado, igual que en trabajos extra.
@@ -1093,10 +1096,24 @@ export class ShiftsService {
           )
         : null;
 
-    const { card, event } = await this.prisma.$transaction(
-      (tx): Promise<ShiftCardEdit> =>
+    let edit: ShiftCardEdit;
+    try {
+      edit = await this.prisma.$transaction((tx): Promise<ShiftCardEdit> =>
         this.applyEdit(tx, id, dto, operator, editor, expected, shiftDestino),
-    );
+      );
+    } catch (error) {
+      if (error instanceof ShiftCardMoveRaceError) {
+        // Carrera contra el índice parcial de tarjeta abierta al mover una
+        // ABIERTA a otro equipo (alguien le abrió tarjeta entre el pre-check
+        // y el update) — mismo contrato que `resolveOpenRace`.
+        throw new ConflictException({
+          message: 'El equipo ya tiene una tarjeta de turno abierta',
+          code: ERROR_CODES.EQUIPMENT_BUSY,
+        });
+      }
+      throw error;
+    }
+    const { card, event } = edit;
 
     if (event) this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, event);
     return this.shapeCard(card);
@@ -1109,14 +1126,16 @@ export class ShiftsService {
   }
 
   /**
-   * `DELETE /api/shift-cards/:id` — elimina una tarjeta CERRADA (dueño o
-   * ADMIN). Borra también la carga de combustible nacida de su cierre; ambas
-   * dejan su propia fila `DELETE` en el historial dentro de la MISMA
-   * transacción (un borrado sin rastro es justo lo que el registro de
+   * `DELETE /api/shift-cards/:id` — elimina una tarjeta, abierta o cerrada
+   * (dueño o ADMIN). Borra también la carga de combustible nacida de su
+   * cierre; ambas dejan su propia fila `DELETE` en el historial dentro de la
+   * MISMA transacción (un borrado sin rastro es justo lo que el registro de
    * actividad debe impedir) y se avisa al administrador, igual que una
-   * edición. La foto del surtidor se suelta best-effort DESPUÉS del borrado
-   * (si este falla, la foto sigue donde debe): la comparten solo la tarjeta
-   * y su carga vinculada, y acá se van las dos.
+   * edición. Eliminar una ABIERTA además libera el "slot" de uso del equipo
+   * (la fila abierta y la asignación, mismo trato que `adminCloseCard`). La
+   * foto del surtidor se suelta best-effort DESPUÉS del borrado (si este
+   * falla, la foto sigue donde debe): la comparten solo la tarjeta y su
+   * carga vinculada, y acá se van las dos.
    *
    * Los contadores del equipo no se tocan: nunca retroceden (misma política
    * que la edición de lecturas).
@@ -1134,13 +1153,7 @@ export class ShiftsService {
         code: ERROR_CODES.NOT_OWNER,
       });
     }
-    if (card.valorFinal === null) {
-      throw new ConflictException({
-        message: 'La tarjeta sigue en curso: ciérrala antes de eliminarla',
-        code: ERROR_CODES.CARD_NOT_CLOSED,
-      });
-    }
-
+    const abierta = card.valorFinal === null;
     const editor = toEditor(session.user);
     // Qué decía la tarjeta al borrarla, ya legible — el `before` del
     // historial. `after` queda en «—»: después del borrado no hay registro.
@@ -1165,7 +1178,7 @@ export class ShiftsService {
       borrado(
         'valorFinal',
         CAMPO_LABEL.valorFinal,
-        formatNumber(card.valorFinal),
+        card.valorFinal != null ? formatNumber(card.valorFinal) : '—',
       ),
       borrado(
         'fuelLiters',
@@ -1205,6 +1218,14 @@ export class ShiftsService {
         await tx.registroCombustible.delete({ where: { id: vinculada.id } });
       }
       await tx.registroHorometro.delete({ where: { id } });
+      if (abierta) {
+        // El uso en curso desaparece con la fila: se suelta también la
+        // asignación del equipo (mismo trato que `adminCloseCard`).
+        await tx.equipment.update({
+          where: { id: card.equipoId },
+          data: { currentOperatorId: null, currentSupervisorId: null },
+        });
+      }
     });
 
     const event: RecordEditedEvent = {
@@ -1315,6 +1336,28 @@ export class ShiftsService {
             : 'La tarjeta es de un equipo pesado: elige otro equipo pesado.',
         );
       }
+      // Mover una tarjeta ABIERTA ocupa el "slot" de uso del equipo destino:
+      // mismo chequeo que la apertura (una sola abierta por equipo). El
+      // índice parcial de tarjeta abierta es la garantía dura — una carrera
+      // se traduce afuera como `EQUIPMENT_BUSY` (`ShiftCardMoveRaceError`).
+      // No se exige equipo operativo ni checklist: es una corrección de algo
+      // que ya salió, no un despacho nuevo.
+      if (actual.valorFinal == null) {
+        const abierta = await tx.registroHorometro.findFirst({
+          where: { equipoId: dto.equipoId, valorFinal: null },
+          select: { supervisorId: true, fecha: true },
+        });
+        if (abierta) {
+          const supervisorName = await this.resolveSupervisorName(
+            tx,
+            abierta.supervisorId,
+          );
+          throw new ConflictException({
+            message: this.buildBusyMessage(supervisorName, abierta.fecha),
+            code: ERROR_CODES.EQUIPMENT_BUSY,
+          });
+        }
+      }
     }
 
     if (
@@ -1393,14 +1436,20 @@ export class ShiftsService {
         datos.closedShiftId = shiftDestino.id;
       }
     }
-    if (
+    // Modo `'warn'`, igual que la apertura y el cierre: la edición solo sube
+    // el contador del equipo, nunca lo baja ni falla. La lectura vale sobre
+    // el equipo al que QUEDA la tarjeta (el contador del original no se baja,
+    // misma política de nunca retroceder). En una cerrada manda la lectura
+    // final; en una ABIERTA que cambia de máquina, la inicial — lo mismo que
+    // hace la apertura sobre su equipo.
+    const lecturaParaContador =
       despues.valorFinal != null &&
       (despues.valorFinal !== antes.valorFinal || cambioEquipo)
-    ) {
-      // Modo `'warn'`, igual que el cierre: la edición solo sube el contador
-      // del equipo, nunca lo baja ni falla. La lectura vale sobre el equipo
-      // al que QUEDA la tarjeta; el contador del original no se baja (misma
-      // política de nunca retroceder).
+        ? despues.valorFinal
+        : despues.valorFinal == null && cambioEquipo
+          ? despues.valorInicial
+          : null;
+    if (lecturaParaContador != null) {
       const equipo =
         equipoNuevo ??
         (await tx.equipment.findUnique({
@@ -1416,7 +1465,7 @@ export class ShiftsService {
           tx,
           despues.equipoId,
           equipo,
-          despues.valorFinal,
+          lecturaParaContador,
           'warn',
         );
         if (belowPrevious && !actual.belowPreviousReading) {
@@ -1425,7 +1474,20 @@ export class ShiftsService {
       }
     }
 
-    await tx.registroHorometro.update({ where: { id }, data: datos });
+    try {
+      await tx.registroHorometro.update({ where: { id }, data: datos });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        // Chocó el índice parcial de tarjeta abierta al mover el equipo (ver
+        // comentario de cabecera del archivo: NO seguir consultando acá, la
+        // tx ya quedó abortada — se traduce en `update()`).
+        throw new ShiftCardMoveRaceError();
+      }
+      throw error;
+    }
     if ((despues.fuelLiters ?? 0) !== (antes.fuelLiters ?? 0)) {
       await this.syncFuelRecord(tx, actual, despues.fuelLiters ?? 0);
     }
@@ -1594,30 +1656,6 @@ export class ShiftsService {
       message: `La tarjeta sigue abierta: ${tocados
         .map((c) => CAMPO_LABEL[c])
         .join(', ')} se informan al cerrarla`,
-      code: ERROR_CODES.CARD_NOT_CLOSED,
-    });
-  }
-
-  /**
-   * El turno y el equipo solo se corrigen en una tarjeta YA CERRADA: una
-   * abierta ocupa el "slot" de uso del equipo (moverla de máquina o de turno
-   * en caliente dejaría asignaciones colgadas). Guard aparte de
-   * `assertClosedFieldsAllowed` porque el mensaje es otro: estos campos no
-   * "se informan al cerrar", se corrigen después.
-   */
-  private assertClosedForMove(
-    dto: UpdateShiftCardDto,
-    valorFinal: number | null,
-  ): void {
-    if (valorFinal !== null) return;
-    const tocados = (['turno', 'equipoId'] as const).filter(
-      (c) => dto[c] !== undefined,
-    );
-    if (tocados.length === 0) return;
-    throw new ConflictException({
-      message: `La tarjeta sigue abierta: ${tocados
-        .map((c) => CAMPO_LABEL[c].toLowerCase())
-        .join(' y ')} se corrigen cuando ya está cerrada`,
       code: ERROR_CODES.CARD_NOT_CLOSED,
     });
   }
