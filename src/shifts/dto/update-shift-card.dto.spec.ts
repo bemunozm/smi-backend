@@ -19,6 +19,8 @@ describe('UpdateShiftCardDto', () => {
     expect(
       await errorsFor({
         operatorId: 'op_1',
+        equipoId: 'e2',
+        turno: 'NOCTURNO',
         valorInicial: 10,
         valorFinal: 20,
         fuelLiters: 30,
@@ -41,11 +43,15 @@ describe('UpdateShiftCardDto', () => {
     ['adBlueLiters 0', { adBlueLiters: 0 }],
     ['adBlueLiters sobre 1000', { adBlueLiters: 1001 }],
     ['operatorId numérico', { operatorId: 5 }],
+    ['turno fuera del vocabulario', { turno: 'TARDE' }],
+    ['turno null', { turno: null }],
+    ['equipoId vacío', { equipoId: '' }],
+    ['equipoId null', { equipoId: null }],
     [
       'observaciones de más de 1000 caracteres',
       { observaciones: 'a'.repeat(1001) },
     ],
-    ['un campo que no se edita', { equipoId: 'e1' }],
+    ['un campo que no se edita', { shiftId: 's1' }],
   ])('rechaza %s', async (_name, body) => {
     expect(await errorsFor(body)).not.toHaveLength(0);
   });

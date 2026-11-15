@@ -228,6 +228,8 @@ function round2(value: number): number {
 /** Los datos de una tarjeta que se pueden corregir. */
 type DatosTarjeta = {
   operatorId: string | null;
+  equipoId: string;
+  turno: string;
   valorInicial: number;
   valorFinal: number | null;
   fuelLiters: number | null;
@@ -239,12 +241,20 @@ type DatosTarjeta = {
 /** Cómo se llama cada dato en el aviso, el historial y el mensaje de conflicto. */
 const CAMPO_LABEL: Record<keyof DatosTarjeta, string> = {
   operatorId: 'Operador',
+  equipoId: 'Equipo',
+  turno: 'Turno',
   valorInicial: 'Lectura inicial',
   valorFinal: 'Lectura final',
   fuelLiters: 'Litros de combustible',
   adBlue: 'AdBlue',
   adBlueLiters: 'Litros de AdBlue',
   observaciones: 'Observaciones',
+};
+
+/** `DIURNO`/`NOCTURNO` como se muestran en avisos e historial. */
+const TURNO_LABEL: Record<string, string> = {
+  DIURNO: 'Diurno',
+  NOCTURNO: 'Nocturno',
 };
 
 /** Campos que solo existen una vez cerrada la tarjeta. */
@@ -259,6 +269,8 @@ const CAMPOS_DE_CIERRE = [
 function datosDeTarjeta(card: DatosTarjeta): DatosTarjeta {
   return {
     operatorId: card.operatorId,
+    equipoId: card.equipoId,
+    turno: card.turno,
     valorInicial: card.valorInicial,
     valorFinal: card.valorFinal,
     fuelLiters: card.fuelLiters,
@@ -277,6 +289,8 @@ function mezclarTarjeta(
   const adBlue = dto.adBlue ?? actual.adBlue;
   return {
     operatorId: operador?.id ?? actual.operatorId,
+    equipoId: dto.equipoId ?? actual.equipoId,
+    turno: dto.turno ?? actual.turno,
     valorInicial: dto.valorInicial ?? actual.valorInicial,
     valorFinal: dto.valorFinal ?? actual.valorFinal,
     fuelLiters: dto.fuelLiters ?? actual.fuelLiters,
@@ -1025,7 +1039,7 @@ export class ShiftsService {
       throw error;
     }
 
-    return this.shapeCard(created!);
+    return this.shapeCard(created);
   }
 
   /**
@@ -1053,6 +1067,7 @@ export class ShiftsService {
 
     const previa = await this.findOwnedCard(id, session);
     this.assertClosedFieldsAllowed(dto, previa.valorFinal);
+    this.assertClosedForMove(dto, previa.valorFinal);
 
     // Si el operador no cambia no se exige que siga activo: se conserva lo
     // guardado, igual que en trabajos extra.
@@ -1062,9 +1077,25 @@ export class ShiftsService {
         : null;
     const editor = toEditor(session.user);
 
+    // Turno de destino: upsert FUERA de la transacción, igual que en
+    // `openCard` — el `Shift` es un recurso compartido entre tarjetas y con
+    // el Módulo B, no debe depender de que ESTA edición se confirme. Mismo
+    // día y mismo supervisor del turno original, solo cambia el tipo; una
+    // tarjeta legacy sin `Shift` solo corrige su columna `turno`.
+    const shiftDestino =
+      dto.turno !== undefined &&
+      previa.shift != null &&
+      dto.turno !== previa.shift.type
+        ? await this.upsertShift(
+            previa.shift.supervisorId,
+            formatDateOnly(previa.shift.date),
+            dto.turno,
+          )
+        : null;
+
     const { card, event } = await this.prisma.$transaction(
       (tx): Promise<ShiftCardEdit> =>
-        this.applyEdit(tx, id, dto, operator, editor, expected),
+        this.applyEdit(tx, id, dto, operator, editor, expected, shiftDestino),
     );
 
     if (event) this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, event);
@@ -1077,6 +1108,129 @@ export class ShiftsService {
     return this.changeLog.findFor('shift_card', id);
   }
 
+  /**
+   * `DELETE /api/shift-cards/:id` — elimina una tarjeta CERRADA (dueño o
+   * ADMIN). Borra también la carga de combustible nacida de su cierre; ambas
+   * dejan su propia fila `DELETE` en el historial dentro de la MISMA
+   * transacción (un borrado sin rastro es justo lo que el registro de
+   * actividad debe impedir) y se avisa al administrador, igual que una
+   * edición. La foto del surtidor se suelta best-effort DESPUÉS del borrado
+   * (si este falla, la foto sigue donde debe): la comparten solo la tarjeta
+   * y su carga vinculada, y acá se van las dos.
+   *
+   * Los contadores del equipo no se tocan: nunca retroceden (misma política
+   * que la edición de lecturas).
+   */
+  async removeCard(id: string, session: UserSession): Promise<void> {
+    const card = await this.prisma.registroHorometro.findUnique({
+      where: { id },
+      include: SHIFT_CARD_INCLUDE,
+    });
+    if (!card) throw this.cardNotFound();
+    const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
+    if (card.supervisorId !== session.user.id && !isAdmin) {
+      throw new ForbiddenException({
+        message: 'No puedes eliminar la tarjeta de otro supervisor',
+        code: ERROR_CODES.NOT_OWNER,
+      });
+    }
+    if (card.valorFinal === null) {
+      throw new ConflictException({
+        message: 'La tarjeta sigue en curso: ciérrala antes de eliminarla',
+        code: ERROR_CODES.CARD_NOT_CLOSED,
+      });
+    }
+
+    const editor = toEditor(session.user);
+    // Qué decía la tarjeta al borrarla, ya legible — el `before` del
+    // historial. `after` queda en «—»: después del borrado no hay registro.
+    const borrado = (field: string, label: string, before: string) => ({
+      field,
+      label,
+      before,
+      after: '—',
+    });
+    const rotuloTurno = card.shift
+      ? `${TURNO_LABEL[card.shift.type] ?? card.shift.type} del ${formatDateOnlyForHumans(card.shift.date)}`
+      : `${TURNO_LABEL[card.turno] ?? card.turno} del ${formatBusinessDate(card.fecha)}`;
+    const resumen = [
+      borrado('equipoId', CAMPO_LABEL.equipoId, card.equipo.internalCode),
+      borrado('operatorId', CAMPO_LABEL.operatorId, card.operador),
+      borrado('turno', CAMPO_LABEL.turno, rotuloTurno),
+      borrado(
+        'valorInicial',
+        CAMPO_LABEL.valorInicial,
+        formatNumber(card.valorInicial),
+      ),
+      borrado(
+        'valorFinal',
+        CAMPO_LABEL.valorFinal,
+        formatNumber(card.valorFinal),
+      ),
+      borrado(
+        'fuelLiters',
+        CAMPO_LABEL.fuelLiters,
+        card.fuelLiters != null ? formatNumber(card.fuelLiters) : '—',
+      ),
+    ];
+
+    const vinculada = await this.prisma.registroCombustible.findUnique({
+      where: { registroHorometroId: id },
+      select: { id: true, litros: true, fecha: true },
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.changeLog.record(
+        tx,
+        'shift_card',
+        id,
+        editor,
+        resumen,
+        'DELETE',
+      );
+      if (vinculada) {
+        await this.changeLog.record(
+          tx,
+          'combustible',
+          vinculada.id,
+          editor,
+          [
+            borrado('equipo', 'Equipo', card.equipo.internalCode),
+            borrado('litros', 'Litros', formatNumber(vinculada.litros)),
+            borrado('fecha', 'Fecha', formatBusinessDateTime(vinculada.fecha)),
+            borrado('origen', 'Origen', 'Cierre de tarjeta'),
+          ],
+          'DELETE',
+        );
+        await tx.registroCombustible.delete({ where: { id: vinculada.id } });
+      }
+      await tx.registroHorometro.delete({ where: { id } });
+    });
+
+    const event: RecordEditedEvent = {
+      entity: 'shift_card',
+      entityId: id,
+      entityArticle: 'la',
+      entityLabel: `tarjeta de turno de ${card.equipo.internalCode} del ${
+        card.shift
+          ? formatDateOnlyForHumans(card.shift.date)
+          : formatBusinessDate(card.fecha)
+      }`,
+      editedBy: editor.name,
+      deleted: true,
+      changes: resumen.map(({ label, before, after }) => ({
+        label,
+        before,
+        after,
+      })),
+    };
+    this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, event);
+
+    if (card.pumpPhotoKey) {
+      await this.storage.deleteBestEffort(card.pumpPhotoKey);
+    }
+  }
+
   private async applyEdit(
     tx: Prisma.TransactionClient,
     id: string,
@@ -1084,6 +1238,9 @@ export class ShiftsService {
     operator: { id: string; name: string } | null,
     editor: Editor,
     expected: ExpectedValues | undefined,
+    /** Turno al que se mueve la tarjeta cuando la edición corrige `turno`
+     * (upserteado por `update()` FUERA de esta transacción). */
+    shiftDestino: { id: string; date: Date; type: string } | null = null,
   ): Promise<ShiftCardEdit> {
     // Un operador que cambió entre la validación y el bloqueo (carrera
     // improbable) se valida de nuevo en vez de guardarse sin chequear.
@@ -1131,6 +1288,35 @@ export class ShiftsService {
     const antes = datosDeTarjeta(actual);
     const despues = mezclarTarjeta(actual, dto, operadorNuevo);
 
+    // Cambio de máquina: debe existir y ser de la MISMA clase que la
+    // original (un pesado va en horas y exige operador; un liviano va en km
+    // y no lleva) — cruzar la clase cambiaría las reglas de la tarjeta.
+    const equipoNuevo =
+      dto.equipoId !== undefined && dto.equipoId !== actual.equipoId
+        ? await tx.equipment.findUnique({
+            where: { id: dto.equipoId },
+            select: {
+              internalCode: true,
+              equipmentClass: true,
+              controlUnit: true,
+              currentHourmeter: true,
+              currentMileage: true,
+            },
+          })
+        : null;
+    if (dto.equipoId !== undefined && dto.equipoId !== actual.equipoId) {
+      if (!equipoNuevo) {
+        throw new NotFoundException('Equipo no encontrado');
+      }
+      if (equipoNuevo.equipmentClass !== actual.equipo.equipmentClass) {
+        throw new BadRequestException(
+          actual.equipo.equipmentClass === EquipmentClass.LIGHT
+            ? 'La tarjeta es de un vehículo liviano: elige otro liviano.'
+            : 'La tarjeta es de un equipo pesado: elige otro equipo pesado.',
+        );
+      }
+    }
+
     if (
       despues.valorFinal != null &&
       despues.valorFinal < despues.valorInicial
@@ -1148,11 +1334,28 @@ export class ShiftsService {
       [actual.operatorId, actual.operador],
       [despues.operatorId, nombreOperador],
     ]);
+    const codigosEquipo = new Map<string, string>([
+      [actual.equipoId, actual.equipo.internalCode],
+      [
+        despues.equipoId,
+        equipoNuevo?.internalCode ?? actual.equipo.internalCode,
+      ],
+    ]);
     const cambios = diffFields<DatosTarjeta>(antes, despues, [
       {
         field: 'operatorId',
         label: CAMPO_LABEL.operatorId,
         format: (v) => nombres.get(v as string | null) ?? '—',
+      },
+      {
+        field: 'equipoId',
+        label: CAMPO_LABEL.equipoId,
+        format: (v) => codigosEquipo.get(v as string) ?? '—',
+      },
+      {
+        field: 'turno',
+        label: CAMPO_LABEL.turno,
+        format: (v) => TURNO_LABEL[v as string] ?? (v as string),
       },
       { field: 'valorInicial', label: CAMPO_LABEL.valorInicial },
       { field: 'valorFinal', label: CAMPO_LABEL.valorFinal },
@@ -1167,9 +1370,13 @@ export class ShiftsService {
     ]);
     if (cambios.length === 0) return { card: actual, event: null };
 
+    const cambioEquipo = despues.equipoId !== antes.equipoId;
+    const cambioTurno = despues.turno !== antes.turno;
     const datos: Prisma.RegistroHorometroUncheckedUpdateInput = {
       operatorId: despues.operatorId,
       operador: nombreOperador,
+      equipoId: despues.equipoId,
+      turno: despues.turno,
       valorInicial: despues.valorInicial,
       valorFinal: despues.valorFinal,
       fuelLiters: despues.fuelLiters,
@@ -1177,21 +1384,37 @@ export class ShiftsService {
       adBlueLiters: despues.adBlueLiters,
       observaciones: despues.observaciones,
     };
-    if (despues.valorFinal != null && despues.valorFinal !== antes.valorFinal) {
+    if (cambioTurno && shiftDestino) {
+      datos.shiftId = shiftDestino.id;
+      // El cierre de un pesado queda en el MISMO turno de la tarjeta y se
+      // mueve con ella; solo el liviano cerrado por otro supervisor apunta a
+      // un turno ajeno, que no se toca.
+      if (actual.closedShiftId === actual.shiftId) {
+        datos.closedShiftId = shiftDestino.id;
+      }
+    }
+    if (
+      despues.valorFinal != null &&
+      (despues.valorFinal !== antes.valorFinal || cambioEquipo)
+    ) {
       // Modo `'warn'`, igual que el cierre: la edición solo sube el contador
-      // del equipo, nunca lo baja ni falla.
-      const equipo = await tx.equipment.findUnique({
-        where: { id: actual.equipoId },
-        select: {
-          controlUnit: true,
-          currentHourmeter: true,
-          currentMileage: true,
-        },
-      });
+      // del equipo, nunca lo baja ni falla. La lectura vale sobre el equipo
+      // al que QUEDA la tarjeta; el contador del original no se baja (misma
+      // política de nunca retroceder).
+      const equipo =
+        equipoNuevo ??
+        (await tx.equipment.findUnique({
+          where: { id: actual.equipoId },
+          select: {
+            controlUnit: true,
+            currentHourmeter: true,
+            currentMileage: true,
+          },
+        }));
       if (equipo) {
         const { belowPrevious } = await reconcileEquipmentCounter(
           tx,
-          actual.equipoId,
+          despues.equipoId,
           equipo,
           despues.valorFinal,
           'warn',
@@ -1205,6 +1428,44 @@ export class ShiftsService {
     await tx.registroHorometro.update({ where: { id }, data: datos });
     if ((despues.fuelLiters ?? 0) !== (antes.fuelLiters ?? 0)) {
       await this.syncFuelRecord(tx, actual, despues.fuelLiters ?? 0);
+    }
+    if (cambioEquipo || cambioTurno) {
+      // La carga nacida del cierre sigue a la tarjeta: mismo equipo y, si se
+      // movió el turno QUE LA REPORTA (el de la tarjeta, o el del cierre, que
+      // en un pesado es el mismo), la misma regla de fechado del cierre. El
+      // liviano cerrado por otro supervisor conserva la fecha de ESE turno.
+      const vinculada = await tx.registroCombustible.findUnique({
+        where: { registroHorometroId: id },
+        select: { id: true },
+      });
+      if (vinculada) {
+        const data: Prisma.RegistroCombustibleUncheckedUpdateInput = {};
+        if (cambioEquipo) data.equipoId = despues.equipoId;
+        const reporteSeMueve =
+          actual.closedShiftId == null ||
+          actual.closedShiftId === actual.shiftId;
+        if (cambioTurno && reporteSeMueve) {
+          const realInstant =
+            actual.fechaSalida ?? actual.closedAt ?? new Date();
+          data.fecha = shiftDestino
+            ? fuelDateForShiftDay(
+                realInstant,
+                formatDateOnly(shiftDestino.date),
+                shiftDestino.type,
+              )
+            : fuelDateForShiftDay(
+                realInstant,
+                shiftDayOf(actual.fecha),
+                despues.turno,
+              );
+        }
+        if (Object.keys(data).length > 0) {
+          await tx.registroCombustible.update({
+            where: { id: vinculada.id },
+            data,
+          });
+        }
+      }
     }
     await this.changeLog.record(tx, 'shift_card', id, editor, cambios);
 
@@ -1300,7 +1561,14 @@ export class ShiftsService {
   private async findOwnedCard(id: string, session: UserSession) {
     const card = await this.prisma.registroHorometro.findUnique({
       where: { id },
-      select: { supervisorId: true, operatorId: true, valorFinal: true },
+      select: {
+        supervisorId: true,
+        operatorId: true,
+        valorFinal: true,
+        // El turno al que pertenece: la clave del `Shift` de destino cuando la
+        // edición corrige el turno (mismo día y supervisor, otro tipo).
+        shift: { select: { type: true, date: true, supervisorId: true } },
+      },
     });
     if (!card) throw this.cardNotFound();
 
@@ -1326,6 +1594,30 @@ export class ShiftsService {
       message: `La tarjeta sigue abierta: ${tocados
         .map((c) => CAMPO_LABEL[c])
         .join(', ')} se informan al cerrarla`,
+      code: ERROR_CODES.CARD_NOT_CLOSED,
+    });
+  }
+
+  /**
+   * El turno y el equipo solo se corrigen en una tarjeta YA CERRADA: una
+   * abierta ocupa el "slot" de uso del equipo (moverla de máquina o de turno
+   * en caliente dejaría asignaciones colgadas). Guard aparte de
+   * `assertClosedFieldsAllowed` porque el mensaje es otro: estos campos no
+   * "se informan al cerrar", se corrigen después.
+   */
+  private assertClosedForMove(
+    dto: UpdateShiftCardDto,
+    valorFinal: number | null,
+  ): void {
+    if (valorFinal !== null) return;
+    const tocados = (['turno', 'equipoId'] as const).filter(
+      (c) => dto[c] !== undefined,
+    );
+    if (tocados.length === 0) return;
+    throw new ConflictException({
+      message: `La tarjeta sigue abierta: ${tocados
+        .map((c) => CAMPO_LABEL[c].toLowerCase())
+        .join(' y ')} se corrigen cuando ya está cerrada`,
       code: ERROR_CODES.CARD_NOT_CLOSED,
     });
   }
