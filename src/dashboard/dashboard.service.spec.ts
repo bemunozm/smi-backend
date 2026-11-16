@@ -1422,3 +1422,118 @@ describe('DashboardService.resumenDia (flota)', () => {
     expect(res.flota[0]).toHaveProperty('status', 'IN_WORKSHOP');
   });
 });
+
+describe('DashboardService.adBlueHistorial', () => {
+  const BIDONES = {
+    id: 'i_ab',
+    name: 'AdBlue bidón 10 L',
+    unit: 'UNIT',
+    contentPerUnit: 10,
+    contentUnit: 'LITER',
+    // Saldo NEGATIVO: el descuento de las cargas nunca se bloquea.
+    stocks: [{ quantity: -2 }],
+  };
+
+  beforeEach(() => {
+    prisma.inventoryItem.findFirst.mockResolvedValue(BIDONES);
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        id: 'card_1',
+        equipoId: 'e1',
+        turno: 'DIURNO',
+        adBlueLiters: 10,
+        fecha: new Date('2026-11-15T11:00:00.000Z'),
+        fechaSalida: new Date('2026-11-15T22:00:00.000Z'),
+        closedAt: new Date('2026-11-15T22:05:00.000Z'),
+        closedByName: 'Ana Soto',
+        supervisorId: 'u1',
+        equipo: { internalCode: 'SEM 02' },
+      },
+      {
+        id: 'card_2',
+        equipoId: 'e2',
+        turno: 'NOCTURNO',
+        adBlueLiters: 10,
+        fecha: new Date('2026-11-16T00:00:00.000Z'),
+        fechaSalida: null,
+        closedAt: new Date('2026-11-16T10:00:00.000Z'),
+        closedByName: null,
+        supervisorId: 'u1',
+        equipo: { internalCode: 'SEM 04' },
+      },
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      {
+        id: 'carga_1',
+        equipoId: 'e3',
+        adBlueLitros: 5,
+        fecha: new Date('2026-11-14T15:00:00.000Z'),
+        createdById: 'u1',
+        equipo: { internalCode: 'CM-006' },
+      },
+    ]);
+  });
+
+  it('devuelve el saldo vivo (también negativo) y todas las cargas, la más reciente primero', async () => {
+    const res = await service.adBlueHistorial();
+
+    expect(res.saldo).toMatchObject({ stock: -2, stockLitros: -20 });
+    expect(res.totalCargado).toBe(25);
+    expect(res.cargas.map((c) => c.id)).toEqual([
+      'card_2',
+      'card_1',
+      'carga_1',
+    ]);
+  });
+
+  it('cada carga trae fecha, equipo, quién la cargó y su origen', async () => {
+    const res = await service.adBlueHistorial();
+
+    expect(res.cargas[1]).toEqual({
+      id: 'card_1',
+      equipmentId: 'e1',
+      internalCode: 'SEM 02',
+      litros: 10,
+      // La salida de la tarjeta: el AdBlue se declara al cerrar.
+      fecha: '2026-11-15T22:00:00.000Z',
+      turno: 'DIURNO',
+      cargadoPor: 'Ana Soto',
+      origen: 'TARJETA',
+    });
+    // Sin `fechaSalida` cae al cierre; sin `closedByName`, al supervisor.
+    expect(res.cargas[0]).toMatchObject({
+      fecha: '2026-11-16T10:00:00.000Z',
+      cargadoPor: 'Limbert V.',
+    });
+    expect(res.cargas[2]).toMatchObject({
+      origen: 'MANUAL',
+      turno: null,
+      cargadoPor: 'Limbert V.',
+    });
+  });
+
+  it('solo tarjetas CERRADAS con AdBlue y cargas MANUALES (la de tarjeta no se duplica)', async () => {
+    await service.adBlueHistorial();
+
+    expect(
+      argDe<{ where: unknown }>(prisma.registroHorometro.findMany, 0, 0).where,
+    ).toEqual({
+      adBlue: true,
+      adBlueLiters: { gt: 0 },
+      valorFinal: { not: null },
+    });
+    expect(
+      argDe<{ where: unknown }>(prisma.registroCombustible.findMany, 0, 0)
+        .where,
+    ).toEqual({ registroHorometroId: null, adBlueLitros: { gt: 0 } });
+  });
+
+  it('sin ítem AdBlue en Inventario el saldo es null, pero las cargas se listan igual', async () => {
+    prisma.inventoryItem.findFirst.mockResolvedValue(null);
+
+    const res = await service.adBlueHistorial();
+
+    expect(res.saldo).toBeNull();
+    expect(res.cargas).toHaveLength(3);
+  });
+});

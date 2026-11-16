@@ -74,6 +74,30 @@ export type MetricasVueltas = {
   }[];
 };
 
+/**
+ * Tarjeta «AdBlue disponible» del dashboard: el saldo VIVO del ítem AdBlue
+ * (puede ser negativo: el descuento de las cargas nunca se bloquea) y TODAS
+ * las cargas de AdBlue declaradas, de la más reciente a la más antigua.
+ */
+export type AdBlueHistorial = {
+  saldo: ResumenDia['adBlue'];
+  /** Litros de todas las cargas listadas. */
+  totalCargado: number;
+  cargas: {
+    /** Id de la tarjeta (origen TARJETA) o de la carga manual (MANUAL). */
+    id: string;
+    equipmentId: string;
+    internalCode: string;
+    litros: number;
+    /** ISO: salida de la tarjeta (el AdBlue se declara al cerrar) o fecha de la carga manual. */
+    fecha: string;
+    /** DIURNO | NOCTURNO de la tarjeta; null en una carga manual. */
+    turno: string | null;
+    cargadoPor: string | null;
+    origen: 'TARJETA' | 'MANUAL';
+  }[];
+};
+
 export type ResumenDia = {
   fecha: string;
   hm: { total: number; dia: number; noche: number };
@@ -865,6 +889,86 @@ export class DashboardService {
             a.internalCode.localeCompare(b.internalCode) ||
             a.hora.localeCompare(b.hora),
         ),
+    };
+  }
+
+  /**
+   * Saldo disponible de AdBlue + todas las cargas declaradas: las tarjetas de
+   * turno CERRADAS con AdBlue (se declara al cierre) y las cargas MANUALES
+   * del panel. Una carga nacida de una tarjeta no se lista aparte: su AdBlue
+   * es el de la tarjeta — misma regla que `adBlueDia` del resumen.
+   */
+  async adBlueHistorial(): Promise<AdBlueHistorial> {
+    const [saldo, tarjetas, manuales] = await Promise.all([
+      this.adBlueStock(),
+      this.prisma.registroHorometro.findMany({
+        where: {
+          adBlue: true,
+          adBlueLiters: { gt: 0 },
+          valorFinal: { not: null },
+        },
+        select: {
+          id: true,
+          equipoId: true,
+          turno: true,
+          adBlueLiters: true,
+          fecha: true,
+          fechaSalida: true,
+          closedAt: true,
+          closedByName: true,
+          supervisorId: true,
+          equipo: { select: { internalCode: true } },
+        },
+      }),
+      this.prisma.registroCombustible.findMany({
+        where: { registroHorometroId: null, adBlueLitros: { gt: 0 } },
+        select: {
+          id: true,
+          equipoId: true,
+          adBlueLitros: true,
+          fecha: true,
+          createdById: true,
+          equipo: { select: { internalCode: true } },
+        },
+      }),
+    ]);
+
+    const nombres = await this.nombresDe([
+      ...tarjetas.map((t) => (t.closedByName ? null : t.supervisorId)),
+      ...manuales.map((c) => c.createdById),
+    ]);
+
+    const cargas: AdBlueHistorial['cargas'] = [
+      ...tarjetas.map((t) => ({
+        id: t.id,
+        equipmentId: t.equipoId,
+        internalCode: t.equipo.internalCode,
+        litros: t.adBlueLiters as number,
+        fecha: (t.fechaSalida ?? t.closedAt ?? t.fecha).toISOString(),
+        turno: t.turno,
+        // Quien cerró la tarjeta declaró el AdBlue; tarjetas viejas sin ese
+        // dato caen al supervisor que la abrió.
+        cargadoPor:
+          t.closedByName ??
+          (t.supervisorId ? (nombres.get(t.supervisorId) ?? null) : null),
+        origen: 'TARJETA' as const,
+      })),
+      ...manuales.map((c) => ({
+        id: c.id,
+        equipmentId: c.equipoId,
+        internalCode: c.equipo.internalCode,
+        litros: c.adBlueLitros as number,
+        fecha: c.fecha.toISOString(),
+        turno: null,
+        cargadoPor: c.createdById ? (nombres.get(c.createdById) ?? null) : null,
+        origen: 'MANUAL' as const,
+      })),
+    ].sort((a, b) => b.fecha.localeCompare(a.fecha));
+
+    return {
+      saldo,
+      totalCargado: round2(cargas.reduce((a, c) => a + c.litros, 0)),
+      cargas,
     };
   }
 

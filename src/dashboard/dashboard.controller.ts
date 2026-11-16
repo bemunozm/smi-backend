@@ -21,6 +21,12 @@ export class DashboardController {
     return { data: await this.service.resumenDia(q.fecha), message: 'ok' };
   }
 
+  /** Tarjeta «AdBlue disponible»: saldo vivo + todas las cargas declaradas. */
+  @Get('adblue')
+  async adBlue() {
+    return { data: await this.service.adBlueHistorial(), message: 'ok' };
+  }
+
   @Get('equipos')
   async equipos(@Query() q: DashboardRangeDto) {
     return { data: await this.service.equipos(q), message: 'ok' };
