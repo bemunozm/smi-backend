@@ -50,7 +50,10 @@ import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
 import { AdBlueStockService } from '../inventory/adblue-stock.service';
 import type { PendingStockEvents } from '../inventory/stock.service';
-import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
+import {
+  reconcileEquipmentCounter,
+  releaseRemovedReading,
+} from '../equipment/equipment-counter';
 import { formatNumber } from '../common/format/number';
 import { assertChecklistNotPending } from '../mantenimiento/daily-checklists/checklist-gate';
 import {
@@ -1296,6 +1299,13 @@ export class ShiftsService {
         );
       }
       await tx.registroHorometro.delete({ where: { id } });
+      // Si la lectura de esta tarjeta había fijado el contador del equipo
+      // (p. ej. un typo), el contador vuelve a la más alta que queda.
+      await releaseRemovedReading(
+        tx,
+        card.equipoId,
+        Math.max(card.valorInicial, card.valorFinal ?? card.valorInicial),
+      );
       if (abierta) {
         // El uso en curso desaparece con la fila: se suelta también la
         // asignación del equipo (mismo trato que `adminCloseCard`).
@@ -1569,6 +1579,20 @@ export class ShiftsService {
         throw new ShiftCardMoveRaceError();
       }
       throw error;
+    }
+    // Corregir una lectura (o mover la tarjeta a otra máquina) le quita al
+    // equipo original esa lectura: si era la que había fijado su contador,
+    // el contador vuelve a la más alta que queda registrada.
+    if (
+      cambioEquipo ||
+      despues.valorInicial !== antes.valorInicial ||
+      despues.valorFinal !== antes.valorFinal
+    ) {
+      await releaseRemovedReading(
+        tx,
+        antes.equipoId,
+        Math.max(antes.valorInicial, antes.valorFinal ?? antes.valorInicial),
+      );
     }
     if ((despues.fuelLiters ?? 0) !== (antes.fuelLiters ?? 0)) {
       await this.syncFuelRecord(tx, actual, despues.fuelLiters ?? 0);

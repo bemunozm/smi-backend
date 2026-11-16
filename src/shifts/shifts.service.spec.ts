@@ -137,6 +137,8 @@ describe('ShiftsService', () => {
       update: jest.fn(),
       updateMany: jest.fn(),
       delete: jest.fn(),
+      // Lecturas que quedan del equipo al corregir/borrar una (contador).
+      aggregate: jest.fn(),
     },
     equipment: {
       findUnique: jest.fn(),
@@ -148,6 +150,7 @@ describe('ShiftsService', () => {
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      aggregate: jest.fn(),
     },
     user: { findUnique: jest.fn() },
     // Turno de quien cerró un liviano (`closedShiftId`, soft ref): lo
@@ -241,6 +244,12 @@ describe('ShiftsService', () => {
         buildCardRecord({ ...data, id: data.id as string }),
     );
     tx.registroHorometro.updateMany.mockResolvedValue({ count: 1 });
+    tx.registroHorometro.aggregate.mockResolvedValue({
+      _max: { valorInicial: null, valorFinal: null },
+    });
+    tx.registroCombustible.aggregate.mockResolvedValue({
+      _max: { lectura: null },
+    });
 
     sign.mockImplementation((key: string) =>
       Promise.resolve(`https://signed/${key}`),
@@ -1931,6 +1940,27 @@ describe('ShiftsService', () => {
 
         expect(tx.equipment.updateMany).not.toHaveBeenCalled();
       });
+
+      it('corregir un typo que había inflado el contador lo devuelve a la lectura real (caso SEM05)', async () => {
+        givenCard(closedCard({ valorInicial: 2600, valorFinal: 4606 }));
+        // El typo había llevado el contador del equipo a 4.606 h.
+        tx.equipment.findUnique.mockResolvedValue({
+          controlUnit: 'HOURS',
+          currentHourmeter: 4606,
+          currentMileage: null,
+        });
+        // Ya corregida, la lectura más alta que queda es la de esta tarjeta.
+        tx.registroHorometro.aggregate.mockResolvedValue({
+          _max: { valorInicial: 2600, valorFinal: 2606 },
+        });
+
+        await service.update('card_1', { valorFinal: 2606 }, owner);
+
+        expect(tx.equipment.updateMany).toHaveBeenCalledWith({
+          where: { id: 'e1', currentHourmeter: 4606 },
+          data: { currentHourmeter: 2606 },
+        });
+      });
     });
 
     describe('operador', () => {
@@ -2660,6 +2690,27 @@ describe('ShiftsService', () => {
 
       expect(tx.registroHorometro.delete).toHaveBeenCalledWith({
         where: { id: 'card_1' },
+      });
+    });
+
+    it('eliminar la tarjeta cuya lectura había fijado el contador lo devuelve a la más alta que queda', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue(
+        deletableCard({ valorInicial: 4600, valorFinal: 4606 }),
+      );
+      tx.equipment.findUnique.mockResolvedValue({
+        controlUnit: 'HOURS',
+        currentHourmeter: 4606,
+        currentMileage: null,
+      });
+      tx.registroHorometro.aggregate.mockResolvedValue({
+        _max: { valorInicial: 2600, valorFinal: 2628 },
+      });
+
+      await service.removeCard('card_1', owner);
+
+      expect(tx.equipment.updateMany).toHaveBeenCalledWith({
+        where: { id: 'e1', currentHourmeter: 4606 },
+        data: { currentHourmeter: 2628 },
       });
     });
 
