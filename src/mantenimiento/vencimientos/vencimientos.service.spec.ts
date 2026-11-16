@@ -221,6 +221,96 @@ describe('VencimientosService (Módulo 4)', () => {
       });
     });
 
+    /**
+     * Las órdenes guardadas del equipo, filtradas como la base: por
+     * `origenDetalle` y por `estado` (`in` o `not`).
+     */
+    const conOrdenes = (
+      ...ordenes: { id: string; estado: string; origenDetalle: string }[]
+    ) =>
+      tx.ordenTrabajo.findFirst.mockImplementation(
+        ({
+          where,
+        }: {
+          where: {
+            origenDetalle?: string;
+            estado?: { in?: string[]; not?: string };
+          };
+        }) =>
+          Promise.resolve(
+            ordenes.find(
+              (o) =>
+                (where.origenDetalle == null ||
+                  o.origenDetalle === where.origenDetalle) &&
+                (where.estado?.in == null ||
+                  where.estado.in.includes(o.estado)) &&
+                (where.estado?.not == null || o.estado !== where.estado.not),
+            ) ?? null,
+          ),
+      );
+
+    it('una orden CANCELADA del mismo kilometraje frena el aviso mientras no esté atrasada', async () => {
+      prisma.equipment.findMany.mockResolvedValue([
+        { ...EQUIPO, currentMileage: 42_700 },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([]);
+      prisma.maintenanceRecord.findMany.mockResolvedValue([
+        servicio('eq_1', 33_500),
+      ]);
+      conOrdenes({
+        id: 'ot_cancelada',
+        estado: 'CANCELADA',
+        origenDetalle: 'Livianos: mantención de 43.500 km',
+      });
+
+      expect(await service.checkLightServices()).toBe(0);
+      expect(tx.ordenTrabajo.create).not.toHaveBeenCalled();
+    });
+
+    it('atrasada, una orden CANCELADA del mismo kilometraje ya no frena: se crea otra', async () => {
+      // Tocaba a los 43.500 y va en 43.600: 100 km de atraso.
+      prisma.equipment.findMany.mockResolvedValue([
+        { ...EQUIPO, currentMileage: 43_600 },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([]);
+      prisma.maintenanceRecord.findMany.mockResolvedValue([
+        servicio('eq_1', 33_500),
+      ]);
+      conOrdenes({
+        id: 'ot_cancelada',
+        estado: 'CANCELADA',
+        origenDetalle: 'Livianos: mantención de 43.500 km',
+      });
+      tx.ordenTrabajo.create.mockResolvedValue({ id: 'ot_1' });
+
+      expect(await service.checkLightServices()).toBe(1);
+      expect(tx.ordenTrabajo.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          origenDetalle: 'Livianos: mantención de 43.500 km',
+          prioridad: 'ALTA',
+        }) as unknown,
+        select: { id: true },
+      });
+    });
+
+    it('atrasada, una orden COMPLETADA del mismo kilometraje sigue frenando', async () => {
+      prisma.equipment.findMany.mockResolvedValue([
+        { ...EQUIPO, currentMileage: 43_600 },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([]);
+      prisma.maintenanceRecord.findMany.mockResolvedValue([
+        servicio('eq_1', 33_500),
+      ]);
+      conOrdenes({
+        id: 'ot_cerrada',
+        estado: 'COMPLETADA',
+        origenDetalle: 'Livianos: mantención de 43.500 km',
+      });
+
+      expect(await service.checkLightServices()).toBe(0);
+      expect(tx.ordenTrabajo.create).not.toHaveBeenCalled();
+    });
+
     it('no crea otra orden si el equipo ya tiene una preventiva abierta', async () => {
       prisma.equipment.findMany.mockResolvedValue([
         { ...EQUIPO, currentMileage: 29_400 },

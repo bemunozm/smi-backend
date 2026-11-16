@@ -7,7 +7,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
+import { EstadoOT, Prisma } from '@prisma/client';
 
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
 import type {
@@ -239,8 +239,9 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Crea la orden PREVENTIVA de los livianos (sin pauta propia) que están a
-   * 1.000 km o menos de su mantención, una sola por equipo y kilometraje, y
-   * ninguna mientras el equipo tenga otra preventiva abierta. La mantención
+   * 1.000 km o menos de su mantención, una sola por equipo y kilometraje (una
+   * cancelada solo frena hasta que la mantención se atrasa), y ninguna
+   * mientras el equipo tenga otra preventiva abierta. La mantención
    * se cuenta desde el último servicio registrado (si lo hay).
    */
   async checkLightServices(): Promise<number> {
@@ -287,8 +288,17 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
       const ordenId = await this.prisma.$transaction(async (tx) => {
         // La revisión periódica y otra simultánea no crean dos tarjetas.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`aviso-liviano:${equipo.id}`}))`;
+        // Una cancelada frena el aviso hasta que la mantención se atrasa:
+        // desde ahí la cancelación no puede dejar al equipo sin tarjeta.
         const existente = await tx.ordenTrabajo.findFirst({
-          where: { equipoId: equipo.id, origen: 'PREVENTIVO', origenDetalle },
+          where: {
+            equipoId: equipo.id,
+            origen: 'PREVENTIVO',
+            origenDetalle,
+            ...(servicio.remainingKm <= 0
+              ? { estado: { not: EstadoOT.CANCELADA } }
+              : {}),
+          },
           select: { id: true },
         });
         if (existente) return null;

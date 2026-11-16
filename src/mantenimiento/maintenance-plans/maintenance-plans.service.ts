@@ -7,7 +7,12 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import type { MaintenancePlan, MaintenancePlanItem } from '@prisma/client';
+import {
+  EstadoOT,
+  type MaintenancePlan,
+  type MaintenancePlanItem,
+  type Prisma,
+} from '@prisma/client';
 
 import {
   DOMAIN_EVENTS,
@@ -24,6 +29,7 @@ import {
   computeMaintenanceStatus,
   type MaintenanceAnchor,
   type MaintenanceStatus,
+  type NextMaintenance,
   type PlanItemForStatus,
 } from './maintenance-plan-status';
 import {
@@ -156,6 +162,11 @@ function filas(plan: PlanConFilas | null): PlanItemForStatus[] {
 }
 
 const fmt = (n: number) => n.toLocaleString('es-CL');
+/**
+ * Quién figura en un registro que escribe el sistema sin usuario detrás (las
+ * órdenes del aviso no tienen autor).
+ */
+const SISTEMA_ID = 'sistema';
 const lista = (ns: number[]) => (ns.length ? ns.map(fmt).join(', ') : '—');
 /** Cómo se lee una fila en el registro de cambios: «24 LT · hitos 250, 500». */
 const resumenFila = (f: {
@@ -442,10 +453,11 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
    * Si la próxima mantención del equipo cae dentro del margen de aviso de su
    * pauta, crea la orden PREVENTIVA con las operaciones de ese hito como
    * tareas: es la tarjeta que el mantenedor ve en su tablero. Una sola por
-   * equipo, hito y vuelta del ciclo — aunque la revisión corra muchas veces,
-   * o la orden ya se haya cerrado o cancelado — y ninguna mientras el equipo
-   * tenga otra preventiva abierta. Devuelve el id de la orden creada, o null
-   * si no correspondía crear ninguna.
+   * equipo, hito y vuelta del ciclo — aunque la revisión corra muchas veces
+   * o la orden ya se haya cerrado; una cancelada solo frena hasta que la
+   * mantención se atrasa — y ninguna mientras el equipo tenga otra preventiva
+   * abierta. Devuelve el id de la orden creada, o null si no correspondía
+   * crear ninguna.
    */
   async checkAlert(equipmentId: string): Promise<string | null> {
     const plan = await this.prisma.maintenancePlan.findUnique({
@@ -503,11 +515,42 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       // Dos revisiones a la vez (la periódica y un guardado) no pueden crear
       // dos tarjetas: se serializan por equipo dentro de la transacción.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`aviso-preventivo:${equipmentId}`}))`;
-      const existente = await tx.ordenTrabajo.findFirst({
+      const previas = await tx.ordenTrabajo.findMany({
         where: { equipoId: equipmentId, origen: 'PREVENTIVO', origenDetalle },
-        select: { id: true },
+        select: {
+          id: true,
+          estado: true,
+          pautaCycle: true,
+          pautaMilestone: true,
+          updatedAt: true,
+          createdById: true,
+          tareas: { select: { planItemId: true, texto: true } },
+        },
       });
-      if (existente) return null;
+      // Una orden de pauta de este hito que se cerró antes de que el cierre
+      // escribiera el ancla: el hito quedó sin registro y, contada desde el
+      // ancla, la próxima sigue siendo esta para siempre. Se escribe su
+      // registro con la fecha de su cierre y no se crea otra: la próxima
+      // revisión ya cuenta desde ella.
+      const cerrada = previas.find(
+        (o) =>
+          o.estado === EstadoOT.COMPLETADA &&
+          o.pautaCycle === cycle &&
+          o.pautaMilestone === next.milestone,
+      );
+      if (cerrada) {
+        await this.repararCierrePrevio(tx, equipmentId, cerrada, next, items);
+        this.logger.log(
+          `Registro de pauta reparado para ${equipo.internalCode}: ${origenDetalle} (orden ${cerrada.id} cerrada sin registro)`,
+        );
+        return null;
+      }
+      // Una cancelada frena el aviso hasta que la mantención se atrasa: desde
+      // ahí la cancelación no puede dejar al equipo sin tarjeta para siempre.
+      const frena = previas.some(
+        (o) => o.estado !== EstadoOT.CANCELADA || next.remaining > 0,
+      );
+      if (frena) return null;
       // Ni otra mientras haya una preventiva abierta de cualquier hito.
       if (await tienePreventivaAbierta(tx, equipmentId, equipo.internalCode)) {
         return null;
@@ -564,6 +607,49 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       } satisfies PreventiveServiceDueEvent);
     }
     return ordenId;
+  }
+
+  /**
+   * Escribe el registro del ciclo de una orden de pauta cerrada antes de que
+   * el cierre lo hiciera (ver `checkAlert`): una fila por tarea atada a una
+   * operación, con el contador en que tocaba el hito y la fecha del cierre.
+   */
+  private async repararCierrePrevio(
+    tx: Prisma.TransactionClient,
+    equipmentId: string,
+    orden: {
+      updatedAt: Date;
+      createdById: string | null;
+      tareas: { planItemId: string | null; texto: string }[];
+    },
+    next: NextMaintenance,
+    items: PlanItemForStatus[],
+  ): Promise<void> {
+    const porId = new Map(items.map((i) => [i.id, i]));
+    await tx.maintenanceRecord.createMany({
+      data: orden.tareas.flatMap((t) => {
+        if (!t.planItemId) return [];
+        const item = porId.get(t.planItemId);
+        return [
+          {
+            equipmentId,
+            planItemId: t.planItemId,
+            // Son los de la orden: solo se repara la del hito y vuelta que toca.
+            cycle: next.cycle,
+            milestone: next.milestone,
+            description: item?.description ?? t.texto,
+            kind: item?.kind ?? 'OTRO',
+            counterAt: next.dueAt,
+            doneAt: orden.updatedAt,
+            // Las órdenes del aviso no tienen autor: las creó el sistema.
+            doneById: orden.createdById ?? SISTEMA_ID,
+            doneByName: 'Sistema (cierre previo)',
+          },
+        ];
+      }),
+      // Alguna operación pudo quedar marcada desde la grilla: no se duplica.
+      skipDuplicates: true,
+    });
   }
 
   /** Quién cambió la pauta y qué, del cambio más reciente al más viejo. */

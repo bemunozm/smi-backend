@@ -19,8 +19,14 @@ export const LIGHT_SERVICE_RECORD_KIND = 'SERVICIO';
 
 /**
  * El último cambio de la pauta de cada equipo: el registro de una operación
- * con contador, el de mayor contador y, entre iguales, el más reciente. Los
- * registros sin contador no sirven: no dicen desde dónde contar.
+ * con contador que va más adelante en la secuencia —la vuelta más alta y, en
+ * ella, el hito más alto— y, entre las operaciones de un mismo hito, la de
+ * mayor contador y la más reciente. No se ordena por contador: la grilla del
+ * ciclo guarda el horómetro de hoy al marcar, y completar ahí una operación de
+ * una vuelta pasada no puede volver atrás la próxima mantención. El servicio
+ * inicial queda antes del primer hito de la vuelta 1 por ser menor (la pauta
+ * no acepta uno que no lo sea). Los registros sin contador no sirven: no dicen
+ * desde dónde contar.
  *
  * `excluir` deja fuera un hito y vuelta: al cerrar una orden de pauta, sus
  * propios registros (escritos al marcar cada tarea) no son «la anterior».
@@ -30,26 +36,34 @@ export function loadPlanAnchors(
   equipmentIds: string[],
   excluir?: { cycle: number; milestone: number },
 ): Promise<Map<string, MaintenanceAnchor>> {
-  return ultimos(db, equipmentIds, {
-    planItemId: { not: null },
-    ...(excluir
-      ? { NOT: { cycle: excluir.cycle, milestone: excluir.milestone } }
-      : {}),
-  });
+  return ultimos(
+    db,
+    equipmentIds,
+    {
+      planItemId: { not: null },
+      ...(excluir
+        ? { NOT: { cycle: excluir.cycle, milestone: excluir.milestone } }
+        : {}),
+    },
+    [{ cycle: 'desc' }, { milestone: 'desc' }, ...POR_CONTADOR],
+  );
 }
 
 /**
  * El último servicio de cada liviano sin pauta: no tiene operación de pauta
- * (`planItemId` nulo) y se guarda con `kind = 'SERVICIO'`.
+ * (`planItemId` nulo) y se guarda con `kind = 'SERVICIO'`. Manda la vuelta más
+ * alta y, en ella, el mayor contador.
  */
 export function loadLightAnchors(
   db: Db,
   equipmentIds: string[],
 ): Promise<Map<string, MaintenanceAnchor>> {
-  return ultimos(db, equipmentIds, {
-    planItemId: null,
-    kind: LIGHT_SERVICE_RECORD_KIND,
-  });
+  return ultimos(
+    db,
+    equipmentIds,
+    { planItemId: null, kind: LIGHT_SERVICE_RECORD_KIND },
+    [{ cycle: 'desc' }, ...POR_CONTADOR],
+  );
 }
 
 /** Las órdenes que siguen en el tablero del taller (no cerradas ni canceladas). */
@@ -84,10 +98,17 @@ export async function tienePreventivaAbierta(
   return abierta != null;
 }
 
+/** El desempate: el mayor contador y, entre iguales, el más reciente. */
+const POR_CONTADOR: Prisma.MaintenanceRecordOrderByWithRelationInput[] = [
+  { counterAt: 'desc' },
+  { doneAt: 'desc' },
+];
+
 async function ultimos(
   db: Db,
   equipmentIds: string[],
   filtro: Prisma.MaintenanceRecordWhereInput,
+  orderBy: Prisma.MaintenanceRecordOrderByWithRelationInput[],
 ): Promise<Map<string, MaintenanceAnchor>> {
   const anclas = new Map<string, MaintenanceAnchor>();
   if (equipmentIds.length === 0) return anclas;
@@ -97,7 +118,7 @@ async function ultimos(
       ...filtro,
       counterAt: { not: null },
     },
-    orderBy: [{ counterAt: 'desc' }, { doneAt: 'desc' }],
+    orderBy,
     select: {
       equipmentId: true,
       milestone: true,
@@ -106,9 +127,9 @@ async function ultimos(
       doneAt: true,
     },
   });
-  // Vienen del más nuevo al más viejo: el primero de cada equipo es su ancla.
-  // Un hito tiene una fila por operación, cada una con el contador de cuando
-  // se marcó: manda la última.
+  // Vienen del último cambio de la secuencia hacia atrás: el primero de cada
+  // equipo es su ancla. Un hito tiene una fila por operación, cada una con el
+  // contador de cuando se marcó: manda la última.
   for (const r of registros) {
     if (anclas.has(r.equipmentId) || r.counterAt == null) continue;
     anclas.set(r.equipmentId, {
