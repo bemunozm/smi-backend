@@ -944,6 +944,34 @@ describe('ShiftsService', () => {
       }
     });
 
+    it('sin combustible (corte de luz) se cierra sin foto: no reclama nada ni crea carga', async () => {
+      const sinCarga = { ...dto, fuelLiters: 0, tmpPhotoKey: undefined };
+
+      await service.closeCard('card_1', sinCarga, session);
+
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(tx.registroCombustible.create).not.toHaveBeenCalled();
+      expect(lastCallData(tx.registroHorometro.updateMany)).toMatchObject({
+        valorFinal: 130,
+        fuelLiters: 0,
+        pumpPhotoKey: null,
+      });
+    });
+
+    it('con litros cargados la foto del surtidor sigue siendo obligatoria (400 FUEL_PHOTO_REQUIRED)', async () => {
+      await expect(
+        service.closeCard(
+          'card_1',
+          { ...dto, tmpPhotoKey: undefined },
+          session,
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'FUEL_PHOTO_REQUIRED' },
+      });
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(tx.registroHorometro.updateMany).not.toHaveBeenCalled();
+    });
+
     it('cierra la tarjeta, reclama la foto y crea el RegistroCombustible vinculado con la MISMA key', async () => {
       const result = await service.closeCard('card_1', dto, session);
 
