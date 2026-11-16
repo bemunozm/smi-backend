@@ -961,7 +961,12 @@ describe('ShiftsService', () => {
     });
 
     it('sin combustible (corte de luz) se cierra sin foto: no reclama nada ni crea carga', async () => {
-      const sinCarga = { ...dto, fuelLiters: 0, tmpPhotoKey: undefined };
+      const sinCarga = {
+        ...dto,
+        fuelLiters: 0,
+        tmpPhotoKey: undefined,
+        noFuelReason: 'Corte de luz',
+      };
 
       await service.closeCard('card_1', sinCarga, session);
 
@@ -971,6 +976,19 @@ describe('ShiftsService', () => {
         valorFinal: 130,
         fuelLiters: 0,
         pumpPhotoKey: null,
+        noFuelReason: 'Corte de luz',
+      });
+    });
+
+    it('con litros cargados el motivo sin carga se descarta', async () => {
+      await service.closeCard(
+        'card_1',
+        { ...dto, noFuelReason: 'Corte de luz' },
+        session,
+      );
+
+      expect(lastCallData(tx.registroHorometro.updateMany)).toMatchObject({
+        noFuelReason: null,
       });
     });
 

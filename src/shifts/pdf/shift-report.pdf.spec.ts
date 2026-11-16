@@ -154,6 +154,18 @@ describe('buildShiftExitReportDocDefinition', () => {
         adBlueCell({ ...CARD, adBlue: false, adBlueLiters: null }).cell,
       ).toMatchObject({ text: '—' });
     });
+
+    it('el motivo sin carga de combustible va en Observaciones, antes de las notas', () => {
+      const { table } = adBlueCell({
+        ...CARD,
+        fuelLiters: 0,
+        noFuelReason: 'Corte de luz',
+        observaciones: 'Ruido en la pluma',
+      });
+      expect(table.body[1][7]).toMatchObject({
+        text: 'Sin carga de combustible: Corte de luz\nRuido en la pluma',
+      });
+    });
   });
 
   it('la tabla muestra las horas máquina calculadas para una tarjeta cerrada', () => {

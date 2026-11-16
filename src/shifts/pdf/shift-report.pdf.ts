@@ -35,6 +35,17 @@ export interface ShiftReportCardInput {
   /** Solo tiene valor cuando `adBlue` es `true`. */
   readonly adBlueLiters: number | null;
   readonly observaciones: string | null;
+  /** Por qué no se cargó combustible — va en la columna Observaciones. */
+  readonly noFuelReason?: string | null;
+}
+
+/** Observaciones de la fila: el motivo sin carga primero, después las notas. */
+function observacionesDeFila(card: ShiftReportCardInput): string {
+  const partes = [
+    card.noFuelReason ? `Sin carga de combustible: ${card.noFuelReason}` : null,
+    card.observaciones,
+  ].filter((p): p is string => !!p);
+  return partes.length ? partes.join('\n') : '—';
 }
 
 export interface ShiftReportDocInput {
@@ -108,7 +119,7 @@ function buildCardRow(card: ShiftReportCardInput): Table['body'][number] {
       fontSize: 9,
       alignment: 'right',
     },
-    { text: card.observaciones ?? '—', fontSize: 9 },
+    { text: observacionesDeFila(card), fontSize: 9 },
   ];
 }
 
