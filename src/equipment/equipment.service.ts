@@ -80,6 +80,7 @@ export type EquipmentWithUsageRelations = Omit<
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
 const CAMPO_LABEL: Record<string, string> = {
+  internalCode: 'Código interno',
   licensePlate: 'Patente',
   equipmentClass: 'Clase',
   type: 'Tipo',
@@ -98,6 +99,7 @@ const CAMPO_LABEL: Record<string, string> = {
 /** Datos de la ficha que admiten precondición (la foto no: reemplazarla es
  * última-escritura-gana). */
 const UPDATE_FIELDS = {
+  internalCode: true,
   licensePlate: true,
   equipmentClass: true,
   type: true,
@@ -461,6 +463,31 @@ export class EquipmentService {
     // Prisma. El borrado de la foto vieja y el shaping
     // van DESPUÉS, fuera del try — si fallan, la escritura en BD ya está
     // confirmada y no hay nada que descartar de `finalKey`.
+    // Renombrar el código: las órdenes de taller y las actividades lo
+    // guardan como texto (soft ref por código), así que se mueven en la
+    // MISMA transacción que el equipo — si no, quedarían huérfanas.
+    const codigoAnterior = existente.internalCode;
+    const cambiaCodigo =
+      rest.internalCode !== undefined && rest.internalCode !== codigoAnterior;
+    const escribir = async (db: Prisma.TransactionClient) => {
+      const actualizado = await db.equipment.update({
+        where: { id },
+        data: finalKey !== undefined ? { ...rest, photoKey: finalKey } : rest,
+        include: EQUIPMENT_USAGE_INCLUDE,
+      });
+      if (cambiaCodigo) {
+        await db.ordenTrabajo.updateMany({
+          where: { equipoId: codigoAnterior },
+          data: { equipoId: actualizado.internalCode },
+        });
+        await db.actividad.updateMany({
+          where: { equipoId: codigoAnterior },
+          data: { equipoId: actualizado.internalCode },
+        });
+      }
+      return actualizado;
+    };
+
     let equipment: EquipmentWithUsageRelations;
     try {
       equipment = await this.writeGuarded(
@@ -468,13 +495,12 @@ export class EquipmentService {
         expected,
         definedFields(rest),
         UPDATE_FIELDS,
+        // Sin precondición `writeGuarded` no abre transacción: se abre acá
+        // cuando hay referencias que mover.
         (db) =>
-          db.equipment.update({
-            where: { id },
-            data:
-              finalKey !== undefined ? { ...rest, photoKey: finalKey } : rest,
-            include: EQUIPMENT_USAGE_INCLUDE,
-          }),
+          cambiaCodigo && db === this.prisma
+            ? this.prisma.$transaction((tx) => escribir(tx))
+            : escribir(db),
       );
     } catch (error: unknown) {
       if (typeof finalKey === 'string') {
@@ -706,10 +732,10 @@ export class EquipmentService {
    * un reemplazo/borrado exitoso. */
   private async assertExisteConPhotoKey(
     id: string,
-  ): Promise<{ photoKey: string | null }> {
+  ): Promise<{ photoKey: string | null; internalCode: string }> {
     const existe = await this.prisma.equipment.findUnique({
       where: { id },
-      select: { photoKey: true },
+      select: { photoKey: true, internalCode: true },
     });
     if (!existe) throw new NotFoundException(`Equipo "${id}" no encontrado`);
     return existe;

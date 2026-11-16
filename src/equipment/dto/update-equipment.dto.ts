@@ -19,13 +19,23 @@ const normalizeCode = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim().toUpperCase() : value;
 
 /**
- * Edición de la ficha del equipo (ADMIN). `internalCode` NO es editable a
- * propósito: es la clave de negocio con la que terreno, mantenimiento e
- * inventario referencian la máquina; renombrarla rompería la trazabilidad de
- * registros ya cargados. Si un equipo se dio de alta con el código
- * equivocado, se da de baja y se crea de nuevo.
+ * Edición de la ficha del equipo (ADMIN).
  */
 export class UpdateEquipmentDto {
+  /**
+   * Código interno — editable desde el 16/11/2026 (el cliente renombra
+   * equipos con nombres comunes para reconocerlos). Casi todo referencia al
+   * equipo por `id`; las referencias por CÓDIGO (`OrdenTrabajo.equipoId`,
+   * `Actividad.equipoId`) las actualiza `EquipmentService.update` en la
+   * misma transacción.
+   */
+  @IsOptional()
+  @Transform(normalizeCode)
+  @IsString()
+  @MinLength(1)
+  @MaxLength(20)
+  internalCode?: string;
+
   /**
    * Nullable a propósito: el frontend envía `null` explícito cuando el
    * usuario borra la patente en la edición (si se omitiera la propiedad,
