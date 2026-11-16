@@ -617,6 +617,16 @@ export class ShiftsService {
       });
     }
 
+    // La foto del surtidor respalda la CARGA: sin combustible (corte de luz,
+    // no hubo carga) se cierra sin ella; con litros sigue siendo obligatoria.
+    if (dto.fuelLiters > 0 && !dto.tmpPhotoKey) {
+      throw new BadRequestException({
+        message:
+          'Falta la foto del surtidor: es obligatoria cuando se carga combustible.',
+        code: ERROR_CODES.FUEL_PHOTO_REQUIRED,
+      });
+    }
+
     // El liviano entra en el reporte de salida del turno de quien lo cierra.
     let closedShiftId: string | null = null;
     // Día de turno al que queda REPORTADA la tarjeta — ahí se fecha la carga
@@ -670,12 +680,15 @@ export class ShiftsService {
     // Reclama la foto ANTES de la transacción (mismo patrón que
     // `CombustibleService.create`): si `claimTmp` falla (tmp vencido/ajeno),
     // todavía no hay nada que descartar. `claimTmp` traduce un tmp
-    // vencido/inexistente a 400 `TMP_KEY_EXPIRED`.
-    const pumpPhotoKey = await this.storage.claimTmp(
-      dto.tmpPhotoKey,
-      session.user.id,
-      'fuel-photo',
-    );
+    // vencido/inexistente a 400 `TMP_KEY_EXPIRED`. Sin foto (cierre sin
+    // carga, 16/11/2026) no hay nada que reclamar.
+    const pumpPhotoKey = dto.tmpPhotoKey
+      ? await this.storage.claimTmp(
+          dto.tmpPhotoKey,
+          session.user.id,
+          'fuel-photo',
+        )
+      : null;
 
     // `closed` se declara AFUERA del `try` y `this.shapeCard(closed!)` (que
     // llama `StorageService.sign`) corre
@@ -789,7 +802,7 @@ export class ShiftsService {
     } catch (error) {
       // Cualquier falla DESPUÉS del claim exige descartar la copia recién
       // creada — nunca dejar un objeto huérfano en el bucket.
-      await this.storage.discard(pumpPhotoKey);
+      if (pumpPhotoKey) await this.storage.discard(pumpPhotoKey);
 
       if (error instanceof ShiftCardCloseRaceError) {
         return this.resolveCloseRace(id, dto.closeClientId);

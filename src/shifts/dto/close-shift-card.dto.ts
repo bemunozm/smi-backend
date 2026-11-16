@@ -57,13 +57,16 @@ export class CloseShiftCardDto {
   adBlueLiters?: number | null;
 
   /** Key `tmp/<userId>/<uuid>.<ext>` de la foto del surtidor/horómetro,
-   * subida antes por `POST /api/files` — obligatoria AUN con `fuelLiters ===
-   * 0` (la spec lo pide así: siempre queda evidencia fotográfica del
-   * cierre). `ShiftsService` la reclama con `StorageService.claimTmp`. */
+   * subida antes por `POST /api/files`. Obligatoria SOLO si se cargó
+   * combustible (`fuelLiters > 0`, lo valida `ShiftsService`): sin carga
+   * (p. ej. un corte de luz que no deja usar el surtidor) la tarjeta se
+   * cierra sin foto (pedido del cliente, 16/11/2026; antes era obligatoria
+   * siempre). `ShiftsService` la reclama con `StorageService.claimTmp`. */
+  @IsOptional()
   @IsString()
   @MaxLength(160)
   @Matches(TMP_KEY_REGEX)
-  tmpPhotoKey!: string;
+  tmpPhotoKey?: string;
 
   /** 1000 (no 2000) + normalizado (trim, CRLF→LF, 3+ saltos → 2) ANTES de
    * medir el límite — texto libre que un supervisor puede pegar desde el
