@@ -1,5 +1,12 @@
 import { EquipmentStatus, EstadoOT, PrioridadOT } from '@prisma/client';
-import { IsEnum, IsOptional, IsString } from 'class-validator';
+import {
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class UpdateOrdenDto {
   @IsOptional()
@@ -23,4 +30,13 @@ export class UpdateOrdenDto {
   @IsOptional()
   @IsEnum(EquipmentStatus)
   equipmentStatus?: EquipmentStatus;
+
+  /** Horómetro o km del equipo cuando se hizo la mantención. Solo se
+   * informa al completar la orden: pasa a ser el ancla desde la que se
+   * cuenta la próxima. Sin ella vale la lectura actual del equipo. */
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(1_000_000)
+  lecturaMantencion?: number;
 }

@@ -21,12 +21,21 @@ export const LIGHT_SERVICE_RECORD_KIND = 'SERVICIO';
  * El último cambio de la pauta de cada equipo: el registro de una operación
  * con contador, el de mayor contador y, entre iguales, el más reciente. Los
  * registros sin contador no sirven: no dicen desde dónde contar.
+ *
+ * `excluir` deja fuera un hito y vuelta: al cerrar una orden de pauta, sus
+ * propios registros (escritos al marcar cada tarea) no son «la anterior».
  */
 export function loadPlanAnchors(
   db: Db,
   equipmentIds: string[],
+  excluir?: { cycle: number; milestone: number },
 ): Promise<Map<string, MaintenanceAnchor>> {
-  return ultimos(db, equipmentIds, { planItemId: { not: null } });
+  return ultimos(db, equipmentIds, {
+    planItemId: { not: null },
+    ...(excluir
+      ? { NOT: { cycle: excluir.cycle, milestone: excluir.milestone } }
+      : {}),
+  });
 }
 
 /**
