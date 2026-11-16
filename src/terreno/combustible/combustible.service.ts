@@ -18,7 +18,10 @@ import { ERROR_CODES } from '../../common/errors/error-codes';
 import { formatNumber } from '../../common/format/number';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
+import {
+  reconcileEquipmentCounter,
+  releaseRemovedReading,
+} from '../../equipment/equipment-counter';
 import { AdBlueStockService } from '../../inventory/adblue-stock.service';
 import type { PendingStockEvents } from '../../inventory/stock.service';
 import { StorageService } from '../../storage/storage.service';
@@ -353,6 +356,12 @@ export class CombustibleService {
       if (cambios.length > 0) {
         await this.changeLog.record(tx, 'combustible', id, editor, cambios);
       }
+      // Corregir la lectura le quita al equipo la anterior: si era la que
+      // había fijado su contador (un typo), el contador vuelve a la más alta
+      // que queda. La lectura nueva se reconcilia después (abajo).
+      if (dto.lectura !== undefined && dto.lectura !== previa.lectura) {
+        await releaseRemovedReading(tx, previa.equipoId, previa.lectura);
+      }
       // El descuento de Inventario sigue a la corrección POR LA DIFERENCIA,
       // igual que la edición de una tarjeta: más AdBlue descuenta lo que
       // falta; menos (o quitarlo) lo devuelve.
@@ -519,6 +528,9 @@ export class CombustibleService {
         );
       }
       await tx.registroCombustible.delete({ where: { id } });
+      // Si la lectura de esta carga había fijado el contador del equipo, el
+      // contador vuelve a la más alta que queda registrada.
+      await releaseRemovedReading(tx, registro.equipoId, registro.lectura);
     });
     this.adBlueStock.emitPending(stockEvents);
 
