@@ -90,6 +90,8 @@ describe('OrdenesService', () => {
   const recordUpdateMany = jest.fn();
   const recordCreate = jest.fn();
   const recordCount = jest.fn();
+  const recordCreateMany = jest.fn();
+  const planItemFindMany = jest.fn();
   const planFindUnique = jest.fn();
   const planItemFindUnique = jest.fn();
   const equipmentFindUnique = jest.fn();
@@ -124,6 +126,9 @@ describe('OrdenesService', () => {
     recordCreate.mockReset();
     recordCount.mockReset();
     recordCount.mockResolvedValue(0);
+    recordCreateMany.mockReset();
+    planItemFindMany.mockReset();
+    planItemFindMany.mockResolvedValue([]);
     planFindUnique.mockReset();
     planFindUnique.mockResolvedValue(null);
     planItemFindUnique.mockReset();
@@ -159,6 +164,8 @@ describe('OrdenesService', () => {
     userFindMany.mockReset();
     emit.mockReset();
     queryRaw.mockReset();
+    // `update` bloquea siempre la fila (`SELECT ... FOR UPDATE`): existe.
+    queryRaw.mockResolvedValue([{ id: 'orden_1' }]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -216,8 +223,12 @@ describe('OrdenesService', () => {
                   updateMany: recordUpdateMany,
                   create: recordCreate,
                   count: recordCount,
+                  createMany: recordCreateMany,
                 },
-                maintenancePlanItem: { findUnique: planItemFindUnique },
+                maintenancePlanItem: {
+                  findUnique: planItemFindUnique,
+                  findMany: planItemFindMany,
+                },
                 maintenancePlan: { findUnique: planFindUnique },
                 equipment: {
                   findUnique: equipmentFindUnique,
@@ -1391,6 +1402,101 @@ describe('OrdenesService', () => {
       );
 
       expect(recordCreate).not.toHaveBeenCalled();
+    });
+
+    it('a close whose in-transaction state is already COMPLETADA writes no SERVICIO record', async () => {
+      // Fuera de la transacción se veía EN_PROCESO; bajo el bloqueo, otro
+      // cierre (un reintento offline) ya la dejó COMPLETADA.
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce(MOCK_LIVIANO)
+        .mockResolvedValueOnce({ ...MOCK_LIVIANO, estado: 'COMPLETADA' });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_LIVIANO,
+        estado: 'COMPLETADA',
+      });
+      equipmentFindUnique.mockResolvedValue(CAMIONETA);
+
+      await service.update(
+        'orden_liv',
+        { estado: 'COMPLETADA', lecturaMantencion: 31_000 },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(queryRaw).toHaveBeenCalled();
+      expect(recordCreate).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it('un liviano sin kilometraje no gasta un número de servicio', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(MOCK_LIVIANO);
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_LIVIANO,
+        estado: 'COMPLETADA',
+      });
+      equipmentFindUnique.mockResolvedValue({
+        ...CAMIONETA,
+        currentMileage: null,
+      });
+
+      await service.update(
+        'orden_liv',
+        { estado: 'COMPLETADA' },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(recordCreate).not.toHaveBeenCalled();
+      expect(ordenTrabajoUpdate).toHaveBeenCalled();
+    });
+
+    it('pauta OT closed via update with zero ticked tasks creates records for its plan tasks with the reading', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'EN_PROCESO',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'COMPLETADA',
+      });
+      planItemFindMany.mockResolvedValue([
+        { id: 'item_a', description: 'Cambio de aceite', kind: 'LUBRICANTE' },
+        { id: 'item_b', description: 'Cambio de filtro', kind: 'FILTRO' },
+      ]);
+
+      await service.update(
+        'orden_prev',
+        { estado: 'COMPLETADA', lecturaMantencion: 240 },
+        MOCK_MANTENEDOR,
+      );
+
+      const registro = (
+        planItemId: string,
+        description: string,
+        kind: string,
+      ) => ({
+        equipmentId: 'eq_flota_1',
+        planItemId,
+        cycle: 1,
+        milestone: 250,
+        description,
+        kind,
+        counterAt: 240,
+        doneById: MOCK_MANTENEDOR.id,
+        doneByName: MOCK_MANTENEDOR.name,
+      });
+      expect(planItemFindMany).toHaveBeenCalledWith({
+        where: { id: { in: ['item_a', 'item_b'] } },
+        select: { id: true, description: true, kind: true },
+      });
+      expect(recordCreateMany).toHaveBeenCalledWith({
+        data: [
+          registro('item_a', 'Cambio de aceite', 'LUBRICANTE'),
+          registro('item_b', 'Cambio de filtro', 'FILTRO'),
+        ],
+        skipDuplicates: true,
+      });
+      expect(ultimaLlamada(recordUpdateMany).data.counterAt).toBe(240);
+      // Las tareas quedan como estaban: solo el hito se da por hecho.
+      expect(tareaOTUpdate).not.toHaveBeenCalled();
     });
 
     it('una orden corriente completada no escribe ancla', async () => {

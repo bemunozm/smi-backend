@@ -8,6 +8,10 @@ import { daysBetweenDateOnly } from '../../equipment/document-expiry';
 /** Cada cuántos km se hace la mantención de un vehículo liviano. */
 export const LIGHT_SERVICE_INTERVAL_KM = 10_000;
 
+/** Así empieza el `origenDetalle` de la orden de servicio de un liviano: la
+ * identifica al crearla y al cerrarla (el cierre escribe su ancla). */
+export const LIGHT_SERVICE_ORIGEN_PREFIX = 'Livianos: ';
+
 /** Con cuántos km de anticipación se avisa (y se crea la orden del taller). */
 export const LIGHT_SERVICE_ALERT_KM = 1_000;
 

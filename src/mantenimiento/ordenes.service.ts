@@ -33,7 +33,10 @@ import {
   loadLightAnchors,
   loadPlanAnchors,
 } from './maintenance-plans/maintenance-anchors';
-import { LIGHT_SERVICE_INTERVAL_KM } from './vencimientos/vencimientos-rules';
+import {
+  LIGHT_SERVICE_INTERVAL_KM,
+  LIGHT_SERVICE_ORIGEN_PREFIX,
+} from './vencimientos/vencimientos-rules';
 import type { AsignadoResponseDto } from './dto/asignado-response.dto';
 import type { CreateMantencionHistoricaDto } from './dto/create-mantencion-historica.dto';
 import type { CreateOrdenDto } from './dto/create-orden.dto';
@@ -98,10 +101,6 @@ type Editor = { id: string; name: string };
 
 /** Cliente de Prisma o el `tx` de una transacción. */
 type Db = Prisma.TransactionClient | PrismaService;
-
-/** Así empieza el `origenDetalle` de la orden de servicio de un liviano
- * (`VencimientosService.checkLightServices`). */
-const ORIGEN_SERVICIO_LIVIANO = 'Livianos: ';
 
 /**
  * Lo que el cierre de una orden escribe como ancla: los registros del hito de
@@ -437,57 +436,50 @@ export class OrdenesService {
       );
     };
 
-    let orden: SelectedOrden;
-    let estadoAnterior = ordenAnterior.estado;
-    if (!expected) {
-      // La escritura y la transición del hallazgo ligado van juntas: una
-      // orden completada cuyo hallazgo quedó ABIERTO contaría dos historias.
-      orden = await this.prisma.$transaction(async (tx) => {
-        await applyLecturaCierre(tx, estadoAnterior);
-        const actualizada = await write(tx);
-        await this.syncHallazgoEstado(tx, actualizada, estadoAnterior);
-        await applyEquipmentStatus(tx);
-        return actualizada;
-      });
-    } else {
-      // El estado previo se toma bajo el bloqueo: es el que decide si hubo
-      // transición (y por lo tanto aviso), no el de la lectura de arriba.
-      ({ orden, estadoAnterior } = await this.prisma.$transaction(
-        async (tx) => {
-          const vigente = await assertExpectedLocked({
-            tx,
-            table: 'ordenTrabajo',
-            id,
-            expected,
-            read: (db) =>
-              db.ordenTrabajo.findUnique({
-                where: { id },
-                select: {
-                  estado: true,
-                  asignadoAId: true,
-                  prioridad: true,
-                  titulo: true,
-                },
-              }),
-            // Solo los campos de la ORDEN: `equipmentStatus` no es columna de
-            // la fila y no participa de la precondición.
-            desired: definedFields({
-              estado: dto.estado,
-              asignadoAId: dto.asignadoAId,
-              prioridad: dto.prioridad,
-              titulo: dto.titulo,
+    // La escritura y la transición del hallazgo ligado van juntas: una orden
+    // completada cuyo hallazgo quedó ABIERTO contaría dos historias.
+    //
+    // El estado previo se toma SIEMPRE bajo el bloqueo de la fila, haya o no
+    // `X-Expected` (sin ella no hay precondición que comparar): es el que
+    // decide si hubo transición —y por lo tanto aviso y ancla—, no el de la
+    // lectura de arriba. Dos cierres simultáneos (un reintento offline
+    // mientras el primero confirma) no cruzan los dos: el segundo espera y ve
+    // la orden ya COMPLETADA.
+    const { orden, estadoAnterior } = await this.prisma.$transaction(
+      async (tx) => {
+        const vigente = await assertExpectedLocked({
+          tx,
+          table: 'ordenTrabajo',
+          id,
+          expected,
+          read: (db) =>
+            db.ordenTrabajo.findUnique({
+              where: { id },
+              select: {
+                estado: true,
+                asignadoAId: true,
+                prioridad: true,
+                titulo: true,
+              },
             }),
-            labels: CAMPO_LABEL,
-            notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
-          });
-          await applyLecturaCierre(tx, vigente.estado);
-          const actualizada = await write(tx);
-          await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
-          await applyEquipmentStatus(tx);
-          return { orden: actualizada, estadoAnterior: vigente.estado };
-        },
-      ));
-    }
+          // Solo los campos de la ORDEN: `equipmentStatus` no es columna de
+          // la fila y no participa de la precondición.
+          desired: definedFields({
+            estado: dto.estado,
+            asignadoAId: dto.asignadoAId,
+            prioridad: dto.prioridad,
+            titulo: dto.titulo,
+          }),
+          labels: CAMPO_LABEL,
+          notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
+        });
+        await applyLecturaCierre(tx, vigente.estado);
+        const actualizada = await write(tx);
+        await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
+        await applyEquipmentStatus(tx);
+        return { orden: actualizada, estadoAnterior: vigente.estado };
+      },
+    );
 
     this.logger.log(`Orden de trabajo actualizada: ${id}`);
 
@@ -755,8 +747,10 @@ export class OrdenesService {
   /**
    * La orden pasó a COMPLETADA: su mantención queda como ancla (la última
    * real, desde la que se cuenta la próxima). En una orden de pauta se le
-   * pone la lectura a los registros del hito, escritos al marcar cada tarea;
-   * en la de servicio de un liviano sin pauta se crea su registro SERVICIO.
+   * pone la lectura a los registros del hito, escritos al marcar cada tarea
+   * (y se crean los de las tareas sin marcar: un hito cuenta como hecho
+   * aunque no se hayan marcado todas sus operaciones); en la de servicio de
+   * un liviano sin pauta se crea su registro SERVICIO.
    * Cualquier otra orden no mueve el ancla (no se sabe a qué hito
    * corresponde) y la lectura se ignora. Va en la transacción del cierre.
    */
@@ -770,6 +764,9 @@ export class OrdenesService {
     if (!cierre) return;
 
     if (cierre.tipo === 'LIVIANO') {
+      // Sin kilometraje el registro no serviría de ancla y gastaría un número
+      // de servicio.
+      if (cierre.lectura == null) return;
       await this.crearServicioLiviano(tx, {
         equipmentId: cierre.equipmentId,
         description: orden.titulo,
@@ -777,6 +774,41 @@ export class OrdenesService {
         editor,
       });
       return;
+    }
+
+    // El admin puede «Finalizar» una orden olvidada con tareas sin marcar:
+    // sus operaciones igual quedan hechas en el hito (sin marcar las tareas).
+    // Las que ya tienen registro no se tocan (`skipDuplicates` sobre la
+    // única `planItemId_cycle_milestone`); las de una operación borrada de
+    // la pauta no se registran.
+    const planItemIds = [
+      ...new Set(
+        orden.tareas
+          .map((t) => t.planItemId)
+          .filter((planItemId): planItemId is string => planItemId != null),
+      ),
+    ];
+    if (planItemIds.length > 0) {
+      const items = await tx.maintenancePlanItem.findMany({
+        where: { id: { in: planItemIds } },
+        select: { id: true, description: true, kind: true },
+      });
+      if (items.length > 0) {
+        await tx.maintenanceRecord.createMany({
+          data: items.map((item) => ({
+            equipmentId: cierre.equipmentId,
+            planItemId: item.id,
+            cycle: cierre.cycle,
+            milestone: cierre.milestone,
+            description: item.description,
+            kind: item.kind,
+            counterAt: cierre.lectura,
+            doneById: editor.id,
+            doneByName: editor.name,
+          })),
+          skipDuplicates: true,
+        });
+      }
     }
 
     // `equipoId` de la OT es el que usó `syncRegistroCiclo` al marcar; el id
@@ -815,7 +847,7 @@ export class OrdenesService {
       !pauta &&
       orden.origen === OrigenOT.PREVENTIVO &&
       orden.tipo === TipoOT.PREVENTIVA &&
-      (orden.origenDetalle?.startsWith(ORIGEN_SERVICIO_LIVIANO) ?? false);
+      (orden.origenDetalle?.startsWith(LIGHT_SERVICE_ORIGEN_PREFIX) ?? false);
     if (!pauta && !servicioLiviano) return null;
 
     // Mismo criterio que `resolveEquipmentId`: id de Flota o código interno.
@@ -891,7 +923,7 @@ export class OrdenesService {
     servicio: {
       equipmentId: string;
       description: string;
-      counterAt: number | null;
+      counterAt: number;
       editor: Editor;
       /** Por defecto, ahora. */
       doneAt?: Date;

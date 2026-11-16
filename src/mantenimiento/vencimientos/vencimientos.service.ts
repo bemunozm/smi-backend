@@ -34,6 +34,7 @@ import {
   DOCUMENT_TYPE_LABEL,
   DOCUMENT_TYPES_WITHOUT_EXPIRY,
   LIGHT_SERVICE_INTERVAL_KM,
+  LIGHT_SERVICE_ORIGEN_PREFIX,
   documentAlertKind,
   nextLightService,
 } from './vencimientos-rules';
@@ -282,7 +283,7 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
 
       // Es lo que identifica la orden de ese kilometraje (y lo que muestra el
       // tablero como origen).
-      const origenDetalle = `Livianos: mantención de ${fmt(servicio.nextKm)} km`;
+      const origenDetalle = `${LIGHT_SERVICE_ORIGEN_PREFIX}mantención de ${fmt(servicio.nextKm)} km`;
       const ordenId = await this.prisma.$transaction(async (tx) => {
         // La revisión periódica y otra simultánea no crean dos tarjetas.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`aviso-liviano:${equipo.id}`}))`;
