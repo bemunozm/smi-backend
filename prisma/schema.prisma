@@ -684,6 +684,13 @@ model RegistroCombustible {
   /// venir por detrás del contador vigente: se guarda igual y NO lo retrocede).
   lectura Float?
 
+  /// AdBlue cargado JUNTO con esta carga, en litros (alta/corrección manual
+  /// del panel; null = sin AdBlue). Las cargas nacidas de cierre de tarjeta lo
+  /// dejan null: su AdBlue vive en la tarjeta
+  /// (`RegistroHorometro.adBlue`/`adBlueLiters`) y la API lo resuelve con ese
+  /// fallback, igual que `lectura`.
+  adBlueLitros Float? @map("ad_blue_litros")
+
   /// Vínculo 1:1 opcional con la tarjeta de turno que originó esta carga:
   /// al cerrar una tarjeta con
   /// `fuelLiters > 0`, el cierre crea ACÁ la carga con la misma `pumpPhotoKey`

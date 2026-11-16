@@ -8,7 +8,9 @@ import {
   Min,
 } from 'class-validator';
 
+import { ADBLUE_MAX_LITERS } from '../../../shifts/adblue';
 import { FUEL_LITERS_MAX, FUEL_LITERS_MAX_MESSAGE } from '../../../shifts/fuel';
+import { ADBLUE_MAX_MESSAGE } from './create-combustible.dto';
 
 /**
  * Corrección de una carga MANUAL desde el panel (`PATCH /api/combustible/:id`,
@@ -44,4 +46,13 @@ export class UpdateCombustibleDto {
   @Min(0)
   @Max(1_000_000)
   lectura?: number;
+
+  /** AdBlue de la carga, en litros: corrige el valor o lo QUITA con `null`
+   * (`@IsOptional` deja pasar null sin correr el resto de validadores — es el
+   * borrado explícito, no una omisión). Mismo tope que el alta. */
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  @Max(ADBLUE_MAX_LITERS, { message: ADBLUE_MAX_MESSAGE })
+  adBlueLitros?: number | null;
 }

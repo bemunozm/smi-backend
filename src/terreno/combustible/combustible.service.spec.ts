@@ -28,6 +28,8 @@ const INCLUDE_ESPERADO = {
       closedById: true,
       supervisorId: true,
       valorFinal: true,
+      adBlue: true,
+      adBlueLiters: true,
     },
   },
 };
@@ -413,6 +415,7 @@ describe('CombustibleService', () => {
       tipo: 'PETROLEO',
       fecha: new Date('2026-10-30T12:00:00.000Z'),
       lectura: 1000,
+      adBlueLitros: null,
     };
 
     beforeEach(() => {
@@ -487,15 +490,72 @@ describe('CombustibleService', () => {
     it('la corrección queda en el historial con su antes y después legibles, en la transacción', async () => {
       await service.update('c1', { litros: 120.5, tipo: 'BENCINA' }, editor);
 
-      expect(changeLog.record).toHaveBeenCalledWith(prisma, 'combustible', 'c1', editor, [
-        { field: 'litros', label: 'Litros', before: '100', after: '120,5' },
-        {
-          field: 'tipo',
-          label: 'Combustible',
-          before: 'Petróleo',
-          after: 'Bencina',
-        },
-      ]);
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'combustible',
+        'c1',
+        editor,
+        [
+          { field: 'litros', label: 'Litros', before: '100', after: '120,5' },
+          {
+            field: 'tipo',
+            label: 'Combustible',
+            before: 'Petróleo',
+            after: 'Bencina',
+          },
+        ],
+      );
+    });
+
+    it('agrega AdBlue a la carga y el cambio queda legible en el historial', async () => {
+      await service.update('c1', { adBlueLitros: 25 }, editor);
+
+      const [{ data }] = prisma.registroCombustible.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toEqual({ adBlueLitros: 25 });
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'combustible',
+        'c1',
+        editor,
+        [
+          {
+            field: 'adBlueLitros',
+            label: 'AdBlue (L)',
+            before: '—',
+            after: '25',
+          },
+        ],
+      );
+    });
+
+    it('adBlueLitros null QUITA el AdBlue de la carga', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...filaManual,
+        adBlueLitros: 25,
+      });
+
+      await service.update('c1', { adBlueLitros: null }, editor);
+
+      const [{ data }] = prisma.registroCombustible.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(data).toEqual({ adBlueLitros: null });
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'combustible',
+        'c1',
+        editor,
+        [
+          {
+            field: 'adBlueLitros',
+            label: 'AdBlue (L)',
+            before: '25',
+            after: '—',
+          },
+        ],
+      );
     });
 
     it('una corrección que deja todo igual no escribe historial', async () => {
@@ -910,6 +970,76 @@ describe('CombustibleService', () => {
         });
         expect(res).not.toHaveProperty('createdById');
       }
+    });
+
+    it('el create persiste el AdBlue de la carga manual y lo devuelve', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+      prisma.registroCombustible.create.mockImplementation(
+        ({ data }: { data: Record<string, unknown> }) => data,
+      );
+
+      const res = await service.create(
+        { equipoId: 'e1', litros: 120, tipo: 'PETROLEO', adBlueLitros: 500 },
+        USER_ID,
+      );
+
+      expect(res.adBlueLitros).toBe(500);
+    });
+
+    it('sin AdBlue en el alta, la carga queda con adBlueLitros null', async () => {
+      prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+      prisma.registroCombustible.create.mockImplementation(
+        ({ data }: { data: Record<string, unknown> }) => data,
+      );
+
+      const res = await service.create(
+        { equipoId: 'e1', litros: 120, tipo: 'PETROLEO' },
+        USER_ID,
+      );
+
+      expect(res.adBlueLitros).toBeNull();
+    });
+
+    it('carga de tarjeta: el AdBlue es el declarado al cierre de la tarjeta', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        {
+          ...base,
+          registroHorometroId: 'h1',
+          registroHorometro: {
+            closedByName: 'Juan Pérez',
+            closedById: null,
+            supervisorId: null,
+            valorFinal: 1534.5,
+            adBlue: true,
+            adBlueLiters: 30,
+          },
+        },
+      ]);
+
+      const [res] = await service.findAll();
+
+      expect(res.adBlueLitros).toBe(30);
+    });
+
+    it('carga de tarjeta SIN AdBlue al cierre queda con adBlueLitros null', async () => {
+      prisma.registroCombustible.findMany.mockResolvedValue([
+        {
+          ...base,
+          registroHorometroId: 'h1',
+          registroHorometro: {
+            closedByName: 'Juan Pérez',
+            closedById: null,
+            supervisorId: null,
+            valorFinal: 1534.5,
+            adBlue: false,
+            adBlueLiters: null,
+          },
+        },
+      ]);
+
+      const [res] = await service.findAll();
+
+      expect(res.adBlueLitros).toBeNull();
     });
   });
 });
