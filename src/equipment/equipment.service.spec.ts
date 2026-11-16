@@ -50,6 +50,8 @@ describe('EquipmentService', () => {
   const registroHorometroFindMany = jest.fn();
   const equipmentDocumentFindMany = jest.fn();
   const ordenTrabajoFindFirst = jest.fn();
+  const ordenTrabajoUpdateMany = jest.fn();
+  const actividadUpdateMany = jest.fn();
   const claimTmp = jest.fn();
   const discard = jest.fn();
   const deleteBestEffort = jest.fn();
@@ -71,6 +73,8 @@ describe('EquipmentService', () => {
       registroHorometroFindMany,
       equipmentDocumentFindMany,
       ordenTrabajoFindFirst,
+      ordenTrabajoUpdateMany,
+      actividadUpdateMany,
       claimTmp,
       discard,
       deleteBestEffort,
@@ -115,13 +119,17 @@ describe('EquipmentService', () => {
             },
             ordenTrabajo: {
               findFirst: ordenTrabajoFindFirst,
+              updateMany: ordenTrabajoUpdateMany,
             },
+            actividad: { updateMany: actividadUpdateMany },
             // Con `X-Expected` la escritura va en una transacción que bloquea
             // la fila: el mock ejecuta el callback con el mismo cliente.
             $queryRaw: queryRaw,
             $transaction: (fn: (tx: unknown) => unknown) =>
               fn({
                 equipment: { findUnique, update },
+                ordenTrabajo: { updateMany: ordenTrabajoUpdateMany },
+                actividad: { updateMany: actividadUpdateMany },
                 $queryRaw: queryRaw,
               }),
           },
@@ -728,6 +736,62 @@ describe('EquipmentService', () => {
   });
 
   describe('update', () => {
+    it('renombrar el código mueve las órdenes y actividades que lo guardan como texto', async () => {
+      findUnique.mockResolvedValue({ photoKey: null, internalCode: 'CM-NUV' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        internalCode: 'MAXUS JUAN',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      await service.update('eq_1', { internalCode: 'MAXUS JUAN' }, USER_ID);
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { internalCode: 'MAXUS JUAN' } }),
+      );
+      expect(ordenTrabajoUpdateMany).toHaveBeenCalledWith({
+        where: { equipoId: 'CM-NUV' },
+        data: { equipoId: 'MAXUS JUAN' },
+      });
+      expect(actividadUpdateMany).toHaveBeenCalledWith({
+        where: { equipoId: 'CM-NUV' },
+        data: { equipoId: 'MAXUS JUAN' },
+      });
+    });
+
+    it('sin cambio de código no toca órdenes ni actividades', async () => {
+      findUnique.mockResolvedValue({ photoKey: null, internalCode: 'CM-NUV' });
+      update.mockResolvedValue({
+        id: 'eq_1',
+        internalCode: 'CM-NUV',
+        currentOperatorId: null,
+        currentSupervisorId: null,
+        horometros: [],
+      });
+
+      await service.update(
+        'eq_1',
+        { internalCode: 'CM-NUV', brand: 'Maxus' },
+        USER_ID,
+      );
+
+      expect(ordenTrabajoUpdateMany).not.toHaveBeenCalled();
+      expect(actividadUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it('un código que ya usa otro equipo responde 409 con el código', async () => {
+      findUnique.mockResolvedValue({ photoKey: null, internalCode: 'CM-NUV' });
+      update.mockRejectedValue(
+        prismaError('P2002', { target: ['internal_code'] }),
+      );
+
+      await expect(
+        service.update('eq_1', { internalCode: 'EX-001' }, USER_ID),
+      ).rejects.toThrow('Ya existe un equipo con el código "EX-001"');
+    });
+
     it('actualiza el equipo en el caso feliz', async () => {
       findUnique.mockResolvedValue({ photoKey: null });
       update.mockResolvedValue({
