@@ -955,6 +955,38 @@ describe('OrdenesService', () => {
         expect(recordUpsert).not.toHaveBeenCalled();
       });
 
+      it('una CORRECTIVA con hito se rechaza: solo una preventiva cuenta para la pauta', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await expect(
+          service.createHistorica(
+            { ...DTO, tipo: 'CORRECTIVA', milestone: 500, lectura: 1_250 },
+            'u_admin',
+          ),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'Solo una mantención preventiva cuenta para la pauta.',
+          ),
+        );
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('una CORRECTIVA de un liviano sin pauta no escribe el servicio (ancla)', async () => {
+        equipmentFindUnique.mockResolvedValue(LIVIANO);
+        planFindUnique.mockResolvedValue(null);
+        recordCount.mockResolvedValue(2);
+
+        await service.createHistorica(
+          { ...DTO, tipo: 'CORRECTIVA', lectura: 30_000 },
+          'u_admin',
+        );
+
+        expect(ordenTrabajoCreate).toHaveBeenCalledTimes(1);
+        expect(recordCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
       it('historica milestone without lectura is rejected', async () => {
         equipmentFindUnique.mockResolvedValue(PESADO);
 

@@ -353,6 +353,15 @@ export class OrdenesService {
       },
     });
 
+    // Solo una preventiva es un cambio real: una correctiva queda en la
+    // historia, pero no escribe el ancla de la pauta ni el servicio del liviano.
+    const preventiva = (dto.tipo ?? TipoOT.PREVENTIVA) === TipoOT.PREVENTIVA;
+    if (!preventiva && dto.milestone != null) {
+      throw new BadRequestException(
+        'Solo una mantención preventiva cuenta para la pauta.',
+      );
+    }
+
     // Ancla de la pauta: con `milestone` y pauta, una fila por operación del
     // hito. Sin `milestone` el equipo con pauta queda como antes (solo OT).
     let registrosPauta: {
@@ -389,6 +398,7 @@ export class OrdenesService {
     }
     // Liviano en km sin pauta: su servicio es el ancla (regla de los 10.000 km).
     const servicioLiviano =
+      preventiva &&
       !plan &&
       dto.lectura != null &&
       equipment.equipmentClass === 'LIGHT' &&
