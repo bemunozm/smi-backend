@@ -829,6 +829,206 @@ describe('OrdenesService', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(ordenTrabajoCreate).not.toHaveBeenCalled();
     });
+
+    describe('con registros estructurados (ancla)', () => {
+      const PESADO = {
+        id: 'eq_flota_1',
+        internalCode: 'CM-003',
+        equipmentClass: 'HEAVY',
+        controlUnit: 'HOURS',
+        currentHourmeter: 1_300,
+        currentMileage: null,
+      };
+      const LIVIANO = {
+        id: 'eq_liv',
+        internalCode: 'CM-010',
+        equipmentClass: 'LIGHT',
+        controlUnit: 'KM',
+        currentHourmeter: null,
+        currentMileage: 31_000,
+      };
+      const PLAN = {
+        milestones: [250, 500],
+        initialMilestone: 50,
+        items: [
+          {
+            id: 'item_a',
+            description: 'Cambio de aceite',
+            kind: 'ACEITE',
+            milestones: [250, 500],
+          },
+          {
+            id: 'item_b',
+            description: 'Cambio de correa',
+            kind: 'CORREA',
+            milestones: [500],
+          },
+        ],
+      };
+
+      beforeEach(() => {
+        ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
+        userFindMany.mockResolvedValue([{ id: 'u_admin', name: 'Admin SMI' }]);
+        planFindUnique.mockResolvedValue(PLAN);
+      });
+
+      it('historica with milestone writes one record per item at that milestone', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await service.createHistorica(
+          { ...DTO, milestone: 500, lectura: 1_250 },
+          'u_admin',
+        );
+
+        // 1.250 h con ciclo de 500 h = vuelta 3.
+        expect(recordUpsert).toHaveBeenCalledTimes(2);
+        const doneAt = new Date('2025-06-15T12:00:00.000Z');
+        expect(recordUpsert).toHaveBeenCalledWith({
+          where: {
+            planItemId_cycle_milestone: {
+              planItemId: 'item_b',
+              cycle: 3,
+              milestone: 500,
+            },
+          },
+          create: {
+            equipmentId: 'eq_flota_1',
+            planItemId: 'item_b',
+            cycle: 3,
+            milestone: 500,
+            description: 'Cambio de correa',
+            kind: 'CORREA',
+            counterAt: 1_250,
+            doneAt,
+            doneById: 'u_admin',
+            doneByName: 'Admin SMI',
+          },
+          update: { counterAt: 1_250, doneAt },
+        });
+        expect(ordenTrabajoCreate).toHaveBeenCalledTimes(1);
+      });
+
+      it('historica con el hito inicial escribe la vuelta 1 y prefiere realizadaPor', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+        planFindUnique.mockResolvedValue({
+          ...PLAN,
+          items: [{ ...PLAN.items[0], milestones: [50, 250] }, PLAN.items[1]],
+        });
+
+        await service.createHistorica(
+          { ...DTO, milestone: 50, lectura: 60, realizadaPor: ' Taller Díaz ' },
+          'u_admin',
+        );
+
+        expect(recordUpsert).toHaveBeenCalledTimes(1);
+        const [{ create }] = recordUpsert.mock.calls[0] as [
+          { create: Record<string, unknown> },
+        ];
+        expect(create).toMatchObject({
+          cycle: 1,
+          milestone: 50,
+          doneByName: 'Taller Díaz',
+        });
+      });
+
+      it('historica on light without plan writes SERVICIO anchor', async () => {
+        equipmentFindUnique.mockResolvedValue(LIVIANO);
+        planFindUnique.mockResolvedValue(null);
+        recordCount.mockResolvedValue(2);
+
+        await service.createHistorica({ ...DTO, lectura: 30_000 }, 'u_admin');
+
+        expect(recordCreate).toHaveBeenCalledWith({
+          data: {
+            equipmentId: 'eq_liv',
+            planItemId: null,
+            kind: 'SERVICIO',
+            milestone: 10_000,
+            cycle: 3,
+            description: DTO.titulo,
+            counterAt: 30_000,
+            doneById: 'u_admin',
+            doneByName: 'Admin SMI',
+            doneAt: new Date('2025-06-15T12:00:00.000Z'),
+          },
+        });
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('historica milestone without lectura is rejected', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await expect(
+          service.createHistorica({ ...DTO, milestone: 500 }, 'u_admin'),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'Indica el horómetro/kilometraje de la mantención',
+          ),
+        );
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('historica milestone not in plan is rejected', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await expect(
+          service.createHistorica(
+            { ...DTO, milestone: 750, lectura: 700 },
+            'u_admin',
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('historica milestone without items is rejected', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+        planFindUnique.mockResolvedValue({
+          ...PLAN,
+          milestones: [250, 500, 750],
+        });
+
+        await expect(
+          service.createHistorica(
+            { ...DTO, milestone: 750, lectura: 700 },
+            'u_admin',
+          ),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'Esa mantención no tiene operaciones en la pauta',
+          ),
+        );
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+      });
+
+      it('historica lectura above current counter is rejected', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await expect(
+          service.createHistorica(
+            { ...DTO, milestone: 500, lectura: 1_400 },
+            'u_admin',
+          ),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'La lectura de la mantención (1.400) no puede ser mayor que la lectura actual del equipo (1.300).',
+          ),
+        );
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('sin milestone en un equipo con pauta no escribe registros (flujo de la ficha)', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await service.createHistorica({ ...DTO, lectura: 1_000 }, 'u_admin');
+
+        expect(recordUpsert).not.toHaveBeenCalled();
+        expect(recordCreate).not.toHaveBeenCalled();
+        expect(ordenTrabajoCreate).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   describe('update con X-Expected', () => {

@@ -28,6 +28,7 @@ import type {
 } from '../common/events/domain-events';
 import { todayInBusinessTimeZone } from '../common/dates/business-time';
 import { resolveAsignadosMap } from './common/asignado.util';
+import { currentCycle } from './maintenance-plans/maintenance-cycle';
 import {
   LIGHT_SERVICE_RECORD_KIND,
   loadLightAnchors,
@@ -96,6 +97,16 @@ const TAREA_SELECT = {
   hechaPorNombre: true,
   hechaAt: true,
 } satisfies Prisma.TareaOTSelect;
+
+/** Lo que `createHistorica` necesita del equipo para fechar y anclar la mantención. */
+const HISTORICA_EQUIPO_SELECT = {
+  id: true,
+  internalCode: true,
+  equipmentClass: true,
+  controlUnit: true,
+  currentHourmeter: true,
+  currentMileage: true,
+} satisfies Prisma.EquipmentSelect;
 
 type Editor = { id: string; name: string };
 
@@ -290,11 +301,11 @@ export class OrdenesService {
     const equipment =
       (await this.prisma.equipment.findUnique({
         where: { id: dto.equipoId },
-        select: { internalCode: true, controlUnit: true },
+        select: HISTORICA_EQUIPO_SELECT,
       })) ??
       (await this.prisma.equipment.findUnique({
         where: { internalCode: dto.equipoId },
-        select: { internalCode: true, controlUnit: true },
+        select: HISTORICA_EQUIPO_SELECT,
       }));
     if (!equipment) {
       throw new NotFoundException(
@@ -317,34 +328,153 @@ export class OrdenesService {
           : `Horómetro al momento de la mantención: ${NUM_CL.format(dto.lectura)} h`
         : null;
 
-    const orden = await this.prisma.ordenTrabajo.create({
-      data: {
-        createdById: userId,
-        equipoId: equipment.internalCode,
-        titulo: dto.titulo,
-        estado: EstadoOT.COMPLETADA,
-        tipo: dto.tipo ?? TipoOT.PREVENTIVA,
-        origen: OrigenOT.MANUAL,
-        origenDetalle: dto.observaciones
-          ? `Mantención anterior (registro histórico): ${dto.observaciones}`
-          : 'Mantención anterior (registro histórico)',
-        tareas: {
-          create: [
-            {
-              texto: dto.titulo,
-              hecha: true,
-              posicion: 0,
-              hechaAt,
-              // Mismo snapshot que llena el taller al completar una tarea —
-              // la columna «Mantenedor» del registro y el «Realizada por»
-              // del detalle salen de acá.
-              hechaPorNombre: dto.realizadaPor?.trim() || null,
-              notas,
-            },
-          ],
+    // Todo se valida ANTES de escribir: un 400 no deja nada a medias.
+    const actual =
+      equipment.controlUnit === 'KM'
+        ? equipment.currentMileage
+        : equipment.currentHourmeter;
+    if (dto.lectura != null) {
+      this.assertLecturaNoSuperaActual(dto.lectura, actual ?? null);
+    }
+    const plan = await this.prisma.maintenancePlan.findUnique({
+      where: { equipmentId: equipment.id },
+      select: {
+        milestones: true,
+        initialMilestone: true,
+        items: {
+          select: {
+            id: true,
+            description: true,
+            kind: true,
+            milestones: true,
+          },
+          orderBy: { position: 'asc' },
         },
       },
-      select: ORDEN_SELECT,
+    });
+
+    // Ancla de la pauta: con `milestone` y pauta, una fila por operación del
+    // hito. Sin `milestone` el equipo con pauta queda como antes (solo OT).
+    let registrosPauta: {
+      cycle: number;
+      milestone: number;
+      items: { id: string; description: string; kind: string }[];
+    } | null = null;
+    if (plan && dto.milestone != null) {
+      if (dto.lectura == null) {
+        throw new BadRequestException(
+          'Indica el horómetro/kilometraje de la mantención',
+        );
+      }
+      const esInicial = dto.milestone === plan.initialMilestone;
+      if (!esInicial && !plan.milestones.includes(dto.milestone)) {
+        throw new BadRequestException(
+          'Ese hito no pertenece a la pauta del equipo',
+        );
+      }
+      const items = plan.items.filter((i) =>
+        i.milestones.includes(dto.milestone as number),
+      );
+      if (items.length === 0) {
+        throw new BadRequestException(
+          'Esa mantención no tiene operaciones en la pauta',
+        );
+      }
+      const largoCiclo = Math.max(0, ...plan.milestones);
+      registrosPauta = {
+        cycle: esInicial ? 1 : currentCycle(dto.lectura, largoCiclo),
+        milestone: dto.milestone,
+        items,
+      };
+    }
+    // Liviano en km sin pauta: su servicio es el ancla (regla de los 10.000 km).
+    const servicioLiviano =
+      !plan &&
+      dto.lectura != null &&
+      equipment.equipmentClass === 'LIGHT' &&
+      equipment.controlUnit === 'KM';
+
+    // Quién la hizo: lo declarado o, sin eso, el usuario que la registra.
+    const realizadaPor = dto.realizadaPor?.trim() || null;
+    let doneByName = realizadaPor ?? userId;
+    if ((registrosPauta || servicioLiviano) && !realizadaPor) {
+      const autor = (await resolveAsignadosMap(this.prisma, [userId])).get(
+        userId,
+      );
+      doneByName = autor?.nombre ?? userId;
+    }
+
+    // La OT y sus registros van en UNA transacción: la historia y el ancla
+    // no pueden quedar contando cosas distintas.
+    const orden = await this.prisma.$transaction(async (tx) => {
+      const creada = await tx.ordenTrabajo.create({
+        data: {
+          createdById: userId,
+          equipoId: equipment.internalCode,
+          titulo: dto.titulo,
+          estado: EstadoOT.COMPLETADA,
+          tipo: dto.tipo ?? TipoOT.PREVENTIVA,
+          origen: OrigenOT.MANUAL,
+          origenDetalle: dto.observaciones
+            ? `Mantención anterior (registro histórico): ${dto.observaciones}`
+            : 'Mantención anterior (registro histórico)',
+          tareas: {
+            create: [
+              {
+                texto: dto.titulo,
+                hecha: true,
+                posicion: 0,
+                hechaAt,
+                // Mismo snapshot que llena el taller al completar una tarea —
+                // la columna «Mantenedor» del registro y el «Realizada por»
+                // del detalle salen de acá.
+                hechaPorNombre: realizadaPor,
+                notas,
+              },
+            ],
+          },
+        },
+        select: ORDEN_SELECT,
+      });
+
+      if (registrosPauta && dto.lectura != null) {
+        const { cycle, milestone, items } = registrosPauta;
+        for (const item of items) {
+          await tx.maintenanceRecord.upsert({
+            where: {
+              planItemId_cycle_milestone: {
+                planItemId: item.id,
+                cycle,
+                milestone,
+              },
+            },
+            create: {
+              equipmentId: equipment.id,
+              planItemId: item.id,
+              cycle,
+              milestone,
+              description: item.description,
+              kind: item.kind,
+              counterAt: dto.lectura,
+              doneAt: hechaAt,
+              doneById: userId,
+              doneByName,
+            },
+            // Ya registrada (marca previa de la grilla): la mantención real
+            // manda sobre cuándo y con qué lectura se hizo.
+            update: { counterAt: dto.lectura, doneAt: hechaAt },
+          });
+        }
+      } else if (servicioLiviano && dto.lectura != null) {
+        await this.crearServicioLiviano(tx, {
+          equipmentId: equipment.id,
+          description: dto.titulo,
+          counterAt: dto.lectura,
+          editor: { id: userId, name: doneByName },
+          doneAt: hechaAt,
+        });
+      }
+      return creada;
     });
 
     this.logger.log(
@@ -730,6 +860,18 @@ export class OrdenesService {
     };
   }
 
+  /** La lectura de una mantención no puede pasar la lectura actual del equipo. */
+  private assertLecturaNoSuperaActual(
+    lectura: number,
+    actual: number | null,
+  ): void {
+    if (actual != null && lectura > actual) {
+      throw new BadRequestException(
+        `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser mayor que la lectura actual del equipo (${NUM_CL.format(actual)}).`,
+      );
+    }
+  }
+
   private async resolveEquipmentId(equipoId: string): Promise<string | null> {
     const byId = await this.prisma.equipment.findUnique({
       where: { id: equipoId },
@@ -888,11 +1030,7 @@ export class OrdenesService {
         : equipo.currentHourmeter;
 
     if (lectura != null) {
-      if (actual != null && lectura > actual) {
-        throw new BadRequestException(
-          `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser mayor que la lectura actual del equipo (${NUM_CL.format(actual)}).`,
-        );
-      }
+      this.assertLecturaNoSuperaActual(lectura, actual);
       // La anterior es la del mismo tipo de ancla. En la pauta se excluye
       // este hito y vuelta: sus registros (de las marcas) ya pueden ser el
       // ancla, y corregir la lectura hacia abajo no puede chocar consigo.

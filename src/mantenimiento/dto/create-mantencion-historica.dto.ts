@@ -1,6 +1,7 @@
 import { TipoOT } from '@prisma/client';
 import {
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -66,6 +67,17 @@ export class CreateMantencionHistoricaDto {
   @Min(0)
   @Max(1_000_000)
   lectura?: number;
+
+  /**
+   * Hito de la pauta que se hizo (250, 500… o el servicio inicial). Con él, y
+   * en un equipo con pauta, la mantención deja registros de sus operaciones y
+   * pasa a ser el ancla desde la que se cuenta la próxima; exige `lectura`.
+   * Sin él, la mantención solo queda como historia (OT + nota).
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  milestone?: number;
 
   @IsOptional()
   @IsString()
