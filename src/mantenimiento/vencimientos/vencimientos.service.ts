@@ -20,7 +20,10 @@ import {
   type DocumentStatus,
 } from '../../equipment/document-expiry';
 import { MaintenancePlansService } from '../maintenance-plans/maintenance-plans.service';
-import { loadLightAnchors } from '../maintenance-plans/maintenance-anchors';
+import {
+  loadLightAnchors,
+  tienePreventivaAbierta,
+} from '../maintenance-plans/maintenance-anchors';
 import type { Editor } from '../../change-log/change-log.service';
 import {
   LIGHT_DOC_ALERT_FIELD,
@@ -42,9 +45,6 @@ const REVISION_MS = 60 * 60 * 1000;
 const PRIMERA_REVISION_MS = 60 * 1000;
 
 const fmt = (n: number) => n.toLocaleString('es-CL');
-
-/** Las órdenes que siguen en el tablero del taller (no cerradas ni canceladas). */
-const ESTADOS_ABIERTOS = ['PENDIENTE', 'ASIGNADA', 'EN_PROCESO'] as const;
 
 /** `YYYY-MM-DD` de una fecha guardada como día (medianoche UTC). */
 const diaDe = (d: Date) => d.toISOString().slice(0, 10);
@@ -291,19 +291,10 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
           select: { id: true },
         });
         if (existente) return null;
-        // Contado desde el último servicio, el kilometraje puede no coincidir
-        // con el de una orden creada con la regla anterior: mientras haya una
-        // preventiva sin cerrar no se crea otra. `equipoId` es texto libre: el
-        // taller suele guardar el código interno.
-        const abierta = await tx.ordenTrabajo.findFirst({
-          where: {
-            equipoId: { in: [equipo.id, equipo.internalCode] },
-            origen: 'PREVENTIVO',
-            estado: { in: [...ESTADOS_ABIERTOS] },
-          },
-          select: { id: true },
-        });
-        if (abierta) return null;
+        // Ni otra mientras haya una preventiva abierta de cualquier kilometraje.
+        if (await tienePreventivaAbierta(tx, equipo.id, equipo.internalCode)) {
+          return null;
+        }
         const orden = await tx.ordenTrabajo.create({
           data: {
             equipoId: equipo.id,

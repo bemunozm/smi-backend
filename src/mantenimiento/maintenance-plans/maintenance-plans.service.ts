@@ -26,7 +26,7 @@ import {
   type MaintenanceStatus,
   type PlanItemForStatus,
 } from './maintenance-plan-status';
-import { loadPlanAnchors } from './maintenance-anchors';
+import { loadPlanAnchors, tienePreventivaAbierta } from './maintenance-anchors';
 import type {
   MaintenancePlanItemDto,
   SaveMaintenancePlanDto,
@@ -108,9 +108,6 @@ interface Vueltas {
 
 /** Sin pauta o sin ancla: vueltas por múltiplos del ciclo, desde la primera. */
 const SIN_VUELTAS: Vueltas = { enCurso: 1, base: () => undefined };
-
-/** Las órdenes que siguen en el tablero del taller (no cerradas ni canceladas). */
-const ESTADOS_ABIERTOS = ['PENDIENTE', 'ASIGNADA', 'EN_PROCESO'] as const;
 
 const EQUIPO_SELECT = {
   id: true,
@@ -446,20 +443,10 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         select: { id: true },
       });
       if (existente) return null;
-      // Con la vuelta contada desde el ancla, el `origenDetalle` puede no
-      // coincidir con el de una orden creada con la regla anterior: mientras
-      // el equipo tenga una preventiva sin cerrar —de cualquier hito— no se
-      // crea otra. `equipoId` es texto libre: el taller suele guardar el
-      // código interno (ver `OrdenesService.resolveEquipmentId`).
-      const abierta = await tx.ordenTrabajo.findFirst({
-        where: {
-          equipoId: { in: [equipmentId, equipo.internalCode] },
-          origen: 'PREVENTIVO',
-          estado: { in: [...ESTADOS_ABIERTOS] },
-        },
-        select: { id: true },
-      });
-      if (abierta) return null;
+      // Ni otra mientras haya una preventiva abierta de cualquier hito.
+      if (await tienePreventivaAbierta(tx, equipmentId, equipo.internalCode)) {
+        return null;
+      }
       const orden = await tx.ordenTrabajo.create({
         data: {
           equipoId: equipmentId,
@@ -548,6 +535,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     }
 
     // Con ancla la vuelta empieza en su origen, no en un múltiplo del ciclo.
+    // Las vueltas pasadas se rearman desde el origen del ancla de hoy.
     const inicio =
       cycleLength != null ? (base(vuelta) ?? (vuelta - 1) * cycleLength) : null;
     const records = plan

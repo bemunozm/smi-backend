@@ -7,7 +7,7 @@
  * y acepta el `tx` de una transacción: el cierre de una OT escribe el ancla y
  * la vuelve a leer dentro de la misma.
  */
-import type { Prisma } from '@prisma/client';
+import { EstadoOT, type Prisma } from '@prisma/client';
 
 import type { PrismaService } from '../../common/prisma/prisma.service';
 import type { MaintenanceAnchor } from './maintenance-plan-status';
@@ -41,6 +41,38 @@ export function loadLightAnchors(
     planItemId: null,
     kind: LIGHT_SERVICE_RECORD_KIND,
   });
+}
+
+/** Las órdenes que siguen en el tablero del taller (no cerradas ni canceladas). */
+const ESTADOS_ABIERTOS: EstadoOT[] = [
+  EstadoOT.PENDIENTE,
+  EstadoOT.ASIGNADA,
+  EstadoOT.EN_PROCESO,
+];
+
+/**
+ * El equipo ya tiene una orden PREVENTIVA sin cerrar, de cualquier hito o
+ * kilometraje. Es el resguardo contra órdenes preventivas duplicadas que
+ * comparten el aviso de pauta y el de livianos: contada desde el ancla, la
+ * vuelta (o el km) puede no coincidir con el `origenDetalle` de una orden
+ * creada con la regla anterior, y mientras haya una abierta no se crea otra.
+ * `equipoId` es texto libre: el taller suele guardar el código interno (ver
+ * `OrdenesService.resolveEquipmentId`), así que se aceptan ambos.
+ */
+export async function tienePreventivaAbierta(
+  db: Db,
+  equipmentId: string,
+  internalCode: string,
+): Promise<boolean> {
+  const abierta = await db.ordenTrabajo.findFirst({
+    where: {
+      equipoId: { in: [equipmentId, internalCode] },
+      origen: 'PREVENTIVO',
+      estado: { in: ESTADOS_ABIERTOS },
+    },
+    select: { id: true },
+  });
+  return abierta != null;
 }
 
 async function ultimos(
