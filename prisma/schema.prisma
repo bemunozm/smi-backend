@@ -546,6 +546,7 @@ enum MovementReason {
   ACTIVITY // Consumo por actividad/tarea
   EXTRAORDINARY_WORK // Consumo en un trabajo facturable
   TRANSFER // Traspaso entre sucursales (dos asientos)
+  ADBLUE_LOAD // Salida automática: AdBlue cargado a un equipo (cierre de tarjeta o carga manual)
 }
 
 /// Kardex: un asiento por cada entrada/salida, con el saldo resultante.

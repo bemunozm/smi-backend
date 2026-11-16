@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 
 import { ChangeLogService } from '../../change-log/change-log.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AdBlueStockService } from '../../inventory/adblue-stock.service';
 import { StorageService } from '../../storage/storage.service';
 import { CombustibleService } from './combustible.service';
 
@@ -54,6 +55,11 @@ describe('CombustibleService', () => {
   const sign = jest.fn();
   const deleteBestEffort = jest.fn();
   const changeLog = { record: jest.fn() };
+  const adBlueStock = {
+    discountLoad: jest.fn(),
+    restoreLoad: jest.fn(),
+    emitPending: jest.fn(),
+  };
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
@@ -65,6 +71,7 @@ describe('CombustibleService', () => {
           useValue: { claimTmp, discard, deleteBestEffort, sign },
         },
         { provide: ChangeLogService, useValue: changeLog },
+        { provide: AdBlueStockService, useValue: adBlueStock },
       ],
     }).compile();
     service = mod.get(CombustibleService);
@@ -91,6 +98,43 @@ describe('CombustibleService', () => {
     );
     expect(res.litros).toBe(120);
     expect(res.tipo).toBe('PETROLEO');
+  });
+
+  it('el AdBlue de una carga manual descuenta el ítem AdBlue en la transacción', async () => {
+    prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+
+    await service.create(
+      {
+        id: 'carga_1',
+        equipoId: 'e1',
+        litros: 120,
+        tipo: 'PETROLEO',
+        adBlueLitros: 15,
+      },
+      USER_ID,
+    );
+
+    expect(adBlueStock.discountLoad).toHaveBeenCalledWith(
+      { tx: prisma, events: [] },
+      {
+        liters: 15,
+        equipmentId: 'e1',
+        performedById: USER_ID,
+        reference: 'carga_1',
+      },
+    );
+    expect(adBlueStock.emitPending).toHaveBeenCalledTimes(1);
+  });
+
+  it('sin AdBlue la carga manual no toca el inventario', async () => {
+    prisma.equipment.findUnique.mockResolvedValue({ id: 'e1' });
+
+    await service.create(
+      { equipoId: 'e1', litros: 120, tipo: 'PETROLEO' },
+      USER_ID,
+    );
+
+    expect(adBlueStock.discountLoad).not.toHaveBeenCalled();
   });
 
   it('rechaza si el equipo no existe', async () => {
@@ -558,6 +602,43 @@ describe('CombustibleService', () => {
       );
     });
 
+    it('agregar AdBlue en la corrección descuenta los litros nuevos', async () => {
+      await service.update('c1', { adBlueLitros: 8 }, editor);
+
+      expect(adBlueStock.discountLoad).toHaveBeenCalledWith(
+        { tx: prisma, events: [] },
+        expect.objectContaining({ liters: 8, reference: 'c1' }),
+      );
+      expect(adBlueStock.restoreLoad).not.toHaveBeenCalled();
+    });
+
+    it('bajar el AdBlue devuelve la diferencia; quitarlo devuelve todo', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...filaManual,
+        adBlueLitros: 10,
+      });
+
+      await service.update('c1', { adBlueLitros: 4 }, editor);
+      expect(adBlueStock.restoreLoad).toHaveBeenCalledWith(
+        { tx: prisma, events: [] },
+        expect.objectContaining({ liters: 6 }),
+      );
+
+      adBlueStock.restoreLoad.mockClear();
+      await service.update('c1', { adBlueLitros: null }, editor);
+      expect(adBlueStock.restoreLoad).toHaveBeenCalledWith(
+        { tx: prisma, events: [] },
+        expect.objectContaining({ liters: 10 }),
+      );
+    });
+
+    it('una corrección sin tocar el AdBlue no mueve el inventario', async () => {
+      await service.update('c1', { litros: 100.4 }, editor);
+
+      expect(adBlueStock.discountLoad).not.toHaveBeenCalled();
+      expect(adBlueStock.restoreLoad).not.toHaveBeenCalled();
+    });
+
     it('una corrección que deja todo igual no escribe historial', async () => {
       await service.update(
         'c1',
@@ -700,6 +781,33 @@ describe('CombustibleService', () => {
         where: { id: 'c1' },
       });
       expect(deleteBestEffort).not.toHaveBeenCalled();
+    });
+
+    it('eliminar una carga MANUAL con AdBlue devuelve sus litros al saldo', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...filaManual,
+        equipoId: 'e1',
+        adBlueLitros: 12,
+      });
+
+      await service.remove('c1', EDITOR);
+
+      expect(adBlueStock.restoreLoad).toHaveBeenCalledWith(
+        { tx: prisma, events: [] },
+        expect.objectContaining({ liters: 12, reference: 'c1' }),
+      );
+    });
+
+    it('eliminar una carga de TARJETA no devuelve AdBlue: su AdBlue es de la tarjeta, que sigue viva', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...filaManual,
+        registroHorometroId: 'rh1',
+        registroHorometro: { valorFinal: 10860, adBlue: true, adBlueLiters: 9 },
+      });
+
+      await service.remove('c1', EDITOR);
+
+      expect(adBlueStock.restoreLoad).not.toHaveBeenCalled();
     });
 
     it('un id inexistente -> 404 sin borrar nada', async () => {

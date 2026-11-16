@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { AdBlueStockService } from './adblue-stock.service';
 import { CategoriesController } from './categories/categories.controller';
 import { CategoriesService } from './categories/categories.service';
 import { ItemsController } from './items/items.controller';
@@ -24,7 +25,16 @@ import { StockService } from './stock.service';
     MovementsController,
     StockController,
   ],
-  providers: [StockService, ItemsService, MovementsService, CategoriesService],
-  exports: [StockService],
+  providers: [
+    StockService,
+    AdBlueStockService,
+    ItemsService,
+    MovementsService,
+    CategoriesService,
+  ],
+  // `AdBlueStockService` también se exporta: Shifts y Terreno (combustible)
+  // descuentan el AdBlue declarado sin conocer el kardex ni la heurística del
+  // ítem.
+  exports: [StockService, AdBlueStockService],
 })
 export class InventoryModule {}

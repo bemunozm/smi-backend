@@ -66,6 +66,15 @@ export interface StockMovementInput {
   /** Guía de despacho, orden de compra o factura que respalda el movimiento. */
   documentNumber?: string | null;
   notes?: string | null;
+  /**
+   * SOLO para salidas que espejan un hecho físico ya ocurrido (el AdBlue ya
+   * está en el camión): en vez de rechazar por existencia insuficiente, deja
+   * el saldo de la bodega en negativo — el número en rojo es lo que avisa al
+   * administrador que el sistema y la bodega discrepan y toca recontar. Una
+   * salida MANUAL de bodega jamás lo usa: ahí el rechazo protege de un error
+   * de tipeo, acá solo escondería el consumo real.
+   */
+  allowNegative?: boolean;
 }
 
 export interface TransferResult {
@@ -560,25 +569,43 @@ export class StockService {
     // insuficiente" — que manda a comprar material que en realidad está.
     await this.assertBranchExists(client, input.branchId);
 
-    // Descuento condicional en UNA sola sentencia: el `where` incluye
-    // `quantity >= N`, así que Postgres decide y aplica atómicamente. Leer el
-    // saldo primero y actualizar después dejaría una ventana en la que dos
-    // salidas concurrentes pasan ambas la validación y dejan la bodega en
-    // negativo.
-    const { count } = await client.stock.updateMany({
-      where: {
-        itemId: input.itemId,
-        branchId: input.branchId,
-        quantity: { gte: input.quantity },
-      },
-      data: { quantity: { decrement: input.quantity } },
-    });
+    if (input.allowNegative) {
+      // Salida que espeja un hecho ya ocurrido (ver `allowNegative`): el
+      // descuento aplica siempre, incluso sin fila de saldo o por debajo de
+      // cero — rechazarla no devolvería el AdBlue al bidón, solo dejaría el
+      // consumo sin registrar.
+      await client.stock.upsert({
+        where: {
+          itemId_branchId: { itemId: input.itemId, branchId: input.branchId },
+        },
+        create: {
+          itemId: input.itemId,
+          branchId: input.branchId,
+          quantity: -input.quantity,
+        },
+        update: { quantity: { decrement: input.quantity } },
+      });
+    } else {
+      // Descuento condicional en UNA sola sentencia: el `where` incluye
+      // `quantity >= N`, así que Postgres decide y aplica atómicamente. Leer el
+      // saldo primero y actualizar después dejaría una ventana en la que dos
+      // salidas concurrentes pasan ambas la validación y dejan la bodega en
+      // negativo.
+      const { count } = await client.stock.updateMany({
+        where: {
+          itemId: input.itemId,
+          branchId: input.branchId,
+          quantity: { gte: input.quantity },
+        },
+        data: { quantity: { decrement: input.quantity } },
+      });
 
-    if (count === 0) {
-      // No se actualizó nada: o el ítem no existe, o no alcanzaba el saldo EN
-      // ESA BODEGA. El mensaje distingue los dos casos porque la acción a tomar
-      // es distinta: comprar, o traer de otra sucursal.
-      throw await this.explainFailedIssue(client, input);
+      if (count === 0) {
+        // No se actualizó nada: o el ítem no existe, o no alcanzaba el saldo EN
+        // ESA BODEGA. El mensaje distingue los dos casos porque la acción a tomar
+        // es distinta: comprar, o traer de otra sucursal.
+        throw await this.explainFailedIssue(client, input);
+      }
     }
 
     const stock = await client.stock.findUnique({

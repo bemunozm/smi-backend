@@ -140,6 +140,36 @@ describe('StockService', () => {
       });
     });
 
+    it('allowNegative: descuenta aunque el saldo no alcance y deja la bodega en negativo', async () => {
+      // La salida espeja un hecho ya ocurrido (AdBlue ya cargado al camión):
+      // el upsert descuenta sin condición de saldo.
+      stockUpsert.mockResolvedValue({ quantity: -2, minimumQuantity: 0 });
+      stockFindUnique.mockResolvedValue({ quantity: -2, minimumQuantity: 0 });
+
+      const movement = await service.issue({
+        itemId: 'item_1',
+        branchId: 'branch_1',
+        quantity: 12,
+        reason: MovementReason.ADBLUE_LOAD,
+        allowNegative: true,
+      });
+
+      expect(stockUpdateMany).not.toHaveBeenCalled();
+      expect(stockUpsert).toHaveBeenCalledWith({
+        where: {
+          itemId_branchId: { itemId: 'item_1', branchId: 'branch_1' },
+        },
+        create: { itemId: 'item_1', branchId: 'branch_1', quantity: -12 },
+        update: { quantity: { decrement: 12 } },
+      });
+      expect(movement).toMatchObject({
+        direction: MovementDirection.OUT,
+        reason: MovementReason.ADBLUE_LOAD,
+        quantity: 12,
+        resultingBalance: -2,
+      });
+    });
+
     it('rechaza mover existencias en una sucursal desactivada', async () => {
       branchFindUnique.mockResolvedValue({ ...BRANCH, isActive: false });
 
