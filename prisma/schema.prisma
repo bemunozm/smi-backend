@@ -773,6 +773,10 @@ model RegistroHorometro {
   pumpPhotoKey  String? @map("pump_photo_key")
   /// Observaciones libres del supervisor al cierre.
   observaciones String?
+  /// Por qué se cerró SIN carga de combustible (corte de luz, surtidor sin
+  /// combustible…). El front lo exige cuando `fuelLiters` es 0; con litros
+  /// queda en `null`. Pedido del cliente, 16/11/2026.
+  noFuelReason  String? @map("no_fuel_reason")
 
   /// AdBlue cargado al cierre de turno (el cliente exige registrarlo al cerrar). `adBlueLiters`
   /// solo tiene valor cuando `adBlue` es `true`.

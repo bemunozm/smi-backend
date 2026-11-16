@@ -180,6 +180,8 @@ export interface ShiftCardResponse {
    * foto es obligatoria igual, pero el campo puede faltar en datos legacy). */
   pumpPhotoUrl: string | null;
   observaciones: string | null;
+  /** Por qué se cerró sin combustible; `null` si tiene litros o no se dijo. */
+  noFuelReason: string | null;
   adBlue: boolean;
   adBlueLiters: number | null;
   belowPreviousReading: boolean;
@@ -723,6 +725,7 @@ export class ShiftsService {
             fuelLiters: dto.fuelLiters,
             pumpPhotoKey,
             observaciones: dto.observaciones ?? null,
+            noFuelReason: dto.fuelLiters > 0 ? null : dto.noFuelReason || null,
             adBlue: dto.adBlue ?? false,
             adBlueLiters: dto.adBlue ? (dto.adBlueLiters ?? null) : null,
             // Hora del dispositivo descartada por desfase: se audita sin pisar
@@ -2217,6 +2220,9 @@ export class ShiftsService {
           ? await this.storage.sign(card.pumpPhotoKey)
           : null,
         observaciones: card.observaciones,
+        // Solo vale mientras la tarjeta no tenga litros (una corrección
+        // posterior que agrega la carga lo deja sin sentido).
+        noFuelReason: card.fuelLiters ? null : card.noFuelReason,
         adBlue: card.adBlue,
         adBlueLiters: card.adBlueLiters,
         belowPreviousReading: card.belowPreviousReading,

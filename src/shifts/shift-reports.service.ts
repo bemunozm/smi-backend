@@ -520,6 +520,7 @@ export class ShiftReportsService {
       adBlue: card.adBlue,
       adBlueLiters: card.adBlueLiters,
       observaciones: card.observaciones,
+      noFuelReason: card.fuelLiters ? null : card.noFuelReason,
     };
   }
 

@@ -77,6 +77,16 @@ export class CloseShiftCardDto {
   @MaxLength(1000)
   observaciones?: string;
 
+  /** Por qué no se cargó combustible (`fuelLiters` = 0): corte de luz,
+   * surtidor sin combustible, etc. El front lo exige; acá es opcional a
+   * propósito: un cierre encolado offline por una versión anterior de la app
+   * no lo trae y no debe quedar trabado en la cola. Con litros se ignora. */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => normalizeObservaciones(value))
+  @IsString()
+  @MaxLength(300)
+  noFuelReason?: string;
+
   /** Hora del DISPOSITIVO al cerrar la tarjeta — ver `capture-time.ts`. */
   @IsDateString()
   capturedAt!: string;
