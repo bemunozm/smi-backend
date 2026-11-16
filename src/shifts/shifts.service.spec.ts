@@ -8,6 +8,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 
 import { ChangeLogService } from '../change-log/change-log.service';
+import { AdBlueStockService } from '../inventory/adblue-stock.service';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { buildSession, prismaError } from '../common/testing/fixtures';
 import { OperatorsService } from '../operators/operators.service';
@@ -183,6 +184,11 @@ describe('ShiftsService', () => {
   const assertActive = jest.fn();
   const changeLog = { record: jest.fn(), findFor: jest.fn() };
   const eventEmitter = { emit: jest.fn() };
+  const adBlueStock = {
+    discountLoad: jest.fn(),
+    restoreLoad: jest.fn(),
+    emitPending: jest.fn(),
+  };
 
   beforeEach(async () => {
     const mod = await Test.createTestingModule({
@@ -195,6 +201,7 @@ describe('ShiftsService', () => {
         },
         { provide: OperatorsService, useValue: { assertActive } },
         { provide: ChangeLogService, useValue: changeLog },
+        { provide: AdBlueStockService, useValue: adBlueStock },
         { provide: EventEmitter2, useValue: eventEmitter },
       ],
     }).compile();
@@ -1277,6 +1284,32 @@ describe('ShiftsService', () => {
         });
       });
 
+      it('la carga declarada descuenta el ítem AdBlue dentro de la transacción del cierre', async () => {
+        await service.closeCard(
+          'card_1',
+          { ...dto, adBlue: true, adBlueLiters: 12.5 },
+          session,
+        );
+
+        expect(adBlueStock.discountLoad).toHaveBeenCalledWith(
+          { tx, events: [] },
+          {
+            liters: 12.5,
+            equipmentId: 'e1',
+            performedById: 'sup_1',
+            reference: 'card_1',
+          },
+        );
+        // Los avisos de stock bajo salen DESPUÉS de confirmar la transacción.
+        expect(adBlueStock.emitPending).toHaveBeenCalledTimes(1);
+      });
+
+      it('sin AdBlue no toca el inventario', async () => {
+        await service.closeCard('card_1', dto, session);
+
+        expect(adBlueStock.discountLoad).not.toHaveBeenCalled();
+      });
+
       it('la respuesta incluye adBlue y adBlueLiters', async () => {
         tx.registroHorometro.findUnique.mockResolvedValue(
           buildCardRecord({
@@ -1739,6 +1772,54 @@ describe('ShiftsService', () => {
       }
       throw new Error('se esperaba un error');
     }
+
+    describe('AdBlue en la edición: el descuento sigue a la corrección por la diferencia', () => {
+      it('agregar AdBlue descuenta los litros nuevos', async () => {
+        await service.update(
+          'card_1',
+          { adBlue: true, adBlueLiters: 10 },
+          owner,
+        );
+
+        expect(adBlueStock.discountLoad).toHaveBeenCalledWith(
+          { tx, events: [] },
+          expect.objectContaining({ liters: 10, reference: 'card_1' }),
+        );
+        expect(adBlueStock.restoreLoad).not.toHaveBeenCalled();
+      });
+
+      it('bajar los litros devuelve la diferencia al saldo', async () => {
+        givenCard(closedCard({ adBlue: true, adBlueLiters: 10 }));
+
+        await service.update('card_1', { adBlueLiters: 4 }, owner);
+
+        expect(adBlueStock.restoreLoad).toHaveBeenCalledWith(
+          { tx, events: [] },
+          expect.objectContaining({ liters: 6, reference: 'card_1' }),
+        );
+        expect(adBlueStock.discountLoad).not.toHaveBeenCalled();
+      });
+
+      it('quitar el AdBlue devuelve todos los litros', async () => {
+        givenCard(closedCard({ adBlue: true, adBlueLiters: 10 }));
+
+        await service.update('card_1', { adBlue: false }, owner);
+
+        expect(adBlueStock.restoreLoad).toHaveBeenCalledWith(
+          { tx, events: [] },
+          expect.objectContaining({ liters: 10 }),
+        );
+      });
+
+      it('una edición que no toca el AdBlue no mueve el inventario', async () => {
+        givenCard(closedCard({ adBlue: true, adBlueLiters: 10 }));
+
+        await service.update('card_1', { observaciones: 'ok' }, owner);
+
+        expect(adBlueStock.discountLoad).not.toHaveBeenCalled();
+        expect(adBlueStock.restoreLoad).not.toHaveBeenCalled();
+      });
+    });
 
     describe('precondiciones', () => {
       it('un body vacío es 400', async () => {
@@ -2580,6 +2661,25 @@ describe('ShiftsService', () => {
       expect(tx.registroHorometro.delete).toHaveBeenCalledWith({
         where: { id: 'card_1' },
       });
+    });
+
+    it('eliminar una tarjeta con AdBlue devuelve sus litros al saldo', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue(
+        deletableCard({ adBlue: true, adBlueLiters: 30 }),
+      );
+
+      await service.removeCard('card_1', owner);
+
+      expect(adBlueStock.restoreLoad).toHaveBeenCalledWith(
+        { tx, events: [] },
+        expect.objectContaining({ liters: 30, reference: 'card_1' }),
+      );
+    });
+
+    it('sin AdBlue el borrado no toca el inventario', async () => {
+      await service.removeCard('card_1', owner);
+
+      expect(adBlueStock.restoreLoad).not.toHaveBeenCalled();
     });
 
     it('una ABIERTA también se elimina: libera el slot y la asignación del equipo, con «—» en lo que no tiene', async () => {

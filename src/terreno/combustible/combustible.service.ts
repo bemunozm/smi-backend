@@ -19,6 +19,8 @@ import { formatNumber } from '../../common/format/number';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { reconcileEquipmentCounter } from '../../equipment/equipment-counter';
+import { AdBlueStockService } from '../../inventory/adblue-stock.service';
+import type { PendingStockEvents } from '../../inventory/stock.service';
 import { StorageService } from '../../storage/storage.service';
 import { resolveNombresUsuarios } from '../common/registrado-por.util';
 import { CreateCombustibleDto } from './dto/create-combustible.dto';
@@ -140,6 +142,7 @@ export class CombustibleService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly changeLog: ChangeLogService,
+    private readonly adBlueStock: AdBlueStockService,
   ) {}
 
   async create(dto: CreateCombustibleDto, userId: string) {
@@ -183,6 +186,7 @@ export class CombustibleService {
     // hacía que el rollback nunca se disparara igual por accidente — se deja
     // explícito para no depender de ese detalle.
     let registro: RegistroCombustibleRow;
+    const stockEvents: PendingStockEvents = [];
     try {
       // Carga + contador en UNA transacción: si la reconciliación lanzara,
       // la carga no queda a medias.
@@ -219,6 +223,20 @@ export class CombustibleService {
             'warn',
           );
         }
+        // El AdBlue de la carga manual descuenta el ítem AdBlue de
+        // Inventario en la misma transacción (el reintento idempotente de
+        // `create` relee la fila existente y nunca pasa por acá).
+        if ((dto.adBlueLitros ?? 0) > 0) {
+          await this.adBlueStock.discountLoad(
+            { tx, events: stockEvents },
+            {
+              liters: dto.adBlueLitros as number,
+              equipmentId: dto.equipoId,
+              performedById: userId,
+              reference: creado.id,
+            },
+          );
+        }
         return creado;
       });
     } catch (error: unknown) {
@@ -229,6 +247,7 @@ export class CombustibleService {
       }
       throw error;
     }
+    this.adBlueStock.emitPending(stockEvents);
 
     return this.shapeSolo(registro);
   }
@@ -315,6 +334,7 @@ export class CombustibleService {
 
     // Edición + historial en UNA transacción: una corrección sin su registro
     // es justo lo que el historial debe impedir.
+    const stockEvents: PendingStockEvents = [];
     const registro = await this.prisma.$transaction(async (tx) => {
       const editado = await tx.registroCombustible.update({
         where: { id },
@@ -333,8 +353,30 @@ export class CombustibleService {
       if (cambios.length > 0) {
         await this.changeLog.record(tx, 'combustible', id, editor, cambios);
       }
+      // El descuento de Inventario sigue a la corrección POR LA DIFERENCIA,
+      // igual que la edición de una tarjeta: más AdBlue descuenta lo que
+      // falta; menos (o quitarlo) lo devuelve.
+      const adBlueAntes = previa.adBlueLitros ?? 0;
+      const adBlueDespues = despues.adBlueLitros ?? 0;
+      const adBlueDelta = adBlueDespues - adBlueAntes;
+      if (adBlueDelta !== 0) {
+        const movimiento = {
+          liters: Math.abs(adBlueDelta),
+          equipmentId: previa.equipoId,
+          performedById: editor.id,
+          reference: id,
+          notes: `Corrección de carga: AdBlue de ${formatNumber(adBlueAntes)} L a ${formatNumber(adBlueDespues)} L`,
+        };
+        const within = { tx, events: stockEvents };
+        if (adBlueDelta > 0) {
+          await this.adBlueStock.discountLoad(within, movimiento);
+        } else {
+          await this.adBlueStock.restoreLoad(within, movimiento);
+        }
+      }
       return editado;
     });
+    this.adBlueStock.emitPending(stockEvents);
 
     if (dto.lectura !== undefined) {
       const equipo = await this.prisma.equipment.findUnique({
@@ -386,6 +428,7 @@ export class CombustibleService {
         lectura: true,
         adBlueLitros: true,
         fotoKey: true,
+        equipoId: true,
         registroHorometroId: true,
         equipo: { select: { internalCode: true } },
         registroHorometro: {
@@ -431,6 +474,7 @@ export class CombustibleService {
       borrado('origen', 'Origen', deTarjeta ? 'Cierre de tarjeta' : 'Manual'),
     ];
 
+    const stockEvents: PendingStockEvents = [];
     await this.prisma.$transaction(async (tx) => {
       await this.changeLog.record(
         tx,
@@ -460,8 +504,23 @@ export class CombustibleService {
           data: { fuelLiters: null },
         });
       }
+      // Solo la carga MANUAL devuelve su AdBlue al saldo: en la vinculada el
+      // AdBlue es de la TARJETA (que sigue existiendo y conserva su descuento).
+      if (!deTarjeta && (registro.adBlueLitros ?? 0) > 0) {
+        await this.adBlueStock.restoreLoad(
+          { tx, events: stockEvents },
+          {
+            liters: registro.adBlueLitros as number,
+            equipmentId: registro.equipoId,
+            performedById: editor.id,
+            reference: id,
+            notes: `Devolución por carga eliminada: AdBlue ${formatNumber(registro.adBlueLitros as number)} L`,
+          },
+        );
+      }
       await tx.registroCombustible.delete({ where: { id } });
     });
+    this.adBlueStock.emitPending(stockEvents);
 
     if (!deTarjeta && registro.fotoKey) {
       await this.storage.deleteBestEffort(registro.fotoKey);

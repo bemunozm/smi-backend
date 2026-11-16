@@ -48,6 +48,8 @@ import {
 import { toEditor } from '../change-log/current-editor.decorator';
 import { OperatorsService } from '../operators/operators.service';
 import { StorageService } from '../storage/storage.service';
+import { AdBlueStockService } from '../inventory/adblue-stock.service';
+import type { PendingStockEvents } from '../inventory/stock.service';
 import { reconcileEquipmentCounter } from '../equipment/equipment-counter';
 import { formatNumber } from '../common/format/number';
 import { assertChecklistNotPending } from '../mantenimiento/daily-checklists/checklist-gate';
@@ -334,6 +336,7 @@ export class ShiftsService {
     private readonly storage: StorageService,
     private readonly operators: OperatorsService,
     private readonly changeLog: ChangeLogService,
+    private readonly adBlueStock: AdBlueStockService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -698,6 +701,7 @@ export class ShiftsService {
     // igual descartaba el objeto ya persistido en la fila — un objeto vivo,
     // referenciado en la base, borrado por un fallo post-commit ajeno a él.
     let closed: ShiftCardRecord | null;
+    const stockEvents: PendingStockEvents = [];
     try {
       closed = await this.prisma.$transaction(async (tx) => {
         // `updateMany` (no `update`) porque la condición de carrera vive en
@@ -794,6 +798,21 @@ export class ShiftsService {
           });
         }
 
+        // El AdBlue declarado descuenta el ítem AdBlue de Inventario en la
+        // MISMA transacción del cierre (el reintento idempotente de arriba
+        // nunca llega acá, así que no se descuenta dos veces).
+        if (dto.adBlue && (dto.adBlueLiters ?? 0) > 0) {
+          await this.adBlueStock.discountLoad(
+            { tx, events: stockEvents },
+            {
+              liters: dto.adBlueLiters as number,
+              equipmentId: card.equipoId,
+              performedById: session.user.id,
+              reference: id,
+            },
+          );
+        }
+
         return tx.registroHorometro.findUnique({
           where: { id },
           include: SHIFT_CARD_INCLUDE,
@@ -820,6 +839,9 @@ export class ShiftsService {
 
       throw error;
     }
+    // Un aviso de stock bajo dentro de una transacción revertida alertaría de
+    // un saldo que nunca existió: se emite recién confirmada.
+    this.adBlueStock.emitPending(stockEvents);
 
     return this.shapeCard(closed!);
   }
@@ -929,6 +951,7 @@ export class ShiftsService {
     );
 
     let created: ShiftCardRecord | null;
+    const stockEvents: PendingStockEvents = [];
     try {
       created = await this.prisma.$transaction(async (tx) => {
         const equipo = await tx.equipment.findUnique({
@@ -1014,6 +1037,21 @@ export class ShiftsService {
             });
           }
 
+          // Igual que el cierre vivo: el AdBlue del turno histórico también
+          // descuenta Inventario (la carrera por `id` relee afuera y no pasa
+          // por acá, así que el reintento no duplica el asiento).
+          if (dto.adBlue && (dto.adBlueLiters ?? 0) > 0) {
+            await this.adBlueStock.discountLoad(
+              { tx, events: stockEvents },
+              {
+                liters: dto.adBlueLiters as number,
+                equipmentId: dto.equipoId,
+                performedById: session.user.id,
+                reference: dto.id,
+              },
+            );
+          }
+
           return card;
         } catch (error) {
           if (
@@ -1055,6 +1093,7 @@ export class ShiftsService {
       }
       throw error;
     }
+    this.adBlueStock.emitPending(stockEvents);
 
     return this.shapeCard(created);
   }
@@ -1110,9 +1149,19 @@ export class ShiftsService {
         : null;
 
     let edit: ShiftCardEdit;
+    const stockEvents: PendingStockEvents = [];
     try {
       edit = await this.prisma.$transaction((tx): Promise<ShiftCardEdit> =>
-        this.applyEdit(tx, id, dto, operator, editor, expected, shiftDestino),
+        this.applyEdit(
+          tx,
+          id,
+          dto,
+          operator,
+          editor,
+          expected,
+          shiftDestino,
+          stockEvents,
+        ),
       );
     } catch (error) {
       if (error instanceof ShiftCardMoveRaceError) {
@@ -1127,6 +1176,7 @@ export class ShiftsService {
       throw error;
     }
     const { card, event } = edit;
+    this.adBlueStock.emitPending(stockEvents);
 
     if (event) this.eventEmitter.emit(DOMAIN_EVENTS.RECORD_EDITED, event);
     return this.shapeCard(card);
@@ -1205,6 +1255,7 @@ export class ShiftsService {
       select: { id: true, litros: true, fecha: true },
     });
 
+    const stockEvents: PendingStockEvents = [];
     await this.prisma.$transaction(async (tx) => {
       await this.changeLog.record(
         tx,
@@ -1230,6 +1281,20 @@ export class ShiftsService {
         );
         await tx.registroCombustible.delete({ where: { id: vinculada.id } });
       }
+      // El AdBlue que la tarjeta había descontado vuelve al saldo: borrar el
+      // registro deja el inventario como si la carga no se hubiera declarado.
+      if (card.adBlue && (card.adBlueLiters ?? 0) > 0) {
+        await this.adBlueStock.restoreLoad(
+          { tx, events: stockEvents },
+          {
+            liters: card.adBlueLiters as number,
+            equipmentId: card.equipoId,
+            performedById: editor.id,
+            reference: id,
+            notes: `Devolución por tarjeta eliminada: AdBlue ${formatNumber(card.adBlueLiters as number)} L`,
+          },
+        );
+      }
       await tx.registroHorometro.delete({ where: { id } });
       if (abierta) {
         // El uso en curso desaparece con la fila: se suelta también la
@@ -1240,6 +1305,7 @@ export class ShiftsService {
         });
       }
     });
+    this.adBlueStock.emitPending(stockEvents);
 
     const event: RecordEditedEvent = {
       entity: 'shift_card',
@@ -1275,6 +1341,9 @@ export class ShiftsService {
     /** Turno al que se mueve la tarjeta cuando la edición corrige `turno`
      * (upserteado por `update()` FUERA de esta transacción). */
     shiftDestino: { id: string; date: Date; type: string } | null = null,
+    /** Buzón de avisos de stock del descuento de AdBlue — `update()` los
+     * emite DESPUÉS de confirmar la transacción. */
+    stockEvents: PendingStockEvents = [],
   ): Promise<ShiftCardEdit> {
     // Un operador que cambió entre la validación y el bloqueo (carrera
     // improbable) se valida de nuevo en vez de guardarse sin chequear.
@@ -1503,6 +1572,27 @@ export class ShiftsService {
     }
     if ((despues.fuelLiters ?? 0) !== (antes.fuelLiters ?? 0)) {
       await this.syncFuelRecord(tx, actual, despues.fuelLiters ?? 0);
+    }
+    // El descuento de Inventario sigue a la corrección POR LA DIFERENCIA: más
+    // litros descuenta lo que falta, menos litros (o quitar el AdBlue) los
+    // devuelve. El asiento original no se toca — el kardex es bitácora.
+    const adBlueAntes = antes.adBlue ? (antes.adBlueLiters ?? 0) : 0;
+    const adBlueDespues = despues.adBlue ? (despues.adBlueLiters ?? 0) : 0;
+    const adBlueDelta = adBlueDespues - adBlueAntes;
+    if (adBlueDelta !== 0) {
+      const movimiento = {
+        liters: Math.abs(adBlueDelta),
+        equipmentId: despues.equipoId,
+        performedById: editor.id,
+        reference: id,
+        notes: `Corrección de tarjeta: AdBlue de ${formatNumber(adBlueAntes)} L a ${formatNumber(adBlueDespues)} L`,
+      };
+      const within = { tx, events: stockEvents };
+      if (adBlueDelta > 0) {
+        await this.adBlueStock.discountLoad(within, movimiento);
+      } else {
+        await this.adBlueStock.restoreLoad(within, movimiento);
+      }
     }
     if (cambioEquipo || cambioTurno) {
       // La carga nacida del cierre sigue a la tarjeta: mismo equipo y, si se
