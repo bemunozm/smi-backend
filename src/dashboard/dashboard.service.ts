@@ -86,6 +86,10 @@ export type AdBlueHistorial = {
   cargas: {
     /** Id de la tarjeta (origen TARJETA) o de la carga manual (MANUAL). */
     id: string;
+    /** La carga de combustible a abrir en «Cargas de combustible»: la nacida
+     * del cierre de la tarjeta, o la propia carga manual. Null en una tarjeta
+     * cerrada con AdBlue pero sin diésel. */
+    cargaId: string | null;
     equipmentId: string;
     internalCode: string;
     litros: number;
@@ -918,6 +922,7 @@ export class DashboardService {
           closedByName: true,
           supervisorId: true,
           equipo: { select: { internalCode: true } },
+          combustible: { select: { id: true } },
         },
       }),
       this.prisma.registroCombustible.findMany({
@@ -941,6 +946,9 @@ export class DashboardService {
     const cargas: AdBlueHistorial['cargas'] = [
       ...tarjetas.map((t) => ({
         id: t.id,
+        // La carga de diésel nacida del cierre; null si la tarjeta cerró con
+        // AdBlue pero sin diésel (no hay carga que abrir).
+        cargaId: t.combustible?.id ?? null,
         equipmentId: t.equipoId,
         internalCode: t.equipo.internalCode,
         litros: t.adBlueLiters as number,
@@ -955,6 +963,7 @@ export class DashboardService {
       })),
       ...manuales.map((c) => ({
         id: c.id,
+        cargaId: c.id,
         equipmentId: c.equipoId,
         internalCode: c.equipo.internalCode,
         litros: c.adBlueLitros as number,

@@ -1448,6 +1448,7 @@ describe('DashboardService.adBlueHistorial', () => {
         closedByName: 'Ana Soto',
         supervisorId: 'u1',
         equipo: { internalCode: 'SEM 02' },
+        combustible: { id: 'carga_tarjeta_1' },
       },
       {
         id: 'card_2',
@@ -1460,6 +1461,8 @@ describe('DashboardService.adBlueHistorial', () => {
         closedByName: null,
         supervisorId: 'u1',
         equipo: { internalCode: 'SEM 04' },
+        // Cerró con AdBlue pero sin diésel: no hay carga vinculada.
+        combustible: null,
       },
     ]);
     prisma.registroCombustible.findMany.mockResolvedValue([
@@ -1491,6 +1494,8 @@ describe('DashboardService.adBlueHistorial', () => {
 
     expect(res.cargas[1]).toEqual({
       id: 'card_1',
+      // La carga de diésel del cierre: es la que abre «Cargas de combustible».
+      cargaId: 'carga_tarjeta_1',
       equipmentId: 'e1',
       internalCode: 'SEM 02',
       litros: 10,
@@ -1502,10 +1507,12 @@ describe('DashboardService.adBlueHistorial', () => {
     });
     // Sin `fechaSalida` cae al cierre; sin `closedByName`, al supervisor.
     expect(res.cargas[0]).toMatchObject({
+      cargaId: null,
       fecha: '2026-11-16T10:00:00.000Z',
       cargadoPor: 'Limbert V.',
     });
     expect(res.cargas[2]).toMatchObject({
+      cargaId: 'carga_1',
       origen: 'MANUAL',
       turno: null,
       cargadoPor: 'Limbert V.',
