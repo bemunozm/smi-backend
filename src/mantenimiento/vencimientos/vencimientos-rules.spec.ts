@@ -29,6 +29,30 @@ describe('nextLightService (mantención de livianos cada 10.000 km)', () => {
   it('sin lectura del odómetro no hay cálculo', () => {
     expect(nextLightService(null)).toBeNull();
   });
+
+  it('con último servicio registrado, toca 10.000 km después de él', () => {
+    expect(nextLightService(41_200, 10_000, 1_000, 33_500)).toEqual({
+      nextKm: 43_500,
+      remainingKm: 2_300,
+      due: false,
+    });
+  });
+
+  it('con último servicio registrado y pasado de largo, lo pendiente es negativo', () => {
+    expect(nextLightService(44_000, 10_000, 1_000, 33_500)).toEqual({
+      nextKm: 43_500,
+      remainingKm: -500,
+      due: true,
+    });
+  });
+
+  it('sin último servicio sigue el múltiplo de 10.000', () => {
+    expect(nextLightService(41_200, 10_000, 1_000, null)).toEqual({
+      nextKm: 50_000,
+      remainingKm: 8_800,
+      due: false,
+    });
+  });
 });
 
 describe('documentAlertKind', () => {
