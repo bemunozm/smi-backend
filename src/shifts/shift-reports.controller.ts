@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpStatus,
   Param,
@@ -12,6 +13,8 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../auth/roles';
+import { CurrentEditor } from '../change-log/current-editor.decorator';
+import type { Editor } from '../change-log/change-log.service';
 import { CreateShiftReportDto } from './dto/create-shift-report.dto';
 import { ShiftReportsService } from './shift-reports.service';
 import { ShiftsService } from './shifts.service';
@@ -78,6 +81,16 @@ export class ShiftReportsController {
     assertNonEmptyId(id);
     const shiftId = await this.service.shiftIdOf(id);
     return { data: await this.shifts.cardsOfShift(shiftId), message: 'ok' };
+  }
+
+  /** Eliminación definitiva (envíos duplicados), solo el administrador; el
+   * resumen del reporte queda como traza en el Registro de actividad. */
+  @Roles([ROLES.ADMIN])
+  @Delete(':id')
+  async remove(@Param('id') id: string, @CurrentEditor() editor: Editor) {
+    assertNonEmptyId(id);
+    await this.service.remove(id, editor);
+    return { data: null, message: 'Reporte eliminado' };
   }
 
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])

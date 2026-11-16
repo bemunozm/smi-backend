@@ -5,6 +5,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { buildSession, prismaError } from '../common/testing/fixtures';
+import { ChangeLogService } from '../change-log/change-log.service';
 import { StorageService } from '../storage/storage.service';
 import { CreateShiftReportDto } from './dto/create-shift-report.dto';
 import {
@@ -76,7 +77,9 @@ describe('ShiftReportsService', () => {
       create: jest.fn(),
       count: jest.fn(),
       updateMany: jest.fn(),
+      delete: jest.fn(),
     },
+    $transaction: jest.fn(),
     shift: { findUnique: jest.fn() },
     registroHorometro: { findMany: jest.fn() },
     // `shift.supervisorId` es soft ref a `user.id`: el nombre se resuelve en lote.
@@ -89,6 +92,7 @@ describe('ShiftReportsService', () => {
     getObjectBuffer: jest.fn(),
   };
   const eventEmitter = { emit: jest.fn() };
+  const changeLog = { record: jest.fn() };
 
   const SHIFT = {
     id: 'shift_1',
@@ -115,11 +119,15 @@ describe('ShiftReportsService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: StorageService, useValue: storage },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: ChangeLogService, useValue: changeLog },
       ],
     }).compile();
     service = mod.get(ShiftReportsService);
 
     prisma.shiftExitReport.findUnique.mockResolvedValue(null);
+    prisma.$transaction.mockImplementation(
+      (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma),
+    );
     // Sin reportes recientes por defecto — los tests del rate limit lo
     // sobreescriben.
     prisma.shiftExitReport.count.mockResolvedValue(0);
@@ -593,6 +601,55 @@ describe('ShiftReportsService', () => {
         NotFoundException,
       );
       expect(storage.getObjectBuffer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remove — borrar un envío duplicado', () => {
+    const EDITOR = { id: 'admin_1', name: 'Admin' };
+
+    it('deja la traza en el historial, borra la fila y después el PDF', async () => {
+      prisma.shiftExitReport.findUnique.mockResolvedValue({
+        id: 'r1',
+        fileKey: 'reports/shift-exit/2026/09/r1.pdf',
+        cardCount: 3,
+        createdAt: new Date('2026-09-28T20:00:00.000Z'),
+        shift: SHIFT,
+      });
+      prisma.user.findMany.mockResolvedValue([
+        { id: 'sup_1', name: 'Ana Soto' },
+      ]);
+
+      await service.remove('r1', EDITOR);
+
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'shift_exit_report',
+        'r1',
+        EDITOR,
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'Supervisor', before: 'Ana Soto' }),
+          expect.objectContaining({ label: 'Equipos', before: '3' }),
+          expect.objectContaining({ label: 'Turno', before: 'DIURNO' }),
+        ]),
+        'DELETE',
+      );
+      expect(prisma.shiftExitReport.delete).toHaveBeenCalledWith({
+        where: { id: 'r1' },
+      });
+      expect(storage.deleteBestEffort).toHaveBeenCalledWith(
+        'reports/shift-exit/2026/09/r1.pdf',
+      );
+    });
+
+    it('reporte inexistente -> 404 sin tocar nada', async () => {
+      prisma.shiftExitReport.findUnique.mockResolvedValue(null);
+
+      await expect(service.remove('no-existe', EDITOR)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(changeLog.record).not.toHaveBeenCalled();
+      expect(prisma.shiftExitReport.delete).not.toHaveBeenCalled();
+      expect(storage.deleteBestEffort).not.toHaveBeenCalled();
     });
   });
 });

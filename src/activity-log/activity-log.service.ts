@@ -66,6 +66,7 @@ const ENTITY_KIND: Record<string, { kind: ActivityKind; label: string }> = {
   maintenance_plan: { kind: 'MAINTENANCE', label: 'Pauta de mantención' },
   reporte_diario: { kind: 'DAILY_REPORT', label: 'Producción diaria' },
   combustible: { kind: 'FUEL_LOAD', label: 'Carga de combustible' },
+  shift_exit_report: { kind: 'EXIT_REPORT', label: 'Informe diario equipos' },
 };
 
 const TIPO_COMBUSTIBLE: Record<string, string> = {

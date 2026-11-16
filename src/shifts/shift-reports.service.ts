@@ -21,6 +21,8 @@ import { EquipmentClass, Prisma } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES, sessionHasRole } from '../auth/roles';
+import { ChangeLogService } from '../change-log/change-log.service';
+import type { Editor } from '../change-log/change-log.service';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
 import type { ShiftExitReportSentEvent } from '../common/events/domain-events';
@@ -142,6 +144,7 @@ export class ShiftReportsService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly changeLog: ChangeLogService,
   ) {}
 
   async create(
@@ -353,6 +356,71 @@ export class ShiftReportsService {
       fileName: reporte.fileName,
       createdAt: reporte.createdAt.toISOString(),
     }));
+  }
+
+  /**
+   * `DELETE /api/shift-reports/:id` — solo el administrador (ver controller).
+   * Para limpiar envíos duplicados de un supervisor. El resumen queda en el
+   * historial de cambios (`ChangeLog` DELETE) en la misma transacción que el
+   * borrado, mismo criterio que `ReporteDiarioService.remove`; el PDF se
+   * borra del bucket DESPUÉS del commit y sin bloquear (si falla queda
+   * huérfano, nunca una fila apuntando a un archivo que ya no existe).
+   * Las tarjetas del turno no se tocan: el reporte solo las resume.
+   */
+  async remove(id: string, editor: Editor): Promise<void> {
+    const report = await this.prisma.shiftExitReport.findUnique({
+      where: { id },
+      include: {
+        shift: { select: { date: true, type: true, supervisorId: true } },
+      },
+    });
+    if (!report) throw new NotFoundException('Reporte no encontrado');
+
+    const nombres = await resolveNombresUsuarios(this.prisma, [
+      report.shift.supervisorId,
+    ]);
+    const borrado = (field: string, label: string, before: string) => ({
+      field,
+      label,
+      before,
+      after: '—',
+    });
+    const cambios = [
+      // `date` es @db.Date (UTC medianoche): se formatea en UTC para no
+      // retroceder un día al convertir a la zona de negocio.
+      borrado(
+        'shiftDate',
+        'Turno reportado',
+        report.shift.date.toLocaleDateString('es-CL', { timeZone: 'UTC' }),
+      ),
+      borrado('shiftType', 'Turno', report.shift.type),
+      borrado(
+        'supervisor',
+        'Supervisor',
+        nombres.get(report.shift.supervisorId) ?? '—',
+      ),
+      borrado('cardCount', 'Equipos', String(report.cardCount)),
+      borrado(
+        'createdAt',
+        'Enviado',
+        report.createdAt.toLocaleString('es-CL', {
+          timeZone: 'America/Santiago',
+        }),
+      ),
+    ];
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.changeLog.record(
+        tx,
+        'shift_exit_report',
+        id,
+        editor,
+        cambios,
+        'DELETE',
+      );
+      await tx.shiftExitReport.delete({ where: { id } });
+    });
+    await this.storage.deleteBestEffort(report.fileKey);
   }
 
   /** El turno de un reporte (`GET /shift-reports/:id/cards`); 404 si no existe. */
