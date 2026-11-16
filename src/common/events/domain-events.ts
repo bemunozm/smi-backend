@@ -22,6 +22,7 @@ export const DOMAIN_EVENTS = {
   CHECKLIST_REVIEWED: 'checklist.reviewed',
   DOCUMENT_EXPIRING: 'document.expiring',
   LIGHT_SERVICE_DUE: 'light-service.due',
+  PREVENTIVE_SERVICE_DUE: 'preventive-service.due',
   SHIFT_ENDED_WITH_OPEN_CARDS: 'shift.open-cards',
 } as const;
 
@@ -179,6 +180,25 @@ export interface LightServiceDueEvent {
   /** El kilometraje en que toca (30.000). */
   nextKm: number;
   remainingKm: number;
+}
+
+/**
+ * Un equipo con pauta entró al margen de aviso de su próxima mantención
+ * (`MaintenancePlan.alertBefore`) y ya se creó la orden PREVENTIVA con las
+ * operaciones del hito en el tablero del taller. Lo emite
+ * `MaintenancePlansService.checkAlert` una sola vez por equipo, hito y vuelta
+ * del ciclo — la misma condición con que crea la orden.
+ */
+export interface PreventiveServiceDueEvent {
+  equipmentId: string;
+  equipmentCode: string;
+  ordenId: string;
+  /** El hito que toca (250, 500…), en la unidad del equipo. */
+  milestone: number;
+  /** `h` o `km`, según cómo se mide el equipo. */
+  unit: 'h' | 'km';
+  /** Lo que le falta al contador para el hito; 0 si ya toca (o se pasó). */
+  remaining: number;
 }
 
 /**

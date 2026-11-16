@@ -13,6 +13,7 @@ import type {
   ChecklistReviewedEvent,
   DocumentExpiringEvent,
   LightServiceDueEvent,
+  PreventiveServiceDueEvent,
   ChecklistSubmittedEvent,
   RecordEditedEvent,
   ShiftEndedWithOpenCardsEvent,
@@ -240,8 +241,10 @@ ${event.comment ?? ''}`,
 }
 
 /**
- * `document.expiring` y `light-service.due` → MANTENEDOR + ADMIN (Módulo 4 ·
- * R21): para no operar con documentos vencidos ni pasarse de la mantención.
+ * `document.expiring`, `light-service.due` y `preventive-service.due` →
+ * MANTENEDOR + ADMIN (Módulo 4 · R21): para no operar con documentos vencidos
+ * ni pasarse de la mantención. El administrador se entera de cada orden
+ * preventiva que entra al tablero del mantenedor sin tener que mirarlo.
  */
 export const VENCIMIENTO_ROLES: readonly Role[] = [
   ROLES.MANTENEDOR,
@@ -292,5 +295,22 @@ export function buildLightServiceDueTemplate(
     tipo: DOMAIN_EVENTS.LIGHT_SERVICE_DUE,
     titulo: `Mantención de ${formatNumber(event.nextKm)} km: ${equipo}`,
     cuerpo: `A ${equipo} ${faltan} para la mantención de los ${formatNumber(event.nextKm)} km. La orden ya está en el tablero del taller.`,
+  };
+}
+
+export function buildPreventiveServiceDueTemplate(
+  event: PreventiveServiceDueEvent,
+): NotificationTemplate {
+  const hito = `${formatNumber(event.milestone)} ${event.unit}`;
+  const faltan =
+    event.remaining <= 0
+      ? 'ya le toca'
+      : `le faltan ${formatNumber(event.remaining)} ${event.unit}`;
+  // «las 250 h» pero «los 10.000 km»: el artículo sigue a la unidad.
+  const articulo = event.unit === 'km' ? 'los' : 'las';
+  return {
+    tipo: DOMAIN_EVENTS.PREVENTIVE_SERVICE_DUE,
+    titulo: `Mantención preventiva ${hito}: ${event.equipmentCode}`,
+    cuerpo: `A ${event.equipmentCode} ${faltan} para la mantención de ${articulo} ${hito}. La orden ya está en el tablero del taller.`,
   };
 }
