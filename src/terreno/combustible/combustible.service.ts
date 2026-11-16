@@ -30,6 +30,7 @@ interface DatosCarga {
   tipo: string;
   fecha: Date;
   lectura: number | null;
+  adBlueLitros: number | null;
 }
 
 /** Cómo se lee cada dato en el historial de cambios del administrador. */
@@ -50,6 +51,7 @@ const CAMPOS_CARGA: readonly ComparableField<DatosCarga>[] = [
     format: (v) => (v instanceof Date ? formatBusinessDateTime(v) : String(v)),
   },
   { field: 'lectura', label: 'Lectura' },
+  { field: 'adBlueLitros', label: 'AdBlue (L)' },
 ];
 
 /**
@@ -75,6 +77,8 @@ const COMBUSTIBLE_INCLUDE = {
       closedById: true,
       supervisorId: true,
       valorFinal: true,
+      adBlue: true,
+      adBlueLiters: true,
     },
   },
 } satisfies Prisma.RegistroCombustibleInclude;
@@ -91,6 +95,7 @@ type FilaCombustible = {
   fotoUrl: string | null;
   fotoKey: string | null;
   lectura?: number | null;
+  adBlueLitros?: number | null;
   registroHorometroId?: string | null;
   createdById?: string | null;
   registroHorometro?: {
@@ -98,6 +103,8 @@ type FilaCombustible = {
     closedById: string | null;
     supervisorId: string | null;
     valorFinal?: number | null;
+    adBlue?: boolean;
+    adBlueLiters?: number | null;
   } | null;
 };
 
@@ -112,15 +119,19 @@ type FilaCombustible = {
  * - `origen` distingue la carga de cierre de tarjeta de la manual.
  * - `lectura` es el contador del equipo AL CARGAR (horómetro en pesados, km
  *   en livianos): la propia de la carga (alta manual) o, en cargas de
- *   tarjeta, el `valorFinal` de la tarjeta vinculada. */
+ *   tarjeta, el `valorFinal` de la tarjeta vinculada.
+ * - `adBlueLitros` es el AdBlue cargado junto con la carga: el propio (alta
+ *   manual) o, en cargas de tarjeta, el AdBlue declarado al cierre de la
+ *   tarjeta vinculada — mismo patrón de fallback que `lectura`. */
 export type CombustibleResponse<T> = Omit<
   T,
-  'fotoKey' | 'createdById' | 'registroHorometro' | 'lectura'
+  'fotoKey' | 'createdById' | 'registroHorometro' | 'lectura' | 'adBlueLitros'
 > & {
   fotoUrl: string | null;
   realizadoPor: string | null;
   origen: 'TARJETA' | 'MANUAL';
   lectura: number | null;
+  adBlueLitros: number | null;
 };
 
 @Injectable()
@@ -191,6 +202,7 @@ export class CombustibleService {
             // `@default(now())` del schema — comportamiento previo intacto.
             ...(dto.fecha ? { fecha: new Date(dto.fecha) } : {}),
             lectura: dto.lectura ?? null,
+            adBlueLitros: dto.adBlueLitros ?? null,
           },
           include: COMBUSTIBLE_INCLUDE,
           omit: { createdById: false },
@@ -261,7 +273,8 @@ export class CombustibleService {
       dto.litros === undefined &&
       dto.tipo === undefined &&
       dto.fecha === undefined &&
-      dto.lectura === undefined
+      dto.lectura === undefined &&
+      dto.adBlueLitros === undefined
     ) {
       throw new BadRequestException(
         'Indica al menos un dato a corregir de la carga',
@@ -277,6 +290,7 @@ export class CombustibleService {
         tipo: true,
         fecha: true,
         lectura: true,
+        adBlueLitros: true,
       },
     });
     if (!previa) throw new NotFoundException('Registro no encontrado');
@@ -293,6 +307,9 @@ export class CombustibleService {
       tipo: dto.tipo ?? previa.tipo,
       fecha: dto.fecha !== undefined ? new Date(dto.fecha) : previa.fecha,
       lectura: dto.lectura ?? previa.lectura,
+      // `null` explícito QUITA el AdBlue (a diferencia de la omisión).
+      adBlueLitros:
+        dto.adBlueLitros !== undefined ? dto.adBlueLitros : previa.adBlueLitros,
     };
     const cambios = diffFields<DatosCarga>(previa, despues, CAMPOS_CARGA);
 
@@ -306,6 +323,9 @@ export class CombustibleService {
           ...(dto.tipo !== undefined ? { tipo: dto.tipo } : {}),
           ...(dto.fecha !== undefined ? { fecha: new Date(dto.fecha) } : {}),
           ...(dto.lectura !== undefined ? { lectura: dto.lectura } : {}),
+          ...(dto.adBlueLitros !== undefined
+            ? { adBlueLitros: dto.adBlueLitros }
+            : {}),
         },
         include: COMBUSTIBLE_INCLUDE,
         omit: { createdById: false },
@@ -319,7 +339,11 @@ export class CombustibleService {
     if (dto.lectura !== undefined) {
       const equipo = await this.prisma.equipment.findUnique({
         where: { id: previa.equipoId },
-        select: { controlUnit: true, currentHourmeter: true, currentMileage: true },
+        select: {
+          controlUnit: true,
+          currentHourmeter: true,
+          currentMileage: true,
+        },
       });
       if (equipo) {
         // `warn`: la lectura corregida hacia abajo no retrocede el contador
@@ -360,16 +384,25 @@ export class CombustibleService {
         tipo: true,
         fecha: true,
         lectura: true,
+        adBlueLitros: true,
         fotoKey: true,
         registroHorometroId: true,
         equipo: { select: { internalCode: true } },
-        registroHorometro: { select: { valorFinal: true } },
+        registroHorometro: {
+          select: { valorFinal: true, adBlue: true, adBlueLiters: true },
+        },
       },
     });
     if (!registro) throw new NotFoundException('Registro no encontrado');
 
     const deTarjeta = Boolean(registro.registroHorometroId);
     const lectura = registro.lectura ?? registro.registroHorometro?.valorFinal;
+    // Mismo fallback que `shape`: el AdBlue propio o el de la tarjeta vinculada.
+    const adBlue =
+      registro.adBlueLitros ??
+      (registro.registroHorometro?.adBlue
+        ? registro.registroHorometro.adBlueLiters
+        : null);
     const borrado = (field: string, label: string, before: string) => ({
       field,
       label,
@@ -379,14 +412,34 @@ export class CombustibleService {
     const resumen = [
       borrado('equipo', 'Equipo', registro.equipo.internalCode),
       borrado('litros', 'Litros', formatNumber(registro.litros)),
-      borrado('tipo', 'Combustible', TIPO_LABEL[registro.tipo] ?? registro.tipo),
+      borrado(
+        'tipo',
+        'Combustible',
+        TIPO_LABEL[registro.tipo] ?? registro.tipo,
+      ),
       borrado('fecha', 'Fecha', formatBusinessDateTime(registro.fecha)),
-      borrado('lectura', 'Lectura', lectura != null ? formatNumber(lectura) : '—'),
+      borrado(
+        'lectura',
+        'Lectura',
+        lectura != null ? formatNumber(lectura) : '—',
+      ),
+      borrado(
+        'adBlueLitros',
+        'AdBlue (L)',
+        adBlue != null ? formatNumber(adBlue) : '—',
+      ),
       borrado('origen', 'Origen', deTarjeta ? 'Cierre de tarjeta' : 'Manual'),
     ];
 
     await this.prisma.$transaction(async (tx) => {
-      await this.changeLog.record(tx, 'combustible', id, editor, resumen, 'DELETE');
+      await this.changeLog.record(
+        tx,
+        'combustible',
+        id,
+        editor,
+        resumen,
+        'DELETE',
+      );
       if (registro.registroHorometroId) {
         await this.changeLog.record(
           tx,
@@ -450,6 +503,7 @@ export class CombustibleService {
       createdById,
       registroHorometro,
       lectura,
+      adBlueLitros,
       ...resto
     } = registro;
     const esDeTarjeta = Boolean(registro.registroHorometroId);
@@ -473,6 +527,13 @@ export class CombustibleService {
       // La propia de la carga (alta manual), o el valorFinal de la tarjeta
       // que la originó — es la MISMA lectura física al momento de cargar.
       lectura: lectura ?? registroHorometro?.valorFinal ?? null,
+      // Mismo patrón: el AdBlue del alta manual, o el declarado al cierre de
+      // la tarjeta que originó la carga.
+      adBlueLitros:
+        adBlueLitros ??
+        (registroHorometro?.adBlue
+          ? (registroHorometro.adBlueLiters ?? null)
+          : null),
     } as CombustibleResponse<T>;
   }
 }

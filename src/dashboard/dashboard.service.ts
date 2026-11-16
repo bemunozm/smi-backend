@@ -96,6 +96,25 @@ export type ResumenDia = {
     /** El saldo en litros cuando el ítem se cuenta en bidones (12 u × 10 L = 120). */
     stockLitros: number | null;
   } | null;
+  /** AdBlue CARGADO en el día consultado (tarjetas de turno con AdBlue al
+   * cierre + cargas manuales del panel), con el detalle de cada carga (popup
+   * AdBlue). Independiente del saldo de inventario (`adBlue`): esto es lo que
+   * se cargó ese día, no lo que queda. */
+  adBlueDia: {
+    total: number;
+    dia: number;
+    noche: number;
+    cargas: {
+      equipmentId: string;
+      internalCode: string;
+      litros: number;
+      /** DIURNO | NOCTURNO de la tarjeta; null en una carga manual. */
+      turno: string | null;
+      hora: string; // ISO: cierre de la tarjeta, o fecha de la carga manual
+      cargadoPor: string | null;
+      origen: 'TARJETA' | 'MANUAL';
+    }[];
+  };
   operacionPorEquipo: {
     equipmentId: string;
     internalCode: string;
@@ -563,6 +582,8 @@ export class DashboardService {
             operador: true,
             supervisorId: true,
             nivelCombustible: true,
+            adBlue: true,
+            adBlueLiters: true,
             shift: { select: { date: true } },
             equipo: { select: { internalCode: true, controlUnit: true } },
           },
@@ -573,8 +594,13 @@ export class DashboardService {
             equipoId: true,
             litros: true,
             tipo: true,
+            adBlueLitros: true,
             registroHorometroId: true,
             fecha: true,
+            // Quién hizo la carga MANUAL (para el detalle de AdBlue); las de
+            // tarjeta lo resuelven por su tarjeta. El `select` explícito gana
+            // al omit global del campo.
+            createdById: true,
             equipo: { select: { internalCode: true } },
             // Quién cargó y qué operador estaba a cargo salen de la tarjeta
             // vinculada; una carga manual (sin tarjeta) no los tiene.
@@ -607,10 +633,12 @@ export class DashboardService {
     const tarjetas = tarjetasVentana.filter((t) => cardShiftDay(t) === fecha);
     const flota: FlotaDia[] = flotaHoy ?? (await this.flotaPasada(tarjetas));
 
-    // Nombres para «quién registró» (lecturas) y «quién cargó» (cargas), en UNA consulta.
+    // Nombres para «quién registró» (lecturas) y «quién cargó» (cargas y
+    // AdBlue manual), en UNA consulta.
     const nombres = await this.nombresDe([
       ...tarjetas.map((t) => t.supervisorId),
       ...cargas.map((c) => c.registroHorometro?.supervisorId ?? null),
+      ...cargas.map((c) => c.createdById),
     ]);
 
     type Op = {
@@ -673,6 +701,53 @@ export class DashboardService {
       }
     }
 
+    // AdBlue cargado en el día: el de las tarjetas del día (declarado al
+    // cierre, atribuido a su turno igual que el HM) + el de las cargas
+    // MANUALES del panel (sin turno: solo al total). Las cargas nacidas de
+    // tarjeta no suman aparte — su AdBlue ES el de la tarjeta, ya contado, y
+    // así también cuenta una tarjeta con AdBlue pero sin diésel (que no crea
+    // carga).
+    const adBlueDia = { total: 0, dia: 0, noche: 0 };
+    const cargasAdBlue: ResumenDia['adBlueDia']['cargas'] = [];
+    for (const t of tarjetas) {
+      if (!t.adBlue || !t.adBlueLiters) continue;
+      const lado = t.turno === 'NOCTURNO' ? 'noche' : 'dia';
+      adBlueDia.total += t.adBlueLiters;
+      adBlueDia[lado] += t.adBlueLiters;
+      cargasAdBlue.push({
+        equipmentId: t.equipoId,
+        internalCode: t.equipo.internalCode,
+        litros: t.adBlueLiters,
+        turno: t.turno,
+        // El AdBlue se declara al cerrar: la salida es su mejor hora.
+        hora: (t.fechaSalida ?? t.fecha).toISOString(),
+        cargadoPor:
+          t.supervisorId == null ? null : (nombres.get(t.supervisorId) ?? null),
+        origen: 'TARJETA',
+      });
+    }
+    for (const c of cargas) {
+      if (businessDayKey(c.fecha) !== fecha) continue;
+      if (c.registroHorometroId) continue; // su AdBlue vive en la tarjeta
+      if (!c.adBlueLitros) continue;
+      adBlueDia.total += c.adBlueLitros;
+      cargasAdBlue.push({
+        equipmentId: c.equipoId,
+        internalCode: c.equipo.internalCode,
+        litros: c.adBlueLitros,
+        turno: null,
+        hora: c.fecha.toISOString(),
+        cargadoPor:
+          c.createdById == null ? null : (nombres.get(c.createdById) ?? null),
+        origen: 'MANUAL',
+      });
+    }
+    cargasAdBlue.sort(
+      (a, b) =>
+        a.internalCode.localeCompare(b.internalCode) ||
+        a.hora.localeCompare(b.hora),
+    );
+
     const horasPorEquipo = new Map<
       string,
       { equipmentId: string; horas: number }
@@ -730,6 +805,12 @@ export class DashboardService {
         mineras: vueltas['MINERAS'] ?? 0,
       },
       adBlue,
+      adBlueDia: {
+        total: round2(adBlueDia.total),
+        dia: round2(adBlueDia.dia),
+        noche: round2(adBlueDia.noche),
+        cargas: cargasAdBlue,
+      },
       flota,
       operacionPorEquipo: [...ops.entries()]
         .sort(([a], [b]) => a.localeCompare(b))

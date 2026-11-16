@@ -7,10 +7,16 @@ import {
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
 } from 'class-validator';
 
+import { formatNumber } from '../../../common/format/number';
+import { ADBLUE_MAX_LITERS } from '../../../shifts/adblue';
 import { TMP_KEY_REGEX } from '../../../storage/storage-keys';
+
+/** Mensaje compartido con la corrección (`UpdateCombustibleDto`). */
+export const ADBLUE_MAX_MESSAGE = `El AdBlue no puede superar los ${formatNumber(ADBLUE_MAX_LITERS)} L`;
 
 export class CreateCombustibleDto {
   /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
@@ -59,4 +65,13 @@ export class CreateCombustibleDto {
   @IsNumber()
   @IsPositive()
   lectura?: number;
+
+  /** AdBlue cargado junto con esta carga, en litros, si se cargó. Mismo tope
+   * que el AdBlue del cierre de tarjeta (`ADBLUE_MAX_LITERS`). Lo manda solo
+   * el alta manual del panel: el AdBlue de Terreno viaja en la tarjeta. */
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  @Max(ADBLUE_MAX_LITERS, { message: ADBLUE_MAX_MESSAGE })
+  adBlueLitros?: number;
 }

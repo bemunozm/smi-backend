@@ -1137,6 +1137,81 @@ describe('DashboardService.resumenDia', () => {
     ]);
   });
 
+  it('adBlueDia: suma el AdBlue de tarjetas (a su turno) y de cargas manuales (solo total), con el detalle', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        ...card('t1', 'e1', 'CG-002', 'DIURNO', 100, 106),
+        supervisorId: 'u1',
+        adBlue: true,
+        adBlueLiters: 30,
+      },
+      // Nocturna con AdBlue — y una sin AdBlue que no debe sumar.
+      {
+        ...card('t2', 'e2', 'EX-001', 'NOCTURNO', 50, 54.5),
+        adBlue: true,
+        adBlueLiters: 20,
+      },
+      {
+        ...card('t3', 'e0', 'AA-001', 'DIURNO', 10, 12),
+        adBlue: false,
+        adBlueLiters: null,
+      },
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      // Carga nacida de la tarjeta t1: su AdBlue NO suma aparte (ya contó).
+      { ...carga('e1', 40, 't1'), adBlueLitros: null },
+      // Manual con AdBlue, hecha por u1.
+      { ...carga('e0', 20, null), adBlueLitros: 500, createdById: 'u1' },
+      // Manual sin AdBlue: no aparece en el detalle.
+      { ...carga('e0', 15, null), adBlueLitros: null },
+      // Manual con AdBlue FUERA del día: no cuenta.
+      {
+        ...carga('e0', 99, null),
+        adBlueLitros: 70,
+        fecha: new Date(Date.now() - 3 * 86_400_000),
+      },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.adBlueDia).toMatchObject({ total: 550, dia: 30, noche: 20 });
+    expect(res.adBlueDia.cargas).toEqual([
+      {
+        equipmentId: 'e0',
+        internalCode: 'AA-001',
+        litros: 500,
+        turno: null,
+        hora: HOY.toISOString(),
+        cargadoPor: 'Limbert V.',
+        origen: 'MANUAL',
+      },
+      {
+        equipmentId: 'e1',
+        internalCode: 'CG-002',
+        litros: 30,
+        turno: 'DIURNO',
+        hora: HOY.toISOString(),
+        cargadoPor: 'Limbert V.',
+        origen: 'TARJETA',
+      },
+      {
+        equipmentId: 'e2',
+        internalCode: 'EX-001',
+        litros: 20,
+        turno: 'NOCTURNO',
+        hora: HOY.toISOString(),
+        cargadoPor: null,
+        origen: 'TARJETA',
+      },
+    ]);
+  });
+
+  it('adBlueDia queda en cero sin tarjetas ni cargas con AdBlue', async () => {
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      { ...carga('e0', 20, null), adBlueLitros: null },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.adBlueDia).toEqual({ total: 0, dia: 0, noche: 0, cargas: [] });
+  });
+
   it('reports.porEquipo trae equipmentId para navegar a la vista Report', async () => {
     prisma.trabajoExtraordinario.findMany.mockResolvedValue([
       {
