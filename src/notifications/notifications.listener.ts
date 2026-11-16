@@ -17,6 +17,7 @@ import {
   type ChecklistReviewedEvent,
   type DocumentExpiringEvent,
   type LightServiceDueEvent,
+  type PreventiveServiceDueEvent,
   type ChecklistSubmittedEvent,
   type RecordEditedEvent,
   type ShiftEndedWithOpenCardsEvent,
@@ -37,6 +38,7 @@ import {
   VENCIMIENTO_ROLES,
   buildDocumentExpiringTemplate,
   buildLightServiceDueTemplate,
+  buildPreventiveServiceDueTemplate,
   CHECKLIST_SUBMITTED_ROLES,
   buildChecklistReviewedTemplate,
   buildChecklistSubmittedTemplate,
@@ -154,6 +156,16 @@ export class NotificationsListener {
   async onLightServiceDue(event: LightServiceDueEvent): Promise<void> {
     await this.notifications.createForRoles(VENCIMIENTO_ROLES, {
       ...buildLightServiceDueTemplate(event),
+      data: { equipmentId: event.equipmentId, ordenId: event.ordenId },
+    });
+  }
+
+  @OnEvent(DOMAIN_EVENTS.PREVENTIVE_SERVICE_DUE)
+  async onPreventiveServiceDue(
+    event: PreventiveServiceDueEvent,
+  ): Promise<void> {
+    await this.notifications.createForRoles(VENCIMIENTO_ROLES, {
+      ...buildPreventiveServiceDueTemplate(event),
       data: { equipmentId: event.equipmentId, ordenId: event.ordenId },
     });
   }

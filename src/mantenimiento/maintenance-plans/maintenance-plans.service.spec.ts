@@ -1,3 +1,4 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -32,6 +33,7 @@ describe('MaintenancePlansService', () => {
     $transaction: jest.fn(),
   };
   const changeLog = { record: jest.fn(), findFor: jest.fn() };
+  const eventEmitter = { emit: jest.fn() };
   const editor = { id: 'u1', name: 'Admin SMI' };
 
   const D6 = {
@@ -89,6 +91,7 @@ describe('MaintenancePlansService', () => {
         MaintenancePlansService,
         { provide: PrismaService, useValue: prisma },
         { provide: ChangeLogService, useValue: changeLog },
+        { provide: EventEmitter2, useValue: eventEmitter },
       ],
     }).compile();
     service = mod.get(MaintenancePlansService);
@@ -453,11 +456,27 @@ describe('MaintenancePlansService', () => {
       ]);
     });
 
+    it('al crear la orden emite preventive-service.due con el hito y lo que falta', async () => {
+      prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200));
+
+      await service.checkAlert('e1');
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith('preventive-service.due', {
+        equipmentId: 'e1',
+        equipmentCode: 'BD-005',
+        ordenId: 'ot1',
+        milestone: 250,
+        unit: 'h',
+        remaining: 150,
+      });
+    });
+
     it('fuera del margen no avisa', async () => {
       prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(100));
 
       expect(await service.checkAlert('e1')).toBeNull();
       expect(prisma.ordenTrabajo.create).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
 
     it('sin aviso configurado no hace nada', async () => {
@@ -473,6 +492,7 @@ describe('MaintenancePlansService', () => {
 
       expect(await service.checkAlert('e1')).toBeNull();
       expect(prisma.ordenTrabajo.create).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
 
     it('no avisa si el mantenedor ya registró ese hito completo', async () => {

@@ -6,8 +6,13 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { MaintenancePlan, MaintenancePlanItem } from '@prisma/client';
 
+import {
+  DOMAIN_EVENTS,
+  type PreventiveServiceDueEvent,
+} from '../../common/events/domain-events';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   ChangeLogService,
@@ -167,6 +172,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly changeLog: ChangeLogService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async findForEquipment(equipmentId: string): Promise<MaintenancePlanView> {
@@ -399,7 +405,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       ? `Pauta: servicio inicial de ${fmt(next.milestone)} ${unit}`
       : `Pauta: ${fmt(next.milestone)} ${unit} · ciclo ${cycle}`;
 
-    return this.prisma.$transaction(async (tx) => {
+    const ordenId = await this.prisma.$transaction(async (tx) => {
       // Dos revisiones a la vez (la periódica y un guardado) no pueden crear
       // dos tarjetas: se serializan por equipo dentro de la transacción.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`aviso-preventivo:${equipmentId}`}))`;
@@ -445,6 +451,20 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       );
       return orden.id;
     });
+
+    if (ordenId) {
+      // Recién confirmada la orden: el aviso al mantenedor y al administrador
+      // sale una sola vez, junto con la tarjeta (ver NotificationsListener).
+      this.eventEmitter.emit(DOMAIN_EVENTS.PREVENTIVE_SERVICE_DUE, {
+        equipmentId,
+        equipmentCode: equipo.internalCode,
+        ordenId,
+        milestone: next.milestone,
+        unit,
+        remaining: next.remaining,
+      } satisfies PreventiveServiceDueEvent);
+    }
+    return ordenId;
   }
 
   /** Quién cambió la pauta y qué, del cambio más reciente al más viejo. */

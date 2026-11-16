@@ -194,6 +194,29 @@ describe('NotificationsListener', () => {
     );
   });
 
+  it('preventive-service.due notifica a MANTENEDOR + ADMIN con la orden creada', async () => {
+    await listener.onPreventiveServiceDue({
+      equipmentId: 'e1',
+      equipmentCode: 'BD-005',
+      ordenId: 'ot1',
+      milestone: 250,
+      unit: 'h',
+      remaining: 150,
+    });
+
+    expect(createForRoles).toHaveBeenCalledTimes(1);
+    expect(createForRoles).toHaveBeenCalledWith(
+      [ROLES.MANTENEDOR, ROLES.ADMIN],
+      expect.objectContaining({
+        tipo: 'preventive-service.due',
+        titulo: 'Mantención preventiva 250 h: BD-005',
+        cuerpo:
+          'A BD-005 le faltan 150 h para la mantención de las 250 h. La orden ya está en el tablero del taller.',
+        data: { equipmentId: 'e1', ordenId: 'ot1' },
+      }),
+    );
+  });
+
   it('item.low-stock notifica a ADMIN + SUPERVISOR', async () => {
     await listener.onItemLowStock({
       itemId: 'i1',
