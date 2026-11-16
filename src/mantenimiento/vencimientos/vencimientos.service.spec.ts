@@ -28,6 +28,7 @@ describe('VencimientosService (Módulo 4)', () => {
     documentExpiryAlert: { create: jest.fn() },
     equipment: { findMany: jest.fn(), findUnique: jest.fn() },
     maintenancePlan: { findMany: jest.fn() },
+    maintenanceRecord: { findMany: jest.fn() },
     lightVehicleConfig: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
@@ -53,6 +54,17 @@ describe('VencimientosService (Módulo 4)', () => {
     // Sin configuración guardada: valen los valores por defecto.
     prisma.lightVehicleConfig.findMany.mockResolvedValue([]);
     prisma.lightVehicleConfig.findUnique.mockResolvedValue(null);
+    // Sin servicios registrados: vale el múltiplo de 10.000 km.
+    prisma.maintenanceRecord.findMany.mockResolvedValue([]);
+  });
+
+  /** El último servicio registrado de un liviano (su ancla). */
+  const servicio = (equipmentId: string, counterAt: number) => ({
+    equipmentId,
+    milestone: 10_000,
+    cycle: 1,
+    counterAt,
+    doneAt: dia(2026, 9, 1),
   });
 
   describe('checkDocuments', () => {
@@ -174,6 +186,64 @@ describe('VencimientosService (Módulo 4)', () => {
       // eq_2 tiene pauta: ni siquiera se busca su orden.
       expect(tx.ordenTrabajo.findFirst).toHaveBeenCalledTimes(1);
     });
+
+    it('cuenta desde el último servicio registrado', async () => {
+      prisma.equipment.findMany.mockResolvedValue([
+        { ...EQUIPO, currentMileage: 42_700 },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([]);
+      prisma.maintenanceRecord.findMany.mockResolvedValue([
+        servicio('eq_1', 33_500),
+      ]);
+      tx.ordenTrabajo.findFirst.mockResolvedValue(null);
+      tx.ordenTrabajo.create.mockResolvedValue({ id: 'ot_1' });
+
+      // Sin ancla tocaría a los 50.000 (faltan 7.300); con el servicio de los
+      // 33.500, a los 43.500: faltan 800 y ya avisa.
+      expect(await service.checkLightServices()).toBe(1);
+      expect(prisma.maintenanceRecord.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            equipmentId: { in: ['eq_1'] },
+            planItemId: null,
+            kind: 'SERVICIO',
+            counterAt: { not: null },
+          },
+        }),
+      );
+      expect(tx.ordenTrabajo.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          titulo: 'Mantención 43.500 km · CL-001',
+          origenDetalle: 'Livianos: mantención de 43.500 km',
+          prioridad: 'MEDIA',
+        }) as unknown,
+        select: { id: true },
+      });
+    });
+
+    it('no crea otra orden si el equipo ya tiene una preventiva abierta', async () => {
+      prisma.equipment.findMany.mockResolvedValue([
+        { ...EQUIPO, currentMileage: 29_400 },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([]);
+      // Nada con este `origenDetalle`, pero sí una preventiva sin cerrar.
+      tx.ordenTrabajo.findFirst.mockImplementation(
+        ({ where }: { where: { estado?: unknown } }) =>
+          Promise.resolve(where.estado ? { id: 'ot_abierta' } : null),
+      );
+
+      expect(await service.checkLightServices()).toBe(0);
+      expect(tx.ordenTrabajo.create).not.toHaveBeenCalled();
+      expect(events.emit).not.toHaveBeenCalled();
+      expect(tx.ordenTrabajo.findFirst).toHaveBeenCalledWith({
+        where: {
+          equipoId: { in: ['eq_1', 'CL-001'] },
+          origen: 'PREVENTIVO',
+          estado: { in: ['PENDIENTE', 'ASIGNADA', 'EN_PROCESO'] },
+        },
+        select: { id: true },
+      });
+    });
   });
 
   describe('configuración del liviano («Asignar mantenciones»)', () => {
@@ -245,6 +315,34 @@ describe('VencimientosService (Módulo 4)', () => {
         unit: 'km',
         nextAt: 30_000,
         remaining: 6_500,
+        due: false,
+      });
+    });
+
+    it('la próxima mantención del liviano cuenta desde su último servicio', async () => {
+      prisma.equipment.findMany.mockResolvedValue([
+        {
+          ...EQUIPO,
+          type: 'Camioneta',
+          brand: 'Toyota',
+          model: 'Hilux',
+          controlUnit: 'KM',
+          currentMileage: 23_500,
+          currentHourmeter: null,
+          documents: [],
+        },
+      ]);
+      prisma.maintenanceRecord.findMany.mockResolvedValue([
+        servicio('eq_1', 14_800),
+      ]);
+
+      const cal = await service.calendar('2026-10', HOY);
+
+      expect(cal.equipment[0].service).toEqual({
+        source: 'LIVIANO',
+        unit: 'km',
+        nextAt: 24_800,
+        remaining: 1_300,
         due: false,
       });
     });

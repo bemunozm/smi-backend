@@ -109,10 +109,14 @@ export function computeMaintenanceStatus(
     plan.items.filter((i) => i.milestones.includes(hito));
 
   if (anchor && cycleLength != null) {
+    const desde = desdeElAncla(plan, milestones, counter, anchor, itemsDe);
     return {
       ...vacio,
-      positionInCycle: decima(counter % cycleLength),
-      ...desdeElAncla(plan, milestones, counter, anchor, itemsDe),
+      // Con ancla la vuelta no empieza en un múltiplo del ciclo sino en su
+      // origen: `counter % cycleLength` diría otro punto que la próxima. Un
+      // contador corregido por debajo del origen no deja la posición negativa.
+      positionInCycle: Math.max(0, decima(counter - desde.cycleOrigin)),
+      ...desde,
     };
   }
 
@@ -207,7 +211,7 @@ function desdeElAncla(
   counter: number,
   anchor: MaintenanceAnchor,
   itemsDe: (hito: number) => PlanItemForStatus[],
-): Pick<MaintenanceStatus, 'next' | 'estimated' | 'cycleOrigin'> {
+): Pick<MaintenanceStatus, 'next' | 'estimated'> & { cycleOrigin: number } {
   const { milestone: hecho, cycle: vuelta, counterAt } = anchor;
   const largo = milestones[milestones.length - 1];
   // Donde empezó la vuelta del ancla: el horómetro del cambio menos su hito.

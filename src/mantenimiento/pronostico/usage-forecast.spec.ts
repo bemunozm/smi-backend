@@ -167,6 +167,17 @@ describe('forecastMaintenance', () => {
     expect(lejana).toMatchObject({ status: 'LEJANA', estimatedDate: null });
   });
 
+  it('atrasada (lo que falta es negativo): también toca hoy', () => {
+    expect(
+      forecastMaintenance({
+        remaining: -38,
+        rate: { rate: 20, spanDays: 28 },
+        profile: null,
+        today,
+      }),
+    ).toMatchObject({ status: 'TOCA_AHORA', estimatedDate: today });
+  });
+
   it('si ya no falta nada, toca hoy', () => {
     expect(
       forecastMaintenance({ remaining: 0, rate: null, profile: null, today }),

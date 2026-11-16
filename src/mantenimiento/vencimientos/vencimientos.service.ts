@@ -20,6 +20,7 @@ import {
   type DocumentStatus,
 } from '../../equipment/document-expiry';
 import { MaintenancePlansService } from '../maintenance-plans/maintenance-plans.service';
+import { loadLightAnchors } from '../maintenance-plans/maintenance-anchors';
 import type { Editor } from '../../change-log/change-log.service';
 import {
   LIGHT_DOC_ALERT_FIELD,
@@ -41,6 +42,9 @@ const REVISION_MS = 60 * 60 * 1000;
 const PRIMERA_REVISION_MS = 60 * 1000;
 
 const fmt = (n: number) => n.toLocaleString('es-CL');
+
+/** Las órdenes que siguen en el tablero del taller (no cerradas ni canceladas). */
+const ESTADOS_ABIERTOS = ['PENDIENTE', 'ASIGNADA', 'EN_PROCESO'] as const;
 
 /** `YYYY-MM-DD` de una fecha guardada como día (medianoche UTC). */
 const diaDe = (d: Date) => d.toISOString().slice(0, 10);
@@ -234,7 +238,9 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Crea la orden PREVENTIVA de los livianos (sin pauta propia) que están a
-   * 1.000 km o menos de su mantención, una sola por equipo y kilometraje.
+   * 1.000 km o menos de su mantención, una sola por equipo y kilometraje, y
+   * ninguna mientras el equipo tenga otra preventiva abierta. La mantención
+   * se cuenta desde el último servicio registrado (si lo hay).
    */
   async checkLightServices(): Promise<number> {
     const [livianos, conPauta] = await Promise.all([
@@ -255,15 +261,22 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
       this.prisma.maintenancePlan.findMany({ select: { equipmentId: true } }),
     ]);
     const tienePauta = new Set(conPauta.map((p) => p.equipmentId));
-    const avisoKm = await this.avisosKm();
+    const sinPauta = livianos.filter((e) => !tienePauta.has(e.id));
+    const [avisoKm, anclas] = await Promise.all([
+      this.avisosKm(),
+      loadLightAnchors(
+        this.prisma,
+        sinPauta.map((e) => e.id),
+      ),
+    ]);
 
     let creadas = 0;
-    for (const equipo of livianos) {
-      if (tienePauta.has(equipo.id)) continue;
+    for (const equipo of sinPauta) {
       const servicio = nextLightService(
         equipo.currentMileage,
         LIGHT_SERVICE_INTERVAL_KM,
         avisoKm.get(equipo.id),
+        anclas.get(equipo.id)?.counterAt ?? null,
       );
       if (!servicio?.due) continue;
 
@@ -278,6 +291,19 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
           select: { id: true },
         });
         if (existente) return null;
+        // Contado desde el último servicio, el kilometraje puede no coincidir
+        // con el de una orden creada con la regla anterior: mientras haya una
+        // preventiva sin cerrar no se crea otra. `equipoId` es texto libre: el
+        // taller suele guardar el código interno.
+        const abierta = await tx.ordenTrabajo.findFirst({
+          where: {
+            equipoId: { in: [equipo.id, equipo.internalCode] },
+            origen: 'PREVENTIVO',
+            estado: { in: [...ESTADOS_ABIERTOS] },
+          },
+          select: { id: true },
+        });
+        if (abierta) return null;
         const orden = await tx.ordenTrabajo.create({
           data: {
             equipoId: equipo.id,
@@ -361,7 +387,13 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
     const pautas = new Map(
       (await this.plans.statusForAll()).map((p) => [p.equipmentId, p]),
     );
-    const avisoKm = await this.avisosKm();
+    const [avisoKm, anclas] = await Promise.all([
+      this.avisosKm(),
+      loadLightAnchors(
+        this.prisma,
+        equipos.map((e) => e.id),
+      ),
+    ]);
 
     return {
       months,
@@ -400,6 +432,7 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
             counter,
             pautas.get(e.id),
             avisoKm.get(e.id),
+            anclas.get(e.id)?.counterAt ?? null,
           ),
         };
       }),
@@ -413,6 +446,8 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
       | Awaited<ReturnType<MaintenancePlansService['statusForAll']>>[number]
       | undefined,
     alertKm?: number,
+    /** Km del último servicio registrado: la próxima se cuenta desde ahí. */
+    anchorKm: number | null = null,
   ): CalendarService | null {
     if (pauta?.status.next) {
       const next = pauta.status.next;
@@ -429,6 +464,7 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
       counter,
       LIGHT_SERVICE_INTERVAL_KM,
       alertKm,
+      anchorKm,
     );
     if (!liviano) return null;
     return {
@@ -447,6 +483,10 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
   ): Promise<LightConfigView> {
     const equipo = await this.liviano(equipmentId);
     const config = await lightConfigOf(this.prisma, equipmentId);
+    // La misma próxima mantención que el calendario y el aviso.
+    const ancla = (await loadLightAnchors(this.prisma, [equipmentId])).get(
+      equipmentId,
+    );
     const documentos = await this.prisma.equipmentDocument.findMany({
       where: {
         equipmentId,
@@ -479,6 +519,7 @@ export class VencimientosService implements OnModuleInit, OnModuleDestroy {
         equipo.currentMileage,
         undefined,
         config.serviceAlertKm,
+        ancla?.counterAt ?? null,
       ),
       documents: tipos.map((type) => {
         // El más nuevo de ese tipo: es el que está corriendo.

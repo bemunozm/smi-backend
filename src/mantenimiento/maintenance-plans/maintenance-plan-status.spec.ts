@@ -163,6 +163,24 @@ describe('computeMaintenanceStatus con ancla (desde el último cambio real)', ()
     expect(s.cycleOrigin).toBe(10);
   });
 
+  it('anclado: la posición en el ciclo se cuenta desde el origen de la vuelta, no del horómetro total', () => {
+    // Origen 1.980: a las 2.600 h va en las 620 de su vuelta (no en 2.600 % 1.000 = 600).
+    expect(
+      computeMaintenanceStatus(CON_ANCLA, 2_600, ancla(500, 3, 2_480))
+        .positionInCycle,
+    ).toBe(620);
+    // Recién cerrado el ciclo: la vuelta nueva empieza en el cambio.
+    expect(
+      computeMaintenanceStatus(CON_ANCLA, 2_100.25, ancla(1000, 2, 2_030))
+        .positionInCycle,
+    ).toBe(70.3);
+    // Un contador corregido hacia atrás no deja la posición negativa.
+    expect(
+      computeMaintenanceStatus(CON_ANCLA, 2_000, ancla(1000, 2, 2_030))
+        .positionInCycle,
+    ).toBe(0);
+  });
+
   it('atrasado: lo pendiente queda negativo', () => {
     const s = computeMaintenanceStatus(CON_ANCLA, 540, ancla(250, 1, 250));
 

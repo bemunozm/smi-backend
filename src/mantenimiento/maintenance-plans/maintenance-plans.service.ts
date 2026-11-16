@@ -22,9 +22,11 @@ import {
 } from '../../change-log/change-log.service';
 import {
   computeMaintenanceStatus,
+  type MaintenanceAnchor,
   type MaintenanceStatus,
   type PlanItemForStatus,
 } from './maintenance-plan-status';
+import { loadPlanAnchors } from './maintenance-anchors';
 import type {
   MaintenancePlanItemDto,
   SaveMaintenancePlanDto,
@@ -97,6 +99,18 @@ export interface MaintenanceStatusRow {
 }
 
 type PlanConFilas = MaintenancePlan & { items: MaintenancePlanItem[] };
+
+/** La vuelta en curso y el contador en que empieza cada vuelta (ver `vueltas`). */
+interface Vueltas {
+  enCurso: number;
+  base: (vuelta: number) => number | undefined;
+}
+
+/** Sin pauta o sin ancla: vueltas por múltiplos del ciclo, desde la primera. */
+const SIN_VUELTAS: Vueltas = { enCurso: 1, base: () => undefined };
+
+/** Las órdenes que siguen en el tablero del taller (no cerradas ni canceladas). */
+const ESTADOS_ABIERTOS = ['PENDIENTE', 'ASIGNADA', 'EN_PROCESO'] as const;
 
 const EQUIPO_SELECT = {
   id: true,
@@ -181,7 +195,11 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       where: { equipmentId },
       include: { items: true },
     });
-    return this.vista(equipo, plan);
+    return this.vista(
+      equipo,
+      plan,
+      plan ? await this.ancla(equipmentId) : null,
+    );
   }
 
   /** Solo la próxima mantención: lo que usan las tareas preventivas. */
@@ -199,10 +217,14 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       include: { items: true },
     });
     if (planes.length === 0) return [];
-    const equipos = await this.prisma.equipment.findMany({
-      where: { id: { in: planes.map((p) => p.equipmentId) } },
-      select: EQUIPO_SELECT,
-    });
+    const ids = planes.map((p) => p.equipmentId);
+    const [equipos, anclas] = await Promise.all([
+      this.prisma.equipment.findMany({
+        where: { id: { in: ids } },
+        select: EQUIPO_SELECT,
+      }),
+      loadPlanAnchors(this.prisma, ids),
+    ]);
     const porId = new Map(equipos.map((e) => [e.id, e]));
     return planes.flatMap((plan) => {
       const equipo = porId.get(plan.equipmentId);
@@ -220,6 +242,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
               items: filas(plan),
             },
             counter,
+            anclas.get(equipo.id) ?? null,
           ),
         },
       ];
@@ -244,7 +267,9 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       include: { items: true },
     });
     const cambios = this.cambios(actual, nueva);
-    if (actual && cambios.length === 0) return this.vista(equipo, actual);
+    if (actual && cambios.length === 0) {
+      return this.vista(equipo, actual, await this.ancla(equipmentId));
+    }
 
     const guardado = await this.prisma.$transaction(async (tx) => {
       const plan = await tx.maintenancePlan.upsert({
@@ -312,7 +337,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
 
     // Con el umbral recién puesto, el equipo puede ya estar dentro del margen.
     await this.checkAlert(equipmentId);
-    return this.vista(equipo, guardado);
+    return this.vista(equipo, guardado, await this.ancla(equipmentId));
   }
 
   onModuleInit(): void {
@@ -356,8 +381,9 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
    * pauta, crea la orden PREVENTIVA con las operaciones de ese hito como
    * tareas: es la tarjeta que el mantenedor ve en su tablero. Una sola por
    * equipo, hito y vuelta del ciclo — aunque la revisión corra muchas veces,
-   * o la orden ya se haya cerrado o cancelado. Devuelve el id de la orden
-   * creada, o null si no correspondía crear ninguna.
+   * o la orden ya se haya cerrado o cancelado — y ninguna mientras el equipo
+   * tenga otra preventiva abierta. Devuelve el id de la orden creada, o null
+   * si no correspondía crear ninguna.
    */
   async checkAlert(equipmentId: string): Promise<string | null> {
     const plan = await this.prisma.maintenancePlan.findUnique({
@@ -368,26 +394,32 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     const equipo = await this.equipo(equipmentId);
     const { unit, counter } = contadorDe(equipo);
     const items = filas(plan);
-    const { next } = computeMaintenanceStatus(
+    const { next, estimated } = computeMaintenanceStatus(
       {
         milestones: plan.milestones,
         initialMilestone: plan.initialMilestone,
         items,
       },
       counter,
+      await this.ancla(equipmentId),
     );
     if (!next || next.items.length === 0 || next.remaining > plan.alertBefore) {
       return null;
     }
-    // Lo que vencía antes de entrar al sistema ya está hecho.
-    if (plan.baselineCounter != null && next.dueAt < plan.baselineCounter) {
+    // Lo que vencía antes de entrar al sistema ya está hecho. Solo vale para
+    // el respaldo sin ancla: con un cambio real registrado, lo que sigue a él
+    // toca aunque su contador sea anterior a la entrada del equipo.
+    if (
+      estimated &&
+      plan.baselineCounter != null &&
+      next.dueAt < plan.baselineCounter
+    ) {
       return null;
     }
 
-    const cycleLength = Math.max(...plan.milestones);
-    const cycle = next.firstTimeOnly
-      ? 1
-      : currentCycle(next.dueAt, cycleLength);
+    // La vuelta la da la próxima: con ancla sale del último cambio, no del
+    // contador absoluto en que toca.
+    const cycle = next.cycle;
     // Si el mantenedor ya la registró completa en el ciclo, no hay nada que avisar.
     const hechas = await this.prisma.maintenanceRecord.count({
       where: {
@@ -414,6 +446,20 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         select: { id: true },
       });
       if (existente) return null;
+      // Con la vuelta contada desde el ancla, el `origenDetalle` puede no
+      // coincidir con el de una orden creada con la regla anterior: mientras
+      // el equipo tenga una preventiva sin cerrar —de cualquier hito— no se
+      // crea otra. `equipoId` es texto libre: el taller suele guardar el
+      // código interno (ver `OrdenesService.resolveEquipmentId`).
+      const abierta = await tx.ordenTrabajo.findFirst({
+        where: {
+          equipoId: { in: [equipmentId, equipo.internalCode] },
+          origen: 'PREVENTIVO',
+          estado: { in: [...ESTADOS_ABIERTOS] },
+        },
+        select: { id: true },
+      });
+      if (abierta) return null;
       const orden = await tx.ordenTrabajo.create({
         data: {
           equipoId: equipmentId,
@@ -425,8 +471,9 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
           // escribe el registro del ciclo sin parsear `origenDetalle`.
           pautaMilestone: next.milestone,
           pautaCycle: cycle,
-          // Si ya toca (o se pasó), sube de prioridad.
-          prioridad: next.remaining === 0 ? 'ALTA' : 'MEDIA',
+          // Si ya toca o se pasó (con ancla lo que falta queda negativo),
+          // sube de prioridad.
+          prioridad: next.remaining <= 0 ? 'ALTA' : 'MEDIA',
           tareas: {
             create: next.items.map((i, posicion) => ({
               texto: [
@@ -490,7 +537,9 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     const items = filas(plan);
     const milestones = [...(plan?.milestones ?? [])].sort((a, b) => a - b);
     const cycleLength = milestones[milestones.length - 1] ?? null;
-    const enCurso = cycleLength ? currentCycle(counter, cycleLength) : 1;
+    const { enCurso, base } = plan
+      ? this.vueltas(plan, counter, await this.ancla(equipmentId))
+      : SIN_VUELTAS;
     const vuelta = cycle ?? enCurso;
     if (vuelta < 1 || vuelta > enCurso) {
       throw new BadRequestException(
@@ -498,6 +547,9 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    // Con ancla la vuelta empieza en su origen, no en un múltiplo del ciclo.
+    const inicio =
+      cycleLength != null ? (base(vuelta) ?? (vuelta - 1) * cycleLength) : null;
     const records = plan
       ? await this.prisma.maintenanceRecord.findMany({
           where: { equipmentId, cycle: vuelta },
@@ -516,8 +568,9 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       currentCycle: enCurso,
       cycle: vuelta,
       cycleLength,
-      cycleStart: cycleLength != null ? (vuelta - 1) * cycleLength : null,
-      cycleEnd: cycleLength != null ? vuelta * cycleLength : null,
+      cycleStart: inicio,
+      cycleEnd:
+        inicio != null && cycleLength != null ? inicio + cycleLength : null,
       baselineCounter: plan?.baselineCounter ?? null,
       items,
       columns: plan
@@ -529,6 +582,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
             cycle: vuelta,
             counter,
             baselineCounter: plan.baselineCounter,
+            cycleBase: base(vuelta),
           })
         : [],
       records: records.map((r) => ({
@@ -572,8 +626,11 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         'Esa operación no es de la pauta de este equipo.',
       );
     }
-    const cycleLength = Math.max(...plan.milestones);
-    const enCurso = currentCycle(counter, cycleLength);
+    const { enCurso, base } = this.vueltas(
+      plan,
+      counter,
+      await this.ancla(equipmentId),
+    );
     if (dto.cycle > enCurso) {
       throw new BadRequestException(
         `No se puede registrar en el ciclo ${dto.cycle}: el equipo va en el ciclo ${enCurso}.`,
@@ -606,6 +663,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       cycle: dto.cycle,
       counter,
       baselineCounter: plan.baselineCounter,
+      cycleBase: base(dto.cycle),
     });
     const columna = columnas.find((c) => c.milestone === dto.milestone);
     if (columna?.preSystem) {
@@ -671,9 +729,51 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     return equipo;
   }
 
+  /** El último cambio real de la pauta del equipo, o null si nunca registró uno. */
+  private async ancla(equipmentId: string): Promise<MaintenanceAnchor | null> {
+    const anclas = await loadPlanAnchors(this.prisma, [equipmentId]);
+    return anclas.get(equipmentId) ?? null;
+  }
+
+  /**
+   * En qué vuelta va el equipo y dónde empieza cada una (`base`, el contador
+   * de su hito 0). Sin ancla, las vueltas son múltiplos del ciclo sobre el
+   * contador: `base` no da nada y `cycleColumns` usa esos múltiplos. Con
+   * ancla, la vuelta en curso es la de la próxima mantención —o la del ancla
+   * si no hay lectura— y las demás empiezan un ciclo antes o después.
+   */
+  private vueltas(
+    plan: PlanConFilas,
+    counter: number | null,
+    anchor: MaintenanceAnchor | null,
+  ): Vueltas {
+    const cycleLength = Math.max(...plan.milestones);
+    if (!anchor) {
+      return { ...SIN_VUELTAS, enCurso: currentCycle(counter, cycleLength) };
+    }
+    const { next, cycleOrigin } = computeMaintenanceStatus(
+      {
+        milestones: plan.milestones,
+        initialMilestone: plan.initialMilestone,
+        items: [],
+      },
+      counter,
+      anchor,
+    );
+    const enCurso = next?.cycle ?? anchor.cycle;
+    // Sin lectura no hay próxima: la vuelta del ancla empieza en su contador
+    // menos su hito.
+    const origen = cycleOrigin ?? anchor.counterAt - anchor.milestone;
+    return {
+      enCurso,
+      base: (vuelta) => origen + (vuelta - enCurso) * cycleLength,
+    };
+  }
+
   private vista(
     equipo: EquipoParaPauta,
     plan: PlanConFilas | null,
+    anchor: MaintenanceAnchor | null,
   ): MaintenancePlanView {
     const { unit, counter } = contadorDe(equipo);
     const items = filas(plan);
@@ -694,7 +794,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         counter,
       },
       plan: planVista,
-      status: computeMaintenanceStatus(planVista, counter),
+      status: computeMaintenanceStatus(planVista, counter, anchor),
     };
   }
 
