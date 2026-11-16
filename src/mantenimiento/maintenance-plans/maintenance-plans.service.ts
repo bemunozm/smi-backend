@@ -26,7 +26,12 @@ import {
   type MaintenanceStatus,
   type PlanItemForStatus,
 } from './maintenance-plan-status';
-import { loadPlanAnchors, tienePreventivaAbierta } from './maintenance-anchors';
+import {
+  loadLightAnchors,
+  loadPlanAnchors,
+  tienePreventivaAbierta,
+} from './maintenance-anchors';
+import { buildBoardRow, type MaintenanceBoardRow } from './maintenance-board';
 import type {
   MaintenancePlanItemDto,
   SaveMaintenancePlanDto,
@@ -243,6 +248,66 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
           ),
         },
       ];
+    });
+  }
+
+  /**
+   * La pizarra de mantenciones: una fila por equipo (también los fuera de
+   * servicio), en un número fijo de consultas. Aquí solo se leen los datos;
+   * las reglas las arma `buildBoardRow`. El orden es cosa del frontend.
+   */
+  async board(): Promise<MaintenanceBoardRow[]> {
+    const [equipos, planes, configs] = await Promise.all([
+      this.prisma.equipment.findMany({
+        select: {
+          ...EQUIPO_SELECT,
+          type: true,
+          brand: true,
+          model: true,
+          equipmentClass: true,
+          status: true,
+        },
+      }),
+      this.prisma.maintenancePlan.findMany({ include: { items: true } }),
+      this.prisma.lightVehicleConfig.findMany({
+        select: { equipmentId: true, serviceAlertKm: true },
+      }),
+    ]);
+    const planDe = new Map(planes.map((p) => [p.equipmentId, p]));
+    const sinPautaLivianos = equipos
+      .filter(
+        (e) =>
+          !planDe.has(e.id) &&
+          e.equipmentClass === 'LIGHT' &&
+          e.controlUnit === 'KM',
+      )
+      .map((e) => e.id);
+    const [anclasPauta, anclasLivianos] = await Promise.all([
+      loadPlanAnchors(
+        this.prisma,
+        planes.map((p) => p.equipmentId),
+      ),
+      loadLightAnchors(this.prisma, sinPautaLivianos),
+    ]);
+    const avisoKm = new Map(
+      configs.map((c) => [c.equipmentId, c.serviceAlertKm]),
+    );
+    return equipos.map((equipo) => {
+      const plan = planDe.get(equipo.id);
+      return buildBoardRow({
+        equipo,
+        plan: plan
+          ? {
+              milestones: plan.milestones,
+              initialMilestone: plan.initialMilestone,
+              alertBefore: plan.alertBefore,
+              items: filas(plan),
+            }
+          : null,
+        planAnchor: anclasPauta.get(equipo.id) ?? null,
+        lightAnchor: anclasLivianos.get(equipo.id) ?? null,
+        lightAlertKm: avisoKm.get(equipo.id) ?? null,
+      });
     });
   }
 

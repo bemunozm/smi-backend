@@ -30,6 +30,7 @@ describe('MaintenancePlansService', () => {
     ordenTrabajo: { findFirst: jest.fn(), create: jest.fn() },
     $executeRaw: jest.fn(),
     inventoryItem: { count: jest.fn() },
+    lightVehicleConfig: { findMany: jest.fn() },
     $transaction: jest.fn(),
   };
   const changeLog = { record: jest.fn(), findFor: jest.fn() };
@@ -643,6 +644,66 @@ describe('MaintenancePlansService', () => {
       prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200));
 
       expect(await service.checkAll()).toBe(1);
+    });
+  });
+  describe('board', () => {
+    it('devuelve una fila por equipo, con consultas fijas', async () => {
+      const base = {
+        brand: 'CAT',
+        model: 'X',
+        status: 'OPERATIONAL',
+        currentHourmeter: null,
+        currentMileage: null,
+      };
+      prisma.equipment.findMany.mockResolvedValue([
+        {
+          ...base,
+          id: 'e1',
+          internalCode: 'BD-005',
+          type: 'Bulldozer',
+          equipmentClass: 'HEAVY',
+          controlUnit: 'HOURS',
+          currentHourmeter: 2100,
+        },
+        {
+          ...base,
+          id: 'e2',
+          internalCode: 'LV-001',
+          type: 'Camioneta',
+          equipmentClass: 'LIGHT',
+          controlUnit: 'KM',
+          currentMileage: 24000,
+          status: 'OUT_OF_SERVICE',
+        },
+        {
+          ...base,
+          id: 'e3',
+          internalCode: 'GR-001',
+          type: 'Grua',
+          equipmentClass: 'HEAVY',
+          controlUnit: 'HOURS',
+        },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([
+        { ...guardada(pauta), equipmentId: 'e1', alertBefore: 20 },
+      ]);
+      prisma.lightVehicleConfig.findMany.mockResolvedValue([
+        { equipmentId: 'e2', serviceAlertKm: 1500 },
+      ]);
+      prisma.maintenanceRecord.findMany.mockResolvedValue([]);
+
+      const filas = await service.board();
+
+      expect(filas.map((f) => [f.equipmentId, f.source])).toEqual([
+        ['e1', 'PAUTA'],
+        ['e2', 'LIVIANO'],
+        ['e3', 'SIN_PAUTA'],
+      ]);
+      expect(filas[1].alertBefore).toBe(1500);
+      expect(prisma.equipment.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.maintenancePlan.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.lightVehicleConfig.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.maintenanceRecord.findMany).toHaveBeenCalledTimes(2);
     });
   });
 });
