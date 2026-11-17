@@ -1,4 +1,8 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -81,6 +85,9 @@ describe('OrdenesService', () => {
   const ordenTrabajoFindUnique = jest.fn();
   const ordenTrabajoCreate = jest.fn();
   const ordenTrabajoUpdate = jest.fn();
+  const ordenTrabajoDelete = jest.fn();
+  const intervencionFindMany = jest.fn();
+  const deleteBestEffort = jest.fn();
   const tareaOTFindUnique = jest.fn();
   const tareaOTUpdate = jest.fn();
   const tareaOTFindMany = jest.fn();
@@ -113,6 +120,10 @@ describe('OrdenesService', () => {
     ordenTrabajoFindUnique.mockReset();
     ordenTrabajoCreate.mockReset();
     ordenTrabajoUpdate.mockReset();
+    ordenTrabajoDelete.mockReset();
+    intervencionFindMany.mockReset();
+    intervencionFindMany.mockResolvedValue([]);
+    deleteBestEffort.mockReset();
     tareaOTFindUnique.mockReset();
     tareaOTUpdate.mockReset();
     tareaOTFindMany.mockReset();
@@ -179,6 +190,8 @@ describe('OrdenesService', () => {
               create: ordenTrabajoCreate,
               update: ordenTrabajoUpdate,
             },
+            intervencion: { findMany: intervencionFindMany },
+            maintenancePlanItem: { findMany: planItemFindMany },
             tareaOT: {
               findUnique: tareaOTFindUnique,
               update: tareaOTUpdate,
@@ -206,6 +219,7 @@ describe('OrdenesService', () => {
                   findUnique: ordenTrabajoFindUnique,
                   create: ordenTrabajoCreate,
                   update: ordenTrabajoUpdate,
+                  delete: ordenTrabajoDelete,
                 },
                 hallazgo: {
                   findUnique: hallazgoFindUnique,
@@ -238,7 +252,10 @@ describe('OrdenesService', () => {
               }),
           },
         },
-        { provide: StorageService, useValue: { claimTmp, sign, discard } },
+        {
+          provide: StorageService,
+          useValue: { claimTmp, sign, discard, deleteBestEffort },
+        },
         { provide: StockService, useValue: { issue: stockIssue, emitPending } },
         { provide: EventEmitter2, useValue: { emit } },
       ],
@@ -574,6 +591,243 @@ describe('OrdenesService', () => {
         ),
       ).rejects.toThrow('db caída');
       expect(discard).toHaveBeenCalledWith('claimed/tmp/foto.jpg');
+    });
+  });
+
+  describe('responsable de la orden (pedido 17/11: no más «Sin asignar»)', () => {
+    /** El argumento `data` de la última escritura de la orden. */
+    const ultimaData = () => {
+      const calls = ordenTrabajoUpdate.mock.calls as unknown as Array<
+        [{ data: Record<string, unknown> }]
+      >;
+      return calls[calls.length - 1][0].data;
+    };
+
+    it('quien la pasa a EN_PROCESO queda asignado si no había nadie', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        asignadoAId: null,
+        estado: 'PENDIENTE',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+      });
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+
+      await service.update(
+        'orden_1',
+        { estado: 'EN_PROCESO' } as never,
+        MOCK_MANTENEDOR,
+      );
+
+      expect(ultimaData().asignadoAId).toBe('user_mantenedor');
+    });
+
+    it('no pisa a quien ya estaba asignado', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        asignadoAId: 'otro_mantenedor',
+        estado: 'PENDIENTE',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+      });
+      userFindMany.mockResolvedValue([]);
+
+      await service.update(
+        'orden_1',
+        { estado: 'EN_PROCESO' } as never,
+        MOCK_MANTENEDOR,
+      );
+
+      expect(ultimaData().asignadoAId).toBeUndefined();
+    });
+
+    it('marcar una tarea deja como responsable a quien la hizo', async () => {
+      tareaOTFindUnique.mockResolvedValue({
+        id: 'tarea_a',
+        ordenId: 'orden_prev',
+        planItemId: 'item_a',
+        texto: 'Cambio de aceite',
+      });
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        asignadoAId: null,
+        estado: 'EN_PROCESO',
+      });
+      tareaOTUpdate.mockResolvedValue({
+        id: 'tarea_a',
+        texto: 'Cambio de aceite',
+        hecha: true,
+        posicion: 0,
+        notas: null,
+        fotoKey: null,
+      });
+      // Falta otra tarea: la orden no cambia de estado.
+      tareaOTFindMany.mockResolvedValue([{ hecha: true }, { hecha: false }]);
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'EN_PROCESO',
+      });
+
+      await service.updateTarea(
+        'orden_prev',
+        'tarea_a',
+        { hecha: true },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(ultimaData()).toEqual({ asignadoAId: 'user_mantenedor' });
+    });
+  });
+
+  describe('remove (eliminar una operación)', () => {
+    it('borra una operación en proceso y devuelve su hallazgo a ABIERTO', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        hallazgoId: 'h1',
+        estado: 'EN_PROCESO',
+      });
+
+      await expect(
+        service.remove('orden_1', {}, MOCK_MANTENEDOR),
+      ).resolves.toEqual({ registradaComoHecha: false });
+
+      expect(hallazgoUpdateMany).toHaveBeenCalledWith({
+        where: { id: 'h1', estado: 'EN_PROCESO' },
+        data: { estado: 'ABIERTO' },
+      });
+      expect(ordenTrabajoDelete).toHaveBeenCalledWith({
+        where: { id: 'orden_1' },
+      });
+      expect(recordCreateMany).not.toHaveBeenCalled();
+      // Los registros que la apuntaban quedan sin orden (no apuntan a una borrada).
+      expect(recordUpdateMany).toHaveBeenCalledWith({
+        where: { ordenId: 'orden_1' },
+        data: { ordenId: null },
+      });
+    });
+
+    it('una preventiva «ya hecha» registra sus operaciones en el hito antes de borrarse', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        equipoId: 'eq_flota_1',
+        estado: 'EN_PROCESO',
+      });
+      planItemFindMany.mockResolvedValue([
+        { id: 'item_a', description: 'Cambio de aceite', kind: 'LUBRICANTE' },
+        { id: 'item_b', description: 'Cambio de filtro', kind: 'FILTRO' },
+      ]);
+
+      await expect(
+        service.remove('orden_prev', { yaHecha: true }, MOCK_MANTENEDOR),
+      ).resolves.toEqual({ registradaComoHecha: true });
+
+      const calls = recordCreateMany.mock.calls as unknown as Array<
+        [{ data: Array<Record<string, unknown>> }]
+      >;
+      expect(calls[0][0].data).toEqual([
+        expect.objectContaining({
+          planItemId: 'item_a',
+          cycle: 1,
+          milestone: 250,
+        }),
+        expect.objectContaining({
+          planItemId: 'item_b',
+          cycle: 1,
+          milestone: 250,
+        }),
+      ]);
+      expect(ordenTrabajoDelete).toHaveBeenCalledWith({
+        where: { id: 'orden_prev' },
+      });
+    });
+
+    it('«ya hecha» en una orden que no es de la pauta → 400 sin borrar', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'PENDIENTE',
+      });
+
+      await expect(
+        service.remove('orden_1', { yaHecha: true }, MOCK_MANTENEDOR),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(ordenTrabajoDelete).not.toHaveBeenCalled();
+    });
+
+    it('una orden de pauta anterior al hito estructurado («Pauta: 1.250 h · ciclo 2») también se registra', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        equipoId: 'eq_flota_1',
+        estado: 'PENDIENTE',
+        origenDetalle: 'Pauta: 1.250 h · ciclo 2',
+        pautaCycle: null,
+        pautaMilestone: null,
+        // Sus tareas no apuntan a la pauta.
+        tareas: MOCK_PREVENTIVA.tareas.map((t) => ({ ...t, planItemId: null })),
+      });
+      // Las operaciones de la pauta del equipo que tocan a las 1.250 h.
+      planItemFindMany.mockResolvedValue([
+        { id: 'item_a', description: 'Cambio de aceite', kind: 'LUBRICANTE' },
+        { id: 'item_b', description: 'Cambio de filtro', kind: 'FILTRO' },
+      ]);
+
+      await expect(
+        service.remove('orden_prev', { yaHecha: true }, MOCK_MANTENEDOR),
+      ).resolves.toEqual({ registradaComoHecha: true });
+
+      expect(planItemFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            plan: { equipmentId: 'eq_flota_1' },
+            milestones: { has: 1250 },
+          },
+        }),
+      );
+      const calls = recordCreateMany.mock.calls as unknown as Array<
+        [{ data: Array<Record<string, unknown>> }]
+      >;
+      expect(calls[0][0].data).toEqual([
+        expect.objectContaining({
+          planItemId: 'item_a',
+          cycle: 2,
+          milestone: 1250,
+        }),
+        expect.objectContaining({
+          planItemId: 'item_b',
+          cycle: 2,
+          milestone: 1250,
+        }),
+      ]);
+      expect(ordenTrabajoDelete).toHaveBeenCalled();
+    });
+
+    it('una finalizada no se borra (es historial) → 409', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'COMPLETADA',
+      });
+
+      await expect(
+        service.remove('orden_1', {}, MOCK_MANTENEDOR),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(ordenTrabajoDelete).not.toHaveBeenCalled();
+    });
+
+    it('borra del bucket las fotos de sus tareas e intervenciones', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+        tareas: [{ ...MOCK_ORDEN.tareas[0], fotoKey: 'tareas/t1.jpg' }],
+      });
+      intervencionFindMany.mockResolvedValue([{ fotoKey: 'int/i1.jpg' }]);
+
+      await service.remove('orden_1', {}, MOCK_MANTENEDOR);
+
+      expect(deleteBestEffort).toHaveBeenCalledWith('tareas/t1.jpg');
+      expect(deleteBestEffort).toHaveBeenCalledWith('int/i1.jpg');
     });
   });
 

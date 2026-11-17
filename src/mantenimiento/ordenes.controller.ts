@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   Param,
@@ -17,6 +18,7 @@ import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
 import { CreateMantencionHistoricaDto } from './dto/create-mantencion-historica.dto';
 import { CreateOrdenDto } from './dto/create-orden.dto';
+import { DeleteOrdenQueryDto } from './dto/delete-orden-query.dto';
 import { FindOrdenesQueryDto } from './dto/find-ordenes-query.dto';
 import type { OrdenResponseDto } from './dto/orden-response.dto';
 import type { TareaResponseDto } from './dto/tarea-response.dto';
@@ -106,6 +108,31 @@ export class OrdenesController {
       expected,
     );
     return { data, message: 'Orden de trabajo actualizada' };
+  }
+
+  /**
+   * Borra una operación pendiente o en proceso (las finalizadas son
+   * historial). Con `yaHecha=true` una preventiva de la pauta queda
+   * registrada como hecha antes de borrarla.
+   */
+  @Delete(':id')
+  @Roles([ROLES.ADMIN, ROLES.MANTENEDOR])
+  async remove(
+    @Param('id') id: string,
+    @Query() query: DeleteOrdenQueryDto,
+    @Session() session: UserSession,
+  ): Promise<{ data: { registradaComoHecha: boolean }; message: string }> {
+    assertNonEmptyId(id);
+    const data = await this.ordenesService.remove(id, query, {
+      id: session.user.id,
+      name: session.user.name,
+    });
+    return {
+      data,
+      message: data.registradaComoHecha
+        ? 'Mantención registrada como hecha y operación eliminada'
+        : 'Operación eliminada',
+    };
   }
 
   @Patch(':ordenId/tareas/:tareaId')
