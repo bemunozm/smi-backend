@@ -1,11 +1,24 @@
-import { IsNumber, Max, Min } from 'class-validator';
+import { TipoOT } from '@prisma/client';
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 import { IsDateOnly } from '../../../shifts/date-only';
 
 /**
  * `PATCH /maintenance-plans/:equipmentId/last-change` — el administrador
- * corrige desde la pizarra la fecha y la lectura del último cambio (un error
- * de tipeo). El hito y la vuelta no cambian: solo cuándo y con qué contador.
+ * corrige desde la pizarra el último cambio con los mismos datos con que se
+ * registra una mantención anterior (`CreateMantencionHistoricaDto`): fecha,
+ * lectura, hito y, si el cambio tiene una orden ligada, sus datos (título,
+ * tipo, quién la hizo y observaciones). Mismos topes que esa alta.
  */
 export class CorrectLastChangeDto {
   /** `YYYY-MM-DD` del cambio. El servicio exige que no sea futura. */
@@ -18,4 +31,34 @@ export class CorrectLastChangeDto {
   @Min(0)
   @Max(1_000_000)
   counterAt!: number;
+
+  /** Hito de la pauta que se hizo (o el servicio inicial). Solo en un equipo
+   * con pauta: cambiarlo reemplaza los registros del cambio. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  milestone?: number;
+
+  /** CORRECTIVA: deja de contar como cambio (solo una mantención anterior). */
+  @IsOptional()
+  @IsEnum(TipoOT)
+  tipo?: TipoOT;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  titulo?: string;
+
+  /** Quién la hizo (solo una mantención anterior). Vacío la deja sin nombre. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  realizadaPor?: string;
+
+  /** Solo una mantención anterior. Vacío las borra. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  observaciones?: string;
 }

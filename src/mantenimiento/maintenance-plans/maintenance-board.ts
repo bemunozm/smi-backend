@@ -4,7 +4,7 @@
  * el de los livianos (`computeMaintenanceStatus`, `nextLightService`): la
  * pizarra no puede mostrar un «próximo cambio» distinto al del aviso.
  */
-import type { EquipmentStatus } from '@prisma/client';
+import type { EquipmentStatus, TipoOT } from '@prisma/client';
 
 import {
   LIGHT_SERVICE_ALERT_KM,
@@ -32,7 +32,7 @@ export interface MaintenanceBoardRow {
   milestones: number[];
   initialMilestone: number | null;
   /** El último cambio real (el ancla); `null` si el equipo nunca registró uno. */
-  lastChange: { milestone: number; counterAt: number; doneAt: string } | null;
+  lastChange: MaintenanceBoardLastChange | null;
   /** Horas o km entre un cambio y el siguiente. */
   interval: number | null;
   nextMilestone: number | null;
@@ -44,6 +44,36 @@ export interface MaintenanceBoardRow {
   estimated: boolean;
   /** Las operaciones del próximo hito. */
   items: PlanItemForStatus[];
+}
+
+/**
+ * El último cambio de la pizarra con los datos de la orden que lo escribió,
+ * para que «Editar último cambio» los muestre y corrija. Sin orden ligada
+ * (`ordenId` nulo) los datos de la orden van nulos y solo se corrigen fecha,
+ * lectura e hito.
+ */
+export interface MaintenanceBoardLastChange {
+  milestone: number;
+  counterAt: number;
+  doneAt: string;
+  ordenId: string | null;
+  tipo: TipoOT | null;
+  titulo: string | null;
+  /** Quién la hizo: solo en una mantención anterior (en el taller, null). */
+  realizadaPor: string | null;
+  /** Solo en una mantención anterior (en el taller, null). */
+  observaciones: string | null;
+  /** La orden es una mantención anterior (registro histórico), no del taller. */
+  historica: boolean;
+}
+
+/** Los datos de la orden ligada al último cambio que muestra la pizarra. */
+export interface LastChangeOrder {
+  tipo: TipoOT;
+  titulo: string;
+  realizadaPor: string | null;
+  observaciones: string | null;
+  historica: boolean;
 }
 
 export interface BoardEquipment {
@@ -76,16 +106,29 @@ export interface BoardRowInput {
   lightAnchor: MaintenanceAnchor | null;
   /** Los km de aviso configurados del liviano; sin ellos, el de defecto. */
   lightAlertKm: number | null;
+  /** Las órdenes ligadas a los últimos cambios, por id. */
+  orders?: ReadonlyMap<string, LastChangeOrder>;
 }
 
-const lastChangeDe = (a: MaintenanceAnchor | null) =>
-  a
-    ? {
-        milestone: a.milestone,
-        counterAt: a.counterAt,
-        doneAt: a.doneAt.toISOString(),
-      }
-    : null;
+const lastChangeDe = (
+  a: MaintenanceAnchor | null,
+  orders: ReadonlyMap<string, LastChangeOrder> | undefined,
+): MaintenanceBoardLastChange | null => {
+  if (!a) return null;
+  // Una orden borrada cuenta como sin orden: no hay qué corregir en ella.
+  const orden = a.ordenId ? orders?.get(a.ordenId) : undefined;
+  return {
+    milestone: a.milestone,
+    counterAt: a.counterAt,
+    doneAt: a.doneAt.toISOString(),
+    ordenId: orden && a.ordenId ? a.ordenId : null,
+    tipo: orden?.tipo ?? null,
+    titulo: orden?.titulo ?? null,
+    realizadaPor: orden?.realizadaPor ?? null,
+    observaciones: orden?.observaciones ?? null,
+    historica: orden?.historica ?? false,
+  };
+};
 
 export function buildBoardRow(input: BoardRowInput): MaintenanceBoardRow {
   const { equipo, plan } = input;
@@ -130,7 +173,7 @@ export function buildBoardRow(input: BoardRowInput): MaintenanceBoardRow {
       source: 'PAUTA',
       milestones: [...plan.milestones].sort((a, b) => a - b),
       initialMilestone: plan.initialMilestone,
-      lastChange: lastChangeDe(status.anchor),
+      lastChange: lastChangeDe(status.anchor, input.orders),
       interval: next?.interval ?? null,
       nextMilestone: next?.milestone ?? null,
       dueAt: next?.dueAt ?? null,
@@ -153,7 +196,7 @@ export function buildBoardRow(input: BoardRowInput): MaintenanceBoardRow {
       source: 'LIVIANO',
       milestones: [],
       initialMilestone: null,
-      lastChange: lastChangeDe(input.lightAnchor),
+      lastChange: lastChangeDe(input.lightAnchor, input.orders),
       interval: LIGHT_SERVICE_INTERVAL_KM,
       nextMilestone: LIGHT_SERVICE_INTERVAL_KM,
       dueAt: liviano?.nextKm ?? null,

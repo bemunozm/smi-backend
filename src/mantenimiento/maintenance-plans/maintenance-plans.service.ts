@@ -9,6 +9,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   EstadoOT,
+  TipoOT,
   type MaintenancePlan,
   type MaintenancePlanItem,
   type Prisma,
@@ -39,12 +40,20 @@ import {
 import {
   assertLecturaNoBajaDeAnterior,
   assertLecturaNoSuperaActual,
+  esMantencionHistorica,
   LIGHT_SERVICE_RECORD_KIND,
   loadLightAnchors,
   loadPlanAnchors,
+  notaLecturaHistorica,
+  observacionesHistorica,
+  origenDetalleHistorica,
   tienePreventivaAbierta,
 } from './maintenance-anchors';
-import { buildBoardRow, type MaintenanceBoardRow } from './maintenance-board';
+import {
+  buildBoardRow,
+  type LastChangeOrder,
+  type MaintenanceBoardRow,
+} from './maintenance-board';
 import type {
   MaintenancePlanItemDto,
   SaveMaintenancePlanDto,
@@ -170,6 +179,41 @@ function filas(plan: PlanConFilas | null): PlanItemForStatus[] {
 }
 
 const fmt = (n: number) => n.toLocaleString('es-CL');
+
+/** Cómo se lee el tipo de una orden en el registro de cambios. */
+const TIPO_LABEL: Record<TipoOT, string> = {
+  PREVENTIVA: 'Preventiva',
+  CORRECTIVA: 'Correctiva',
+};
+
+/** Lo que se lee de la orden ligada a un último cambio. */
+const ORDEN_LIGADA_SELECT = {
+  id: true,
+  titulo: true,
+  tipo: true,
+  origen: true,
+  origenDetalle: true,
+  tareas: {
+    select: { id: true, hechaPorNombre: true },
+    orderBy: { posicion: 'asc' },
+  },
+} satisfies Prisma.OrdenTrabajoSelect;
+
+type OrdenLigada = Prisma.OrdenTrabajoGetPayload<{
+  select: typeof ORDEN_LIGADA_SELECT;
+}>;
+
+/** La orden ligada como la muestra la pizarra. */
+function ordenLigada(o: OrdenLigada): LastChangeOrder {
+  const historica = esMantencionHistorica(o);
+  return {
+    tipo: o.tipo,
+    titulo: o.titulo,
+    realizadaPor: historica ? (o.tareas[0]?.hechaPorNombre ?? null) : null,
+    observaciones: historica ? observacionesHistorica(o.origenDetalle) : null,
+    historica,
+  };
+}
 /**
  * Quién figura en un registro que escribe el sistema sin usuario detrás (las
  * órdenes del aviso no tienen autor).
@@ -327,6 +371,11 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     const avisoKm = new Map(
       configs.map((c) => [c.equipmentId, c.serviceAlertKm]),
     );
+    // Las órdenes de los últimos cambios, en una sola consulta más.
+    const orders = await this.ordenesLigadas([
+      ...anclasPauta.values(),
+      ...anclasLivianos.values(),
+    ]);
     return equipos.map((equipo) => {
       const plan = planDe.get(equipo.id);
       return buildBoardRow({
@@ -342,8 +391,30 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         planAnchor: anclasPauta.get(equipo.id) ?? null,
         lightAnchor: anclasLivianos.get(equipo.id) ?? null,
         lightAlertKm: avisoKm.get(equipo.id) ?? null,
+        orders,
       });
     });
+  }
+
+  /**
+   * Los datos de las órdenes ligadas a esos últimos cambios, por id: lo que
+   * «Editar último cambio» muestra para corregir. Quién la hizo y las
+   * observaciones son de una mantención anterior; en una del taller van nulos.
+   */
+  private async ordenesLigadas(
+    anclas: MaintenanceAnchor[],
+  ): Promise<Map<string, LastChangeOrder>> {
+    const ids = [
+      ...new Set(
+        anclas.map((a) => a.ordenId).filter((id): id is string => !!id),
+      ),
+    ];
+    if (ids.length === 0) return new Map();
+    const ordenes = await this.prisma.ordenTrabajo.findMany({
+      where: { id: { in: ids } },
+      select: ORDEN_LIGADA_SELECT,
+    });
+    return new Map(ordenes.map((o) => [o.id, ordenLigada(o)]));
   }
 
   /**
@@ -438,11 +509,16 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * El administrador corrige desde la pizarra la fecha y la lectura del
-   * último cambio (un error de tipeo). Se corrigen TODOS los registros de ese
-   * cambio —en la pauta, una fila por operación del hito y vuelta; en un
-   * liviano sin pauta, su servicio—, sin mover el hito ni la vuelta. Todo se
-   * valida antes de escribir y queda en el registro de cambios de la pauta.
+   * El administrador corrige desde la pizarra el último cambio con los mismos
+   * datos con que se registra una mantención anterior. Fecha y lectura se
+   * corrigen en TODOS los registros del cambio —en la pauta, una fila por
+   * operación del hito y vuelta; en un liviano sin pauta, su servicio—. Con
+   * otro hito (solo con pauta) el cambio se reemplaza por los registros de
+   * ese hito. Título, tipo, quién la hizo y observaciones son de la orden
+   * ligada al cambio (`MaintenanceRecord.ordenId`); sin orden no se pueden
+   * corregir. Pasarla a CORRECTIVA (solo una mantención anterior) la saca
+   * del ancla. Todo se valida antes de escribir, va en una transacción y
+   * queda en el registro de cambios de la pauta.
    */
   async correctLastChange(
     equipmentId: string,
@@ -460,7 +536,15 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     // si no, el servicio del liviano en km.
     const plan = await this.prisma.maintenancePlan.findUnique({
       where: { equipmentId },
-      select: { id: true },
+      select: {
+        id: true,
+        milestones: true,
+        initialMilestone: true,
+        items: {
+          select: { id: true, description: true, kind: true, milestones: true },
+          orderBy: { position: 'asc' },
+        },
+      },
     });
     const liviano = !plan && equipo.equipmentClass === 'LIGHT' && unit === 'km';
     const ancla = plan
@@ -473,6 +557,85 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         'El equipo no tiene un último cambio registrado.',
       );
     }
+    // Los registros del cambio: los del hito y vuelta, o el del servicio.
+    const grupo: Prisma.MaintenanceRecordWhereInput = plan
+      ? {
+          equipmentId,
+          planItemId: { not: null },
+          cycle: ancla.cycle,
+          milestone: ancla.milestone,
+        }
+      : {
+          equipmentId,
+          planItemId: null,
+          kind: LIGHT_SERVICE_RECORD_KIND,
+          cycle: ancla.cycle,
+        };
+
+    // La orden ligada; si se borró, cuenta como sin orden.
+    const orden = ancla.ordenId
+      ? await this.prisma.ordenTrabajo.findUnique({
+          where: { id: ancla.ordenId },
+          select: ORDEN_LIGADA_SELECT,
+        })
+      : null;
+    const pidioOrden = [
+      dto.titulo,
+      dto.tipo,
+      dto.realizadaPor,
+      dto.observaciones,
+    ].some((v) => v !== undefined);
+    if (!orden && pidioOrden) {
+      throw new BadRequestException(
+        'Este último cambio no tiene una orden asociada: solo se pueden corregir fecha, lectura e hito.',
+      );
+    }
+    const vigente = orden ? ordenLigada(orden) : null;
+    const historica = vigente?.historica ?? false;
+
+    // Lo que cambia de la orden. Lo que llega igual a lo guardado no cuenta:
+    // el formulario manda todo lo que muestra. Vacío deja sin nombre o sin
+    // observaciones.
+    const realizadaPor =
+      dto.realizadaPor !== undefined ? dto.realizadaPor.trim() || null : null;
+    const observaciones =
+      dto.observaciones !== undefined ? dto.observaciones.trim() || null : null;
+    const titulo =
+      vigente && dto.titulo !== undefined && dto.titulo !== vigente.titulo
+        ? dto.titulo
+        : null;
+    const tipo =
+      vigente && dto.tipo !== undefined && dto.tipo !== vigente.tipo
+        ? dto.tipo
+        : null;
+    const cambiaRealizadaPor =
+      vigente != null &&
+      dto.realizadaPor !== undefined &&
+      realizadaPor !== vigente.realizadaPor;
+    const cambianObservaciones =
+      vigente != null &&
+      dto.observaciones !== undefined &&
+      observaciones !== vigente.observaciones;
+    // Quién la hizo y las observaciones son de la mantención anterior: en una
+    // orden del taller cada tarea tiene su autor y el origen es el del aviso.
+    if (!historica && cambiaRealizadaPor) {
+      throw new BadRequestException(
+        'Quién la realizó solo se corrige en una mantención anterior: esta mantención es una orden del taller.',
+      );
+    }
+    if (!historica && cambianObservaciones) {
+      throw new BadRequestException(
+        'Las observaciones solo se corrigen en una mantención anterior: esta mantención es una orden del taller.',
+      );
+    }
+    // Pasar a correctiva saca el cambio del ancla: solo en una mantención
+    // anterior (una orden del taller sí fue la preventiva del aviso).
+    if (tipo && !historica) {
+      throw new BadRequestException(
+        'Solo una mantención anterior puede cambiar de tipo: esta mantención es una orden del taller.',
+      );
+    }
+    const quitaAncla = tipo === TipoOT.CORRECTIVA;
 
     // Futuro no, como en la mantención anterior: hoy (en horario de faena) sí.
     if (dto.doneAt > todayInBusinessTimeZone(new Date())) {
@@ -481,23 +644,94 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       );
     }
     assertLecturaNoSuperaActual(dto.counterAt, counter);
-    // La anterior es la del mismo tipo de ancla, sin el propio cambio: si no,
-    // corregir la lectura hacia abajo chocaría consigo misma.
-    const anteriores = plan
-      ? await loadPlanAnchors(this.prisma, [equipmentId], {
-          cycle: ancla.cycle,
-          milestone: ancla.milestone,
-        })
-      : await loadLightAnchors(this.prisma, [equipmentId], {
-          cycle: ancla.cycle,
-        });
-    const anterior = anteriores.get(equipmentId);
-    assertLecturaNoBajaDeAnterior(dto.counterAt, anterior);
-    // Tampoco puede quedar antes que el cambio previo: el mismo día sí.
-    if (anterior && dto.doneAt < todayInBusinessTimeZone(anterior.doneAt)) {
+
+    // Otro hito: mismas reglas que la mantención anterior. La vuelta sale de
+    // la lectura (el servicio inicial, siempre la primera).
+    const cambiaHito =
+      dto.milestone !== undefined && dto.milestone !== ancla.milestone;
+    if (cambiaHito && !plan) {
       throw new BadRequestException(
-        'La fecha del último cambio no puede ser anterior a la del cambio previo.',
+        'Un liviano sin pauta no tiene hitos: solo se corrigen la fecha y el kilometraje.',
       );
+    }
+    if (cambiaHito && quitaAncla) {
+      throw new BadRequestException(
+        'Solo una mantención preventiva cuenta para la pauta.',
+      );
+    }
+    let nuevoHito: {
+      cycle: number;
+      milestone: number;
+      items: { id: string; description: string; kind: string }[];
+    } | null = null;
+    if (plan && cambiaHito && dto.milestone !== undefined) {
+      const milestone = dto.milestone;
+      const esInicial = milestone === plan.initialMilestone;
+      if (!esInicial && !plan.milestones.includes(milestone)) {
+        throw new BadRequestException(
+          'Ese hito no pertenece a la pauta del equipo',
+        );
+      }
+      const items = plan.items.filter((i) => i.milestones.includes(milestone));
+      if (items.length === 0) {
+        throw new BadRequestException(
+          'Esa mantención no tiene operaciones en la pauta',
+        );
+      }
+      const largoCiclo = Math.max(0, ...plan.milestones);
+      nuevoHito = {
+        cycle: esInicial ? 1 : currentCycle(dto.counterAt, largoCiclo),
+        milestone,
+        items,
+      };
+      // Reemplazar no puede pisar otra mantención ya registrada.
+      const ocupado = await this.prisma.maintenanceRecord.count({
+        where: {
+          equipmentId,
+          planItemId: { not: null },
+          cycle: nuevoHito.cycle,
+          milestone,
+        },
+      });
+      if (ocupado > 0) {
+        throw new BadRequestException(
+          `Ya hay una mantención registrada en el hito de ${fmt(milestone)} del ciclo ${nuevoHito.cycle}.`,
+        );
+      }
+    }
+
+    // La anterior es la del mismo tipo de ancla, sin el propio cambio: si no,
+    // corregir la lectura hacia abajo chocaría consigo misma. Si deja de ser
+    // cambio (correctiva), no tiene que quedar después de nada.
+    if (!quitaAncla) {
+      const anteriores = plan
+        ? await loadPlanAnchors(this.prisma, [equipmentId], {
+            cycle: ancla.cycle,
+            milestone: ancla.milestone,
+          })
+        : await loadLightAnchors(this.prisma, [equipmentId], {
+            cycle: ancla.cycle,
+          });
+      const anterior = anteriores.get(equipmentId);
+      assertLecturaNoBajaDeAnterior(dto.counterAt, anterior);
+      // Tampoco puede quedar antes que el cambio previo: el mismo día sí.
+      if (anterior && dto.doneAt < todayInBusinessTimeZone(anterior.doneAt)) {
+        throw new BadRequestException(
+          'La fecha del último cambio no puede ser anterior a la del cambio previo.',
+        );
+      }
+      // Con otro hito tiene que seguir siendo el último de la secuencia.
+      if (
+        anterior &&
+        nuevoHito &&
+        (nuevoHito.cycle < anterior.cycle ||
+          (nuevoHito.cycle === anterior.cycle &&
+            nuevoHito.milestone < anterior.milestone))
+      ) {
+        throw new BadRequestException(
+          'Con ese hito el último cambio quedaría antes que la mantención previa.',
+        );
+      }
     }
 
     const etiquetaContador = unit === 'km' ? 'Kilometraje' : 'Horómetro';
@@ -507,7 +741,9 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     // hora de Chile) mostraría el día anterior.
     const doneAt = new Date(`${dto.doneAt}T12:00:00.000Z`);
     const despuesFecha = formatBusinessDate(doneAt);
-    if (antesFecha !== despuesFecha) {
+    const cambiaFecha = antesFecha !== despuesFecha;
+    const cambiaLectura = ancla.counterAt !== dto.counterAt;
+    if (cambiaFecha) {
       cambios.push({
         field: 'lastChange.doneAt',
         label: 'Fecha último cambio',
@@ -515,7 +751,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         after: despuesFecha,
       });
     }
-    if (ancla.counterAt !== dto.counterAt) {
+    if (cambiaLectura) {
       cambios.push({
         field: 'lastChange.counterAt',
         label: `${etiquetaContador} último cambio`,
@@ -523,39 +759,150 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         after: `${fmt(dto.counterAt)} ${unit}`,
       });
     }
-
-    if (cambios.length > 0) {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.maintenanceRecord.updateMany({
-          where: plan
-            ? {
-                equipmentId,
-                planItemId: { not: null },
-                cycle: ancla.cycle,
-                milestone: ancla.milestone,
-              }
-            : {
-                equipmentId,
-                planItemId: null,
-                kind: LIGHT_SERVICE_RECORD_KIND,
-                cycle: ancla.cycle,
-              },
-          data: { counterAt: dto.counterAt, doneAt },
-        });
-        await this.changeLog.record(
-          tx,
-          'maintenance_plan',
-          equipmentId,
-          editor,
-          cambios,
-        );
+    if (nuevoHito) {
+      cambios.push({
+        field: 'lastChange.milestone',
+        label: 'Hito último cambio',
+        before: `${fmt(ancla.milestone)} ${unit}`,
+        after: `${fmt(nuevoHito.milestone)} ${unit}`,
       });
-      // Con el ancla corregida la próxima mantención puede quedar dentro del
-      // margen de aviso. El de un liviano sin pauta lo crea la revisión
-      // periódica de `VencimientosService` (que ya depende de este servicio:
-      // llamarla desde acá sería una dependencia circular).
-      if (plan) await this.checkAlert(equipmentId);
     }
+    if (vigente && titulo) {
+      cambios.push({
+        field: 'lastChange.titulo',
+        label: 'Título último cambio',
+        before: vigente.titulo,
+        after: titulo,
+      });
+    }
+    if (vigente && tipo) {
+      cambios.push({
+        field: 'lastChange.tipo',
+        label: 'Tipo último cambio',
+        before: TIPO_LABEL[vigente.tipo],
+        after: TIPO_LABEL[tipo],
+      });
+    }
+    if (vigente && cambiaRealizadaPor) {
+      cambios.push({
+        field: 'lastChange.realizadaPor',
+        label: 'Realizada por (último cambio)',
+        before: vigente.realizadaPor ?? '—',
+        after: realizadaPor ?? '—',
+      });
+    }
+    if (vigente && cambianObservaciones) {
+      cambios.push({
+        field: 'lastChange.observaciones',
+        label: 'Observaciones último cambio',
+        before: vigente.observaciones ?? '—',
+        after: observaciones ?? '—',
+      });
+    }
+
+    if (cambios.length === 0) {
+      const [fila] = await this.filasPizarra(equipmentId);
+      return fila;
+    }
+
+    // Quién figura en los registros del otro hito: el del cambio que
+    // reemplazan (o quien la realizó, si se corrige).
+    const autor = nuevoHito
+      ? await this.prisma.maintenanceRecord.findFirst({
+          where: grupo,
+          select: { doneById: true, doneByName: true },
+        })
+      : null;
+    const nombreRealizada =
+      historica && cambiaRealizadaPor && realizadaPor ? realizadaPor : null;
+
+    await this.prisma.$transaction(async (tx) => {
+      if (quitaAncla) {
+        // Una correctiva no es un cambio real: el equipo queda con el ancla
+        // anterior (o sin ella).
+        await tx.maintenanceRecord.deleteMany({ where: grupo });
+      } else if (nuevoHito) {
+        const { cycle, milestone, items } = nuevoHito;
+        await tx.maintenanceRecord.deleteMany({ where: grupo });
+        await tx.maintenanceRecord.createMany({
+          data: items.map((item) => ({
+            equipmentId,
+            planItemId: item.id,
+            cycle,
+            milestone,
+            description: item.description,
+            kind: item.kind,
+            counterAt: dto.counterAt,
+            doneAt,
+            doneById: autor?.doneById ?? editor.id,
+            doneByName: nombreRealizada ?? autor?.doneByName ?? editor.name,
+            ordenId: orden?.id ?? null,
+          })),
+        });
+      } else if (cambiaFecha || cambiaLectura || nombreRealizada) {
+        await tx.maintenanceRecord.updateMany({
+          where: grupo,
+          data: {
+            counterAt: dto.counterAt,
+            doneAt,
+            // Como en la mantención anterior: el registro lleva quién la hizo.
+            ...(nombreRealizada ? { doneByName: nombreRealizada } : {}),
+          },
+        });
+      }
+
+      if (orden) {
+        const datosOrden: Prisma.OrdenTrabajoUpdateInput = {
+          ...(titulo ? { titulo } : {}),
+          ...(tipo ? { tipo } : {}),
+          ...(cambianObservaciones
+            ? { origenDetalle: origenDetalleHistorica(observaciones) }
+            : {}),
+        };
+        if (Object.keys(datosOrden).length > 0) {
+          await tx.ordenTrabajo.update({
+            where: { id: orden.id },
+            data: datosOrden,
+          });
+        }
+        // La tarea de la mantención anterior cuenta lo mismo que el cambio:
+        // su fecha, la nota de la lectura, quién y qué (ver `createHistorica`).
+        if (historica) {
+          const datosTarea: Prisma.TareaOTUpdateManyMutationInput = {
+            ...(cambiaFecha ? { hechaAt: doneAt } : {}),
+            ...(cambiaLectura
+              ? {
+                  notas: notaLecturaHistorica(
+                    dto.counterAt,
+                    equipo.controlUnit,
+                  ),
+                }
+              : {}),
+            ...(cambiaRealizadaPor ? { hechaPorNombre: realizadaPor } : {}),
+            ...(titulo ? { texto: titulo } : {}),
+          };
+          if (Object.keys(datosTarea).length > 0) {
+            await tx.tareaOT.updateMany({
+              where: { ordenId: orden.id },
+              data: datosTarea,
+            });
+          }
+        }
+      }
+
+      await this.changeLog.record(
+        tx,
+        'maintenance_plan',
+        equipmentId,
+        editor,
+        cambios,
+      );
+    });
+    // Con el ancla corregida la próxima mantención puede quedar dentro del
+    // margen de aviso. El de un liviano sin pauta lo crea la revisión
+    // periódica de `VencimientosService` (que ya depende de este servicio:
+    // llamarla desde acá sería una dependencia circular).
+    if (plan) await this.checkAlert(equipmentId);
 
     const [fila] = await this.filasPizarra(equipmentId);
     return fila;
@@ -766,6 +1113,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     tx: Prisma.TransactionClient,
     equipmentId: string,
     orden: {
+      id: string;
       updatedAt: Date;
       createdById: string | null;
       tareas: { planItemId: string | null; texto: string }[];
@@ -792,6 +1140,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
             // Las órdenes del aviso no tienen autor: las creó el sistema.
             doneById: orden.createdById ?? SISTEMA_ID,
             doneByName: 'Sistema (cierre previo)',
+            ordenId: orden.id,
           },
         ];
       }),

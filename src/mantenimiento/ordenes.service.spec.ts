@@ -418,8 +418,10 @@ describe('OrdenesService', () => {
             equipmentId: MOCK_PREVENTIVA.equipoId,
             counterAt: 245,
             doneByName: EDITOR.name,
+            // El registro queda ligado a la orden que lo escribió.
+            ordenId: 'orden_prev',
           }),
-          update: {},
+          update: { ordenId: 'orden_prev' },
         }),
       );
       expect(ordenTrabajoUpdate).toHaveBeenCalledWith(
@@ -902,8 +904,10 @@ describe('OrdenesService', () => {
             doneAt,
             doneById: 'u_admin',
             doneByName: 'Admin SMI',
+            // El ancla queda ligada a la orden de la mantención anterior.
+            ordenId: 'orden_hist',
           },
-          update: { counterAt: 1_250, doneAt },
+          update: { counterAt: 1_250, doneAt, ordenId: 'orden_hist' },
         });
         expect(ordenTrabajoCreate).toHaveBeenCalledTimes(1);
       });
@@ -949,6 +953,7 @@ describe('OrdenesService', () => {
             counterAt: 30_000,
             doneById: 'u_admin',
             doneByName: 'Admin SMI',
+            ordenId: 'orden_hist',
             doneAt: new Date('2025-06-15T12:00:00.000Z'),
           },
         });
@@ -1575,6 +1580,8 @@ describe('OrdenesService', () => {
           counterAt: 31_000,
           doneById: MOCK_MANTENEDOR.id,
           doneByName: MOCK_MANTENEDOR.name,
+          // El servicio queda ligado a la orden que lo cerró.
+          ordenId: 'orden_liv',
         },
       });
     });
@@ -1714,6 +1721,7 @@ describe('OrdenesService', () => {
         counterAt: 240,
         doneById: MOCK_MANTENEDOR.id,
         doneByName: MOCK_MANTENEDOR.name,
+        ordenId: 'orden_prev',
       });
       expect(planItemFindMany).toHaveBeenCalledWith({
         where: { id: { in: ['item_a', 'item_b'] } },
@@ -1727,6 +1735,8 @@ describe('OrdenesService', () => {
         skipDuplicates: true,
       });
       expect(ultimaLlamada(recordUpdateMany).data.counterAt).toBe(240);
+      // Las marcas del hito también quedan ligadas a la orden que lo cerró.
+      expect(ultimaLlamada(recordUpdateMany).data.ordenId).toBe('orden_prev');
       // Las tareas quedan como estaban: solo el hito se da por hecho.
       expect(tareaOTUpdate).not.toHaveBeenCalled();
     });

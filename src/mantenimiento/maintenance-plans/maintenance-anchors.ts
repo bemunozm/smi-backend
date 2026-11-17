@@ -78,6 +78,54 @@ export function loadLightAnchors(
 const NUM_CL = new Intl.NumberFormat('es-CL', { maximumFractionDigits: 1 });
 
 /**
+ * Cómo empieza el `origenDetalle` de una mantención anterior (registro
+ * histórico, `OrdenesService.createHistorica`); las observaciones van detrás.
+ */
+export const HISTORICA_ORIGEN_DETALLE =
+  'Mantención anterior (registro histórico)';
+
+/** El `origenDetalle` de una mantención anterior, con sus observaciones. */
+export function origenDetalleHistorica(
+  observaciones: string | null | undefined,
+): string {
+  return observaciones
+    ? `${HISTORICA_ORIGEN_DETALLE}: ${observaciones}`
+    : HISTORICA_ORIGEN_DETALLE;
+}
+
+/** La orden es una mantención anterior (no una del taller). */
+export function esMantencionHistorica(orden: {
+  origen: string;
+  origenDetalle: string | null;
+}): boolean {
+  return (
+    orden.origen === 'MANUAL' &&
+    (orden.origenDetalle?.startsWith(HISTORICA_ORIGEN_DETALLE) ?? false)
+  );
+}
+
+/** Las observaciones de una mantención anterior (lo que va tras el prefijo). */
+export function observacionesHistorica(
+  origenDetalle: string | null,
+): string | null {
+  if (!origenDetalle?.startsWith(`${HISTORICA_ORIGEN_DETALLE}: `)) return null;
+  return origenDetalle.slice(HISTORICA_ORIGEN_DETALLE.length + 2) || null;
+}
+
+/**
+ * La nota de lectura de la tarea de una mantención anterior, con la unidad
+ * del equipo: kilometraje (`controlUnit` KM) u horómetro.
+ */
+export function notaLecturaHistorica(
+  lectura: number,
+  controlUnit: string,
+): string {
+  return controlUnit === 'KM'
+    ? `Kilometraje al momento de la mantención: ${NUM_CL.format(lectura)} km`
+    : `Horómetro al momento de la mantención: ${NUM_CL.format(lectura)} h`;
+}
+
+/**
  * La lectura de una mantención no puede pasar la lectura actual del equipo.
  * La comparten el cierre de una orden, la mantención anterior y la corrección
  * del último cambio desde la pizarra.
@@ -164,19 +212,35 @@ async function ultimos(
       cycle: true,
       counterAt: true,
       doneAt: true,
+      ordenId: true,
     },
   });
   // Vienen del último cambio de la secuencia hacia atrás: el primero de cada
   // equipo es su ancla. Un hito tiene una fila por operación, cada una con el
   // contador de cuando se marcó: manda la última.
   for (const r of registros) {
-    if (anclas.has(r.equipmentId) || r.counterAt == null) continue;
-    anclas.set(r.equipmentId, {
-      milestone: r.milestone,
-      cycle: r.cycle,
-      counterAt: r.counterAt,
-      doneAt: r.doneAt,
-    });
+    if (r.counterAt == null) continue;
+    const ancla = anclas.get(r.equipmentId);
+    if (!ancla) {
+      anclas.set(r.equipmentId, {
+        milestone: r.milestone,
+        cycle: r.cycle,
+        counterAt: r.counterAt,
+        doneAt: r.doneAt,
+        ordenId: r.ordenId ?? null,
+      });
+      continue;
+    }
+    // La orden del cambio es la de cualquier fila del grupo (mismo hito y
+    // vuelta): la que manda puede ser una marca de la grilla, sin orden.
+    if (
+      ancla.ordenId == null &&
+      r.ordenId &&
+      r.cycle === ancla.cycle &&
+      r.milestone === ancla.milestone
+    ) {
+      ancla.ordenId = r.ordenId;
+    }
   }
   return anclas;
 }
