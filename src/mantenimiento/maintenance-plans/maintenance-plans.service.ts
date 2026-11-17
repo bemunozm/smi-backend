@@ -180,6 +180,12 @@ function filas(plan: PlanConFilas | null): PlanItemForStatus[] {
 
 const fmt = (n: number) => n.toLocaleString('es-CL');
 
+/** El hito de un cambio que respalda una orden del taller no se corrige. */
+const hitoDelTaller = () =>
+  new BadRequestException(
+    'El hito de una mantención hecha por el taller no se puede cambiar.',
+  );
+
 /** Corregir el hito del último cambio no puede pisar otra mantención. */
 const hitoOcupado = (h: { cycle: number; milestone: number }) =>
   new BadRequestException(
@@ -669,9 +675,7 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     // `pautaCycle`): con otro hito en los registros, la reparación de
     // `checkAlert` volvería a escribir los del hito de la orden.
     if (cambiaHito && orden && !historica) {
-      throw new BadRequestException(
-        'El hito de una mantención hecha por el taller no se puede cambiar.',
-      );
+      throw hitoDelTaller();
     }
     let nuevoHito: {
       cycle: number;
@@ -825,6 +829,22 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
             },
           });
           if (ocupado > 0) throw hitoOcupado(nuevoHito);
+          // Sin orden ligada (relleno ambiguo), una orden del aviso cerrada de
+          // este hito y vuelta igual lo respalda: la reparación de `checkAlert`
+          // volvería a escribir sus registros. Se trata como orden del taller.
+          if (!orden) {
+            const delTaller = await tx.ordenTrabajo.findFirst({
+              where: {
+                equipoId: { in: [equipmentId, equipo.internalCode] },
+                estado: EstadoOT.COMPLETADA,
+                origen: 'PREVENTIVO',
+                pautaCycle: ancla.cycle,
+                pautaMilestone: ancla.milestone,
+              },
+              select: { id: true },
+            });
+            if (delTaller) throw hitoDelTaller();
+          }
         }
         if (quitaAncla) {
           // Una correctiva no es un cambio real: el equipo queda con el ancla

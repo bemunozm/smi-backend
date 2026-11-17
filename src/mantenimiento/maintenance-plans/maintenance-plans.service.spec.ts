@@ -1316,6 +1316,33 @@ describe('MaintenancePlansService', () => {
         expect(prisma.$transaction).not.toHaveBeenCalled();
       });
 
+      it('sin orden ligada, rechaza otro hito si lo respalda una orden del aviso cerrada', async () => {
+        conAnclas();
+        prisma.ordenTrabajo.findFirst.mockResolvedValueOnce({ id: 'ot_vieja' });
+
+        await expect(
+          service.correctLastChange(
+            'e1',
+            { doneAt: '2026-11-10', counterAt: 2_050, milestone: 1000 },
+            editor,
+          ),
+        ).rejects.toThrow(
+          'El hito de una mantención hecha por el taller no se puede cambiar.',
+        );
+        expect(prisma.ordenTrabajo.findFirst).toHaveBeenCalledWith({
+          where: {
+            equipoId: { in: ['e1', 'BD-005'] },
+            estado: 'COMPLETADA',
+            origen: 'PREVENTIVO',
+            pautaCycle: 2,
+            pautaMilestone: 500,
+          },
+          select: { id: true },
+        });
+        expect(prisma.maintenanceRecord.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.maintenanceRecord.createMany).not.toHaveBeenCalled();
+      });
+
       it('si otro registro ocupa el hito en medio, responde 400 y no 500', async () => {
         conAnclas();
         prisma.maintenanceRecord.createMany.mockRejectedValueOnce(
