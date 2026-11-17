@@ -18,6 +18,10 @@ import {
   DOMAIN_EVENTS,
   type PreventiveServiceDueEvent,
 } from '../../common/events/domain-events';
+import {
+  formatBusinessDate,
+  todayInBusinessTimeZone,
+} from '../../common/dates/business-time';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   ChangeLogService,
@@ -33,6 +37,9 @@ import {
   type PlanItemForStatus,
 } from './maintenance-plan-status';
 import {
+  assertLecturaNoBajaDeAnterior,
+  assertLecturaNoSuperaActual,
+  LIGHT_SERVICE_RECORD_KIND,
   loadLightAnchors,
   loadPlanAnchors,
   tienePreventivaAbierta,
@@ -43,6 +50,7 @@ import type {
   SaveMaintenancePlanDto,
 } from './dto/save-maintenance-plan.dto';
 import type { SetMaintenanceRecordDto } from './dto/set-maintenance-record.dto';
+import type { CorrectLastChangeDto } from './dto/correct-last-change.dto';
 import {
   currentCycle,
   cycleColumns,
@@ -267,9 +275,21 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
    * servicio), en un número fijo de consultas. Aquí solo se leen los datos;
    * las reglas las arma `buildBoardRow`. El orden es cosa del frontend.
    */
-  async board(): Promise<MaintenanceBoardRow[]> {
+  board(): Promise<MaintenanceBoardRow[]> {
+    return this.filasPizarra();
+  }
+
+  /**
+   * Las filas de la pizarra; con `equipmentId`, solo la de ese equipo (la
+   * que devuelve una corrección), con las mismas reglas que la pizarra entera.
+   */
+  private async filasPizarra(
+    equipmentId?: string,
+  ): Promise<MaintenanceBoardRow[]> {
+    const soloEquipo = equipmentId ? { equipmentId } : undefined;
     const [equipos, planes, configs] = await Promise.all([
       this.prisma.equipment.findMany({
+        where: equipmentId ? { id: equipmentId } : undefined,
         select: {
           ...EQUIPO_SELECT,
           type: true,
@@ -279,8 +299,12 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
           status: true,
         },
       }),
-      this.prisma.maintenancePlan.findMany({ include: { items: true } }),
+      this.prisma.maintenancePlan.findMany({
+        where: soloEquipo,
+        include: { items: true },
+      }),
       this.prisma.lightVehicleConfig.findMany({
+        where: soloEquipo,
         select: { equipmentId: true, serviceAlertKm: true },
       }),
     ]);
@@ -411,6 +435,121 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
     // Con el umbral recién puesto, el equipo puede ya estar dentro del margen.
     await this.checkAlert(equipmentId);
     return this.vista(equipo, guardado, await this.ancla(equipmentId));
+  }
+
+  /**
+   * El administrador corrige desde la pizarra la fecha y la lectura del
+   * último cambio (un error de tipeo). Se corrigen TODOS los registros de ese
+   * cambio —en la pauta, una fila por operación del hito y vuelta; en un
+   * liviano sin pauta, su servicio—, sin mover el hito ni la vuelta. Todo se
+   * valida antes de escribir y queda en el registro de cambios de la pauta.
+   */
+  async correctLastChange(
+    equipmentId: string,
+    dto: CorrectLastChangeDto,
+    editor: Editor,
+  ): Promise<MaintenanceBoardRow> {
+    const equipo = await this.prisma.equipment.findUnique({
+      where: { id: equipmentId },
+      select: { ...EQUIPO_SELECT, equipmentClass: true },
+    });
+    if (!equipo) throw new NotFoundException('Equipo no encontrado');
+    const { unit, counter } = contadorDe(equipo);
+
+    // El ancla es la misma que muestra la pizarra: la de la pauta si tiene;
+    // si no, el servicio del liviano en km.
+    const plan = await this.prisma.maintenancePlan.findUnique({
+      where: { equipmentId },
+      select: { id: true },
+    });
+    const liviano = !plan && equipo.equipmentClass === 'LIGHT' && unit === 'km';
+    const ancla = plan
+      ? (await loadPlanAnchors(this.prisma, [equipmentId])).get(equipmentId)
+      : liviano
+        ? (await loadLightAnchors(this.prisma, [equipmentId])).get(equipmentId)
+        : undefined;
+    if (!ancla) {
+      throw new BadRequestException(
+        'El equipo no tiene un último cambio registrado.',
+      );
+    }
+
+    // Futuro no, como en la mantención anterior: hoy (en horario de faena) sí.
+    if (dto.doneAt > todayInBusinessTimeZone(new Date())) {
+      throw new BadRequestException(
+        'La fecha del último cambio no puede ser futura.',
+      );
+    }
+    assertLecturaNoSuperaActual(dto.counterAt, counter);
+    // La anterior es la del mismo tipo de ancla, sin el propio cambio: si no,
+    // corregir la lectura hacia abajo chocaría consigo misma.
+    const anteriores = plan
+      ? await loadPlanAnchors(this.prisma, [equipmentId], {
+          cycle: ancla.cycle,
+          milestone: ancla.milestone,
+        })
+      : await loadLightAnchors(this.prisma, [equipmentId], {
+          cycle: ancla.cycle,
+        });
+    assertLecturaNoBajaDeAnterior(dto.counterAt, anteriores.get(equipmentId));
+
+    const etiquetaContador = unit === 'km' ? 'Kilometraje' : 'Horómetro';
+    const cambios: FieldChange[] = [];
+    const antesFecha = formatBusinessDate(ancla.doneAt);
+    // Mediodía UTC, como la mantención anterior: a medianoche UTC la UI (en
+    // hora de Chile) mostraría el día anterior.
+    const doneAt = new Date(`${dto.doneAt}T12:00:00.000Z`);
+    const despuesFecha = formatBusinessDate(doneAt);
+    if (antesFecha !== despuesFecha) {
+      cambios.push({
+        field: 'lastChange.doneAt',
+        label: 'Fecha último cambio',
+        before: antesFecha,
+        after: despuesFecha,
+      });
+    }
+    if (ancla.counterAt !== dto.counterAt) {
+      cambios.push({
+        field: 'lastChange.counterAt',
+        label: `${etiquetaContador} último cambio`,
+        before: `${fmt(ancla.counterAt)} ${unit}`,
+        after: `${fmt(dto.counterAt)} ${unit}`,
+      });
+    }
+
+    if (cambios.length > 0) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.maintenanceRecord.updateMany({
+          where: plan
+            ? {
+                equipmentId,
+                planItemId: { not: null },
+                cycle: ancla.cycle,
+                milestone: ancla.milestone,
+              }
+            : {
+                equipmentId,
+                planItemId: null,
+                kind: LIGHT_SERVICE_RECORD_KIND,
+                cycle: ancla.cycle,
+              },
+          data: { counterAt: dto.counterAt, doneAt },
+        });
+        await this.changeLog.record(
+          tx,
+          'maintenance_plan',
+          equipmentId,
+          editor,
+          cambios,
+        );
+      });
+      // Con el ancla corregida la próxima mantención puede quedar dentro del
+      // margen de aviso.
+      if (plan) await this.checkAlert(equipmentId);
+    }
+
+    const [fila] = await this.filasPizarra(equipmentId);
+    return fila;
   }
 
   onModuleInit(): void {

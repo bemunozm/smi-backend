@@ -27,6 +27,7 @@ describe('MaintenancePlansService', () => {
       deleteMany: jest.fn(),
       count: jest.fn(),
       createMany: jest.fn(),
+      updateMany: jest.fn(),
     },
     ordenTrabajo: {
       findFirst: jest.fn(),
@@ -821,6 +822,241 @@ describe('MaintenancePlansService', () => {
       expect(prisma.maintenancePlan.findMany).toHaveBeenCalledTimes(1);
       expect(prisma.lightVehicleConfig.findMany).toHaveBeenCalledTimes(1);
       expect(prisma.maintenanceRecord.findMany).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('corregir el último cambio', () => {
+    /** Un registro de mantención como lo lee `loadPlanAnchors`/`loadLightAnchors`. */
+    const registro = (
+      equipmentId: string,
+      milestone: number,
+      cycle: number,
+      counterAt: number,
+      doneAt = new Date('2026-11-10T15:00:00.000Z'),
+    ) => ({ equipmentId, milestone, cycle, counterAt, doneAt });
+
+    const LV = {
+      id: 'e2',
+      internalCode: 'LV-001',
+      controlUnit: 'KM',
+      equipmentClass: 'LIGHT',
+      currentHourmeter: null,
+      currentMileage: 30_000,
+    };
+
+    beforeEach(() => {
+      // `clearAllMocks` no vacía los `mockResolvedValueOnce` que una prueba
+      // rechazada antes de leerlos deja en cola.
+      prisma.maintenanceRecord.findMany.mockReset().mockResolvedValue([]);
+      prisma.equipment.findUnique.mockResolvedValue({
+        ...D6,
+        equipmentClass: 'HEAVY',
+      });
+      prisma.maintenancePlan.findUnique.mockResolvedValue({ id: 'p1' });
+      prisma.equipment.findMany.mockResolvedValue([
+        {
+          ...D6,
+          type: 'Bulldozer',
+          brand: 'CAT',
+          model: 'D6',
+          equipmentClass: 'HEAVY',
+          status: 'OPERATIONAL',
+        },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([
+        { ...guardada(pauta), equipmentId: 'e1', alertBefore: null },
+      ]);
+      prisma.lightVehicleConfig.findMany.mockResolvedValue([]);
+    });
+
+    /** La consulta de «la anterior»: la segunda lectura de registros. */
+    const segundaLectura = () =>
+      (prisma.maintenanceRecord.findMany.mock.calls[1] as unknown[])[0];
+
+    /** El ancla (500 del ciclo 2 a las 2.050 h) y la anterior (250 a las 1.800 h). */
+    const conAnclas = () =>
+      prisma.maintenanceRecord.findMany
+        .mockResolvedValueOnce([registro('e1', 500, 2, 2_050)])
+        .mockResolvedValueOnce([registro('e1', 250, 2, 1_800)]);
+
+    it('corrige todos los registros del hito y vuelta del último cambio', async () => {
+      conAnclas();
+
+      const fila = await service.correctLastChange(
+        'e1',
+        { doneAt: '2026-11-09', counterAt: 2_040 },
+        editor,
+      );
+
+      expect(prisma.maintenanceRecord.updateMany).toHaveBeenCalledWith({
+        where: {
+          equipmentId: 'e1',
+          planItemId: { not: null },
+          cycle: 2,
+          milestone: 500,
+        },
+        data: {
+          counterAt: 2_040,
+          doneAt: new Date('2026-11-09T12:00:00.000Z'),
+        },
+      });
+      // La anterior se busca dejando fuera el propio hito y vuelta.
+      expect(segundaLectura()).toMatchObject({
+        where: { NOT: { cycle: 2, milestone: 500 } },
+      });
+      expect(fila).toMatchObject({ equipmentId: 'e1', source: 'PAUTA' });
+    });
+
+    it('en un liviano sin pauta corrige su último servicio', async () => {
+      prisma.equipment.findUnique.mockResolvedValue(LV);
+      prisma.maintenancePlan.findUnique.mockResolvedValue(null);
+      prisma.equipment.findMany.mockResolvedValue([
+        {
+          ...LV,
+          type: 'Camioneta',
+          brand: 'Toyota',
+          model: 'Hilux',
+          status: 'OPERATIONAL',
+        },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([]);
+      prisma.maintenanceRecord.findMany
+        .mockResolvedValueOnce([registro('e2', 10_000, 3, 29_000)])
+        .mockResolvedValueOnce([registro('e2', 10_000, 2, 20_000)]);
+
+      const fila = await service.correctLastChange(
+        'e2',
+        { doneAt: '2026-11-01', counterAt: 28_500 },
+        editor,
+      );
+
+      expect(prisma.maintenanceRecord.updateMany).toHaveBeenCalledWith({
+        where: {
+          equipmentId: 'e2',
+          planItemId: null,
+          kind: 'SERVICIO',
+          cycle: 3,
+        },
+        data: {
+          counterAt: 28_500,
+          doneAt: new Date('2026-11-01T12:00:00.000Z'),
+        },
+      });
+      expect(segundaLectura()).toMatchObject({
+        where: { NOT: { cycle: 3 } },
+      });
+      expect((changeLog.record.mock.calls[0] as unknown[])[4]).toContainEqual(
+        expect.objectContaining({ label: 'Kilometraje último cambio' }),
+      );
+      expect(fila).toMatchObject({ equipmentId: 'e2', source: 'LIVIANO' });
+    });
+
+    it('rechaza una fecha futura', async () => {
+      conAnclas();
+
+      await expect(
+        service.correctLastChange(
+          'e1',
+          { doneAt: '2999-01-01', counterAt: 2_040 },
+          editor,
+        ),
+      ).rejects.toThrow('no puede ser futura');
+      expect(prisma.maintenanceRecord.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rechaza una lectura mayor que la actual del equipo', async () => {
+      conAnclas();
+
+      await expect(
+        service.correctLastChange(
+          'e1',
+          { doneAt: '2026-11-09', counterAt: 2_200 },
+          editor,
+        ),
+      ).rejects.toThrow('no puede ser mayor que la lectura actual del equipo');
+      expect(prisma.maintenanceRecord.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rechaza una lectura menor que la del cambio anterior', async () => {
+      conAnclas();
+
+      await expect(
+        service.correctLastChange(
+          'e1',
+          { doneAt: '2026-11-09', counterAt: 1_700 },
+          editor,
+        ),
+      ).rejects.toThrow('no puede ser menor que la de la mantención anterior');
+      expect(prisma.maintenanceRecord.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('sin último cambio no hay nada que corregir', async () => {
+      prisma.maintenanceRecord.findMany.mockResolvedValue([]);
+
+      await expect(
+        service.correctLastChange(
+          'e1',
+          { doneAt: '2026-11-09', counterAt: 2_040 },
+          editor,
+        ),
+      ).rejects.toThrow('El equipo no tiene un último cambio registrado.');
+      expect(prisma.maintenanceRecord.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('un pesado sin pauta tampoco tiene último cambio', async () => {
+      prisma.maintenancePlan.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.correctLastChange(
+          'e1',
+          { doneAt: '2026-11-09', counterAt: 2_040 },
+          editor,
+        ),
+      ).rejects.toThrow('El equipo no tiene un último cambio registrado.');
+    });
+
+    it('deja en el registro de la pauta quién corrigió y qué', async () => {
+      conAnclas();
+
+      await service.correctLastChange(
+        'e1',
+        { doneAt: '2026-11-09', counterAt: 2_040 },
+        editor,
+      );
+
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'maintenance_plan',
+        'e1',
+        editor,
+        [
+          {
+            field: 'lastChange.doneAt',
+            label: 'Fecha último cambio',
+            before: '10-11-2026',
+            after: '09-11-2026',
+          },
+          {
+            field: 'lastChange.counterAt',
+            label: 'Horómetro último cambio',
+            before: '2.050 h',
+            after: '2.040 h',
+          },
+        ],
+      );
+    });
+
+    it('si nada cambia no escribe nada', async () => {
+      conAnclas();
+
+      await service.correctLastChange(
+        'e1',
+        { doneAt: '2026-11-10', counterAt: 2_050 },
+        editor,
+      );
+
+      expect(prisma.maintenanceRecord.updateMany).not.toHaveBeenCalled();
+      expect(changeLog.record).not.toHaveBeenCalled();
     });
   });
 });

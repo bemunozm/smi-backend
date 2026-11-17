@@ -102,4 +102,19 @@ describe('loadLightAnchors', () => {
 
     expect(anclas.get('e1')).toMatchObject({ cycle: 3, counterAt: 30_100 });
   });
+
+  it('`excluir` deja fuera el servicio de una vuelta: la anterior es la de antes', async () => {
+    const { db, findMany } = baseCon([
+      fila(10_000, 3, 30_100, 1),
+      fila(10_000, 2, 20_500, 9),
+    ]);
+
+    await loadLightAnchors(db, ['e1'], { cycle: 3 });
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ NOT: { cycle: 3 } }) as unknown,
+      }),
+    );
+  });
 });

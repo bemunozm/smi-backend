@@ -7,6 +7,7 @@
  * y acepta el `tx` de una transacción: el cierre de una OT escribe el ancla y
  * la vuelve a leer dentro de la misma.
  */
+import { BadRequestException } from '@nestjs/common';
 import { EstadoOT, type Prisma } from '@prisma/client';
 
 import type { PrismaService } from '../../common/prisma/prisma.service';
@@ -53,17 +54,55 @@ export function loadPlanAnchors(
  * El último servicio de cada liviano sin pauta: no tiene operación de pauta
  * (`planItemId` nulo) y se guarda con `kind = 'SERVICIO'`. Manda la vuelta más
  * alta y, en ella, el mayor contador.
+ *
+ * `excluir` deja fuera una vuelta (un número de servicio): al corregir el
+ * último servicio, el suyo no es «el anterior».
  */
 export function loadLightAnchors(
   db: Db,
   equipmentIds: string[],
+  excluir?: { cycle: number },
 ): Promise<Map<string, MaintenanceAnchor>> {
   return ultimos(
     db,
     equipmentIds,
-    { planItemId: null, kind: LIGHT_SERVICE_RECORD_KIND },
+    {
+      planItemId: null,
+      kind: LIGHT_SERVICE_RECORD_KIND,
+      ...(excluir ? { NOT: { cycle: excluir.cycle } } : {}),
+    },
     [{ cycle: 'desc' }, ...POR_CONTADOR],
   );
+}
+
+const NUM_CL = new Intl.NumberFormat('es-CL', { maximumFractionDigits: 1 });
+
+/**
+ * La lectura de una mantención no puede pasar la lectura actual del equipo.
+ * La comparten el cierre de una orden, la mantención anterior y la corrección
+ * del último cambio desde la pizarra.
+ */
+export function assertLecturaNoSuperaActual(
+  lectura: number,
+  actual: number | null,
+): void {
+  if (actual != null && lectura > actual) {
+    throw new BadRequestException(
+      `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser mayor que la lectura actual del equipo (${NUM_CL.format(actual)}).`,
+    );
+  }
+}
+
+/** La lectura de una mantención no puede quedar antes que la de la anterior. */
+export function assertLecturaNoBajaDeAnterior(
+  lectura: number,
+  anterior: MaintenanceAnchor | null | undefined,
+): void {
+  if (anterior && lectura < anterior.counterAt) {
+    throw new BadRequestException(
+      `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser menor que la de la mantención anterior (${NUM_CL.format(anterior.counterAt)}).`,
+    );
+  }
 }
 
 /** Las órdenes que siguen en el tablero del taller (no cerradas ni canceladas). */

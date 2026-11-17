@@ -30,6 +30,8 @@ import { todayInBusinessTimeZone } from '../common/dates/business-time';
 import { resolveAsignadosMap } from './common/asignado.util';
 import { currentCycle } from './maintenance-plans/maintenance-cycle';
 import {
+  assertLecturaNoBajaDeAnterior,
+  assertLecturaNoSuperaActual,
   LIGHT_SERVICE_RECORD_KIND,
   loadLightAnchors,
   loadPlanAnchors,
@@ -334,7 +336,7 @@ export class OrdenesService {
         ? equipment.currentMileage
         : equipment.currentHourmeter;
     if (dto.lectura != null) {
-      this.assertLecturaNoSuperaActual(dto.lectura, actual ?? null);
+      assertLecturaNoSuperaActual(dto.lectura, actual ?? null);
     }
     const plan = await this.prisma.maintenancePlan.findUnique({
       where: { equipmentId: equipment.id },
@@ -870,18 +872,6 @@ export class OrdenesService {
     };
   }
 
-  /** La lectura de una mantención no puede pasar la lectura actual del equipo. */
-  private assertLecturaNoSuperaActual(
-    lectura: number,
-    actual: number | null,
-  ): void {
-    if (actual != null && lectura > actual) {
-      throw new BadRequestException(
-        `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser mayor que la lectura actual del equipo (${NUM_CL.format(actual)}).`,
-      );
-    }
-  }
-
   private async resolveEquipmentId(equipoId: string): Promise<string | null> {
     const byId = await this.prisma.equipment.findUnique({
       where: { id: equipoId },
@@ -1040,19 +1030,14 @@ export class OrdenesService {
         : equipo.currentHourmeter;
 
     if (lectura != null) {
-      this.assertLecturaNoSuperaActual(lectura, actual);
+      assertLecturaNoSuperaActual(lectura, actual);
       // La anterior es la del mismo tipo de ancla. En la pauta se excluye
       // este hito y vuelta: sus registros (de las marcas) ya pueden ser el
       // ancla, y corregir la lectura hacia abajo no puede chocar consigo.
       const anclas = pauta
         ? await loadPlanAnchors(db, [equipo.id], pauta)
         : await loadLightAnchors(db, [equipo.id]);
-      const anterior = anclas.get(equipo.id);
-      if (anterior && lectura < anterior.counterAt) {
-        throw new BadRequestException(
-          `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser menor que la de la mantención anterior (${NUM_CL.format(anterior.counterAt)}).`,
-        );
-      }
+      assertLecturaNoBajaDeAnterior(lectura, anclas.get(equipo.id));
     }
 
     const usada = lectura ?? actual;
