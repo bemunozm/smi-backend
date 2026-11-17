@@ -1429,9 +1429,15 @@ model MaintenanceRecord {
   doneById    String               @map("done_by_id")
   doneByName  String               @map("done_by_name")
   doneAt      DateTime             @default(now()) @map("done_at")
+  /// Orden que escribió este registro (soft ref → OrdenTrabajo): la de la
+  /// pauta, la del servicio del liviano o la mantención anterior. Con ella la
+  /// pizarra corrige también los datos de esa orden. Nula en registros de la
+  /// grilla y en los viejos que no se pudieron ligar sin ambigüedad.
+  ordenId     String?              @map("orden_id")
 
   @@unique([planItemId, cycle, milestone])
   @@index([equipmentId, cycle])
+  @@index([ordenId])
   @@map("maintenance_record")
 }
 

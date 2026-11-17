@@ -65,6 +65,11 @@ export interface MaintenanceAnchor {
   /** El contador del equipo al hacerlo. */
   counterAt: number;
   doneAt: Date;
+  /**
+   * La orden que escribió el cambio (la de la pauta, la del servicio o la
+   * mantención anterior), si quedó ligada. Solo la usa la pizarra.
+   */
+  ordenId?: string | null;
 }
 
 export interface MaintenanceStatus {

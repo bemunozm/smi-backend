@@ -30,9 +30,13 @@ import { todayInBusinessTimeZone } from '../common/dates/business-time';
 import { resolveAsignadosMap } from './common/asignado.util';
 import { currentCycle } from './maintenance-plans/maintenance-cycle';
 import {
+  assertLecturaNoBajaDeAnterior,
+  assertLecturaNoSuperaActual,
   LIGHT_SERVICE_RECORD_KIND,
   loadLightAnchors,
   loadPlanAnchors,
+  notaLecturaHistorica,
+  origenDetalleHistorica,
 } from './maintenance-plans/maintenance-anchors';
 import {
   LIGHT_SERVICE_INTERVAL_KM,
@@ -44,10 +48,6 @@ import type { CreateOrdenDto } from './dto/create-orden.dto';
 import type { OrdenResponseDto } from './dto/orden-response.dto';
 import type { TareaResponseDto } from './dto/tarea-response.dto';
 import type { UpdateOrdenDto } from './dto/update-orden.dto';
-
-/** Números como los lee el usuario (es-CL: miles con punto) — para la nota
- * de lectura de una mantención histórica. */
-const NUM_CL = new Intl.NumberFormat('es-CL', { maximumFractionDigits: 1 });
 
 // `select` explícito (nunca el objeto Prisma crudo) — mismo criterio que
 // `users.service.ts`: el shape público no se desincroniza en silencio si el
@@ -323,9 +323,7 @@ export class OrdenesService {
     // (`controlUnit` KM), horómetro para un pesado (HOURS).
     const notas =
       dto.lectura != null
-        ? equipment.controlUnit === 'KM'
-          ? `Kilometraje al momento de la mantención: ${NUM_CL.format(dto.lectura)} km`
-          : `Horómetro al momento de la mantención: ${NUM_CL.format(dto.lectura)} h`
+        ? notaLecturaHistorica(dto.lectura, equipment.controlUnit)
         : null;
 
     // Todo se valida ANTES de escribir: un 400 no deja nada a medias.
@@ -334,7 +332,7 @@ export class OrdenesService {
         ? equipment.currentMileage
         : equipment.currentHourmeter;
     if (dto.lectura != null) {
-      this.assertLecturaNoSuperaActual(dto.lectura, actual ?? null);
+      assertLecturaNoSuperaActual(dto.lectura, actual ?? null);
     }
     const plan = await this.prisma.maintenancePlan.findUnique({
       where: { equipmentId: equipment.id },
@@ -425,9 +423,7 @@ export class OrdenesService {
           estado: EstadoOT.COMPLETADA,
           tipo: dto.tipo ?? TipoOT.PREVENTIVA,
           origen: OrigenOT.MANUAL,
-          origenDetalle: dto.observaciones
-            ? `Mantención anterior (registro histórico): ${dto.observaciones}`
-            : 'Mantención anterior (registro histórico)',
+          origenDetalle: origenDetalleHistorica(dto.observaciones),
           tareas: {
             create: [
               {
@@ -469,10 +465,17 @@ export class OrdenesService {
               doneAt: hechaAt,
               doneById: userId,
               doneByName,
+              // El último cambio queda ligado a su orden: la pizarra corrige
+              // también sus datos.
+              ordenId: creada.id,
             },
             // Ya registrada (marca previa de la grilla): la mantención real
             // manda sobre cuándo y con qué lectura se hizo.
-            update: { counterAt: dto.lectura, doneAt: hechaAt },
+            update: {
+              counterAt: dto.lectura,
+              doneAt: hechaAt,
+              ordenId: creada.id,
+            },
           });
         }
       } else if (servicioLiviano && dto.lectura != null) {
@@ -482,6 +485,7 @@ export class OrdenesService {
           counterAt: dto.lectura,
           editor: { id: userId, name: doneByName },
           doneAt: hechaAt,
+          ordenId: creada.id,
         });
       }
       return creada;
@@ -870,18 +874,6 @@ export class OrdenesService {
     };
   }
 
-  /** La lectura de una mantención no puede pasar la lectura actual del equipo. */
-  private assertLecturaNoSuperaActual(
-    lectura: number,
-    actual: number | null,
-  ): void {
-    if (actual != null && lectura > actual) {
-      throw new BadRequestException(
-        `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser mayor que la lectura actual del equipo (${NUM_CL.format(actual)}).`,
-      );
-    }
-  }
-
   private async resolveEquipmentId(equipoId: string): Promise<string | null> {
     const byId = await this.prisma.equipment.findUnique({
       where: { id: equipoId },
@@ -924,6 +916,7 @@ export class OrdenesService {
         description: orden.titulo,
         counterAt: cierre.lectura,
         editor,
+        ordenId: orden.id,
       });
       return;
     }
@@ -957,6 +950,7 @@ export class OrdenesService {
             counterAt: cierre.lectura,
             doneById: editor.id,
             doneByName: editor.name,
+            ordenId: orden.id,
           })),
           skipDuplicates: true,
         });
@@ -976,6 +970,8 @@ export class OrdenesService {
         // Sin lectura (equipo sin contador) se deja la de cada marca.
         ...(cierre.lectura != null ? { counterAt: cierre.lectura } : {}),
         doneAt: new Date(),
+        // Las marcas de la grilla del mismo hito también son de esta orden.
+        ordenId: orden.id,
       },
     });
   }
@@ -1040,19 +1036,14 @@ export class OrdenesService {
         : equipo.currentHourmeter;
 
     if (lectura != null) {
-      this.assertLecturaNoSuperaActual(lectura, actual);
+      assertLecturaNoSuperaActual(lectura, actual);
       // La anterior es la del mismo tipo de ancla. En la pauta se excluye
       // este hito y vuelta: sus registros (de las marcas) ya pueden ser el
       // ancla, y corregir la lectura hacia abajo no puede chocar consigo.
       const anclas = pauta
         ? await loadPlanAnchors(db, [equipo.id], pauta)
         : await loadLightAnchors(db, [equipo.id]);
-      const anterior = anclas.get(equipo.id);
-      if (anterior && lectura < anterior.counterAt) {
-        throw new BadRequestException(
-          `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser menor que la de la mantención anterior (${NUM_CL.format(anterior.counterAt)}).`,
-        );
-      }
+      assertLecturaNoBajaDeAnterior(lectura, anclas.get(equipo.id));
     }
 
     const usada = lectura ?? actual;
@@ -1075,6 +1066,8 @@ export class OrdenesService {
       editor: Editor;
       /** Por defecto, ahora. */
       doneAt?: Date;
+      /** La orden del servicio (ver `MaintenanceRecord.ordenId`). */
+      ordenId: string;
     },
   ): Promise<void> {
     const previos = await tx.maintenanceRecord.count({
@@ -1095,6 +1088,7 @@ export class OrdenesService {
         counterAt: servicio.counterAt,
         doneById: servicio.editor.id,
         doneByName: servicio.editor.name,
+        ordenId: servicio.ordenId,
         ...(servicio.doneAt ? { doneAt: servicio.doneAt } : {}),
       },
     });
@@ -1166,9 +1160,11 @@ export class OrdenesService {
         counterAt,
         doneById: editor.id,
         doneByName: editor.name,
+        ordenId: orden.id,
       },
-      // Ya estaba hecha (p. ej. desde la grilla del ciclo): no se pisa.
-      update: {},
+      // Ya estaba hecha (p. ej. desde la grilla del ciclo): no se pisa quién
+      // ni cuándo, pero queda ligada a la orden que la cerró.
+      update: { ordenId: orden.id },
     });
   }
 

@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Put,
   Query,
 } from '@nestjs/common';
@@ -11,6 +12,7 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import { CorrectLastChangeDto } from './dto/correct-last-change.dto';
 import { SaveMaintenancePlanDto } from './dto/save-maintenance-plan.dto';
 import { SetMaintenanceRecordDto } from './dto/set-maintenance-record.dto';
 import { MaintenancePlansService } from './maintenance-plans.service';
@@ -104,6 +106,28 @@ export class MaintenancePlansController {
     return {
       data: await this.service.setRecord(equipmentId, dto, editor),
       message: dto.done ? 'Mantención registrada' : 'Registro quitado',
+    };
+  }
+
+  /**
+   * Corrige la fecha y la lectura del último cambio desde la pizarra (un
+   * error de tipeo). Solo el administrador; devuelve la fila de la pizarra
+   * del equipo ya corregida. Quién corrige sale de la sesión.
+   */
+  @Patch(':equipmentId/last-change')
+  @Roles([ROLES.ADMIN])
+  async correctLastChange(
+    @Param('equipmentId') equipmentId: string,
+    @Body() dto: CorrectLastChangeDto,
+    @Session() session: UserSession,
+  ) {
+    const editor = {
+      id: session.user.id,
+      name: session.user.name?.trim() || session.user.email,
+    };
+    return {
+      data: await this.service.correctLastChange(equipmentId, dto, editor),
+      message: 'Último cambio corregido',
     };
   }
 
