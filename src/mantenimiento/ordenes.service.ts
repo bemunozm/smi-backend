@@ -28,6 +28,16 @@ import type {
 } from '../common/events/domain-events';
 import { todayInBusinessTimeZone } from '../common/dates/business-time';
 import { resolveAsignadosMap } from './common/asignado.util';
+import { currentCycle } from './maintenance-plans/maintenance-cycle';
+import {
+  LIGHT_SERVICE_RECORD_KIND,
+  loadLightAnchors,
+  loadPlanAnchors,
+} from './maintenance-plans/maintenance-anchors';
+import {
+  LIGHT_SERVICE_INTERVAL_KM,
+  LIGHT_SERVICE_ORIGEN_PREFIX,
+} from './vencimientos/vencimientos-rules';
 import type { AsignadoResponseDto } from './dto/asignado-response.dto';
 import type { CreateMantencionHistoricaDto } from './dto/create-mantencion-historica.dto';
 import type { CreateOrdenDto } from './dto/create-orden.dto';
@@ -87,6 +97,36 @@ const TAREA_SELECT = {
   hechaPorNombre: true,
   hechaAt: true,
 } satisfies Prisma.TareaOTSelect;
+
+/** Lo que `createHistorica` necesita del equipo para fechar y anclar la mantención. */
+const HISTORICA_EQUIPO_SELECT = {
+  id: true,
+  internalCode: true,
+  equipmentClass: true,
+  controlUnit: true,
+  currentHourmeter: true,
+  currentMileage: true,
+} satisfies Prisma.EquipmentSelect;
+
+type Editor = { id: string; name: string };
+
+/** Cliente de Prisma o el `tx` de una transacción. */
+type Db = Prisma.TransactionClient | PrismaService;
+
+/**
+ * Lo que el cierre de una orden escribe como ancla: los registros del hito de
+ * la pauta o el servicio de un liviano sin pauta, con la lectura a usar (la
+ * informada o, sin ella, la actual del equipo).
+ */
+type CierreLectura =
+  | {
+      tipo: 'PAUTA';
+      equipmentId: string;
+      cycle: number;
+      milestone: number;
+      lectura: number | null;
+    }
+  | { tipo: 'LIVIANO'; equipmentId: string; lectura: number | null };
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
 const CAMPO_LABEL: Record<string, string> = {
@@ -261,11 +301,11 @@ export class OrdenesService {
     const equipment =
       (await this.prisma.equipment.findUnique({
         where: { id: dto.equipoId },
-        select: { internalCode: true, controlUnit: true },
+        select: HISTORICA_EQUIPO_SELECT,
       })) ??
       (await this.prisma.equipment.findUnique({
         where: { internalCode: dto.equipoId },
-        select: { internalCode: true, controlUnit: true },
+        select: HISTORICA_EQUIPO_SELECT,
       }));
     if (!equipment) {
       throw new NotFoundException(
@@ -288,34 +328,163 @@ export class OrdenesService {
           : `Horómetro al momento de la mantención: ${NUM_CL.format(dto.lectura)} h`
         : null;
 
-    const orden = await this.prisma.ordenTrabajo.create({
-      data: {
-        createdById: userId,
-        equipoId: equipment.internalCode,
-        titulo: dto.titulo,
-        estado: EstadoOT.COMPLETADA,
-        tipo: dto.tipo ?? TipoOT.PREVENTIVA,
-        origen: OrigenOT.MANUAL,
-        origenDetalle: dto.observaciones
-          ? `Mantención anterior (registro histórico): ${dto.observaciones}`
-          : 'Mantención anterior (registro histórico)',
-        tareas: {
-          create: [
-            {
-              texto: dto.titulo,
-              hecha: true,
-              posicion: 0,
-              hechaAt,
-              // Mismo snapshot que llena el taller al completar una tarea —
-              // la columna «Mantenedor» del registro y el «Realizada por»
-              // del detalle salen de acá.
-              hechaPorNombre: dto.realizadaPor?.trim() || null,
-              notas,
-            },
-          ],
+    // Todo se valida ANTES de escribir: un 400 no deja nada a medias.
+    const actual =
+      equipment.controlUnit === 'KM'
+        ? equipment.currentMileage
+        : equipment.currentHourmeter;
+    if (dto.lectura != null) {
+      this.assertLecturaNoSuperaActual(dto.lectura, actual ?? null);
+    }
+    const plan = await this.prisma.maintenancePlan.findUnique({
+      where: { equipmentId: equipment.id },
+      select: {
+        milestones: true,
+        initialMilestone: true,
+        items: {
+          select: {
+            id: true,
+            description: true,
+            kind: true,
+            milestones: true,
+          },
+          orderBy: { position: 'asc' },
         },
       },
-      select: ORDEN_SELECT,
+    });
+
+    // Solo una preventiva es un cambio real: una correctiva queda en la
+    // historia, pero no escribe el ancla de la pauta ni el servicio del liviano.
+    const preventiva = (dto.tipo ?? TipoOT.PREVENTIVA) === TipoOT.PREVENTIVA;
+    if (!preventiva && dto.milestone != null) {
+      throw new BadRequestException(
+        'Solo una mantención preventiva cuenta para la pauta.',
+      );
+    }
+
+    // Ancla de la pauta: con `milestone` y pauta, una fila por operación del
+    // hito. Sin `milestone` el equipo con pauta queda como antes (solo OT).
+    let registrosPauta: {
+      cycle: number;
+      milestone: number;
+      items: { id: string; description: string; kind: string }[];
+    } | null = null;
+    if (plan && dto.milestone != null) {
+      if (dto.lectura == null) {
+        throw new BadRequestException(
+          'Indica el horómetro/kilometraje de la mantención',
+        );
+      }
+      const esInicial = dto.milestone === plan.initialMilestone;
+      if (!esInicial && !plan.milestones.includes(dto.milestone)) {
+        throw new BadRequestException(
+          'Ese hito no pertenece a la pauta del equipo',
+        );
+      }
+      const items = plan.items.filter((i) =>
+        i.milestones.includes(dto.milestone as number),
+      );
+      if (items.length === 0) {
+        throw new BadRequestException(
+          'Esa mantención no tiene operaciones en la pauta',
+        );
+      }
+      const largoCiclo = Math.max(0, ...plan.milestones);
+      registrosPauta = {
+        cycle: esInicial ? 1 : currentCycle(dto.lectura, largoCiclo),
+        milestone: dto.milestone,
+        items,
+      };
+    }
+    // Liviano en km sin pauta: su servicio es el ancla (regla de los 10.000 km).
+    const servicioLiviano =
+      preventiva &&
+      !plan &&
+      dto.lectura != null &&
+      equipment.equipmentClass === 'LIGHT' &&
+      equipment.controlUnit === 'KM';
+
+    // Quién la hizo: lo declarado o, sin eso, el usuario que la registra.
+    const realizadaPor = dto.realizadaPor?.trim() || null;
+    let doneByName = realizadaPor ?? userId;
+    if ((registrosPauta || servicioLiviano) && !realizadaPor) {
+      const autor = (await resolveAsignadosMap(this.prisma, [userId])).get(
+        userId,
+      );
+      doneByName = autor?.nombre ?? userId;
+    }
+
+    // La OT y sus registros van en UNA transacción: la historia y el ancla
+    // no pueden quedar contando cosas distintas.
+    const orden = await this.prisma.$transaction(async (tx) => {
+      const creada = await tx.ordenTrabajo.create({
+        data: {
+          createdById: userId,
+          equipoId: equipment.internalCode,
+          titulo: dto.titulo,
+          estado: EstadoOT.COMPLETADA,
+          tipo: dto.tipo ?? TipoOT.PREVENTIVA,
+          origen: OrigenOT.MANUAL,
+          origenDetalle: dto.observaciones
+            ? `Mantención anterior (registro histórico): ${dto.observaciones}`
+            : 'Mantención anterior (registro histórico)',
+          tareas: {
+            create: [
+              {
+                texto: dto.titulo,
+                hecha: true,
+                posicion: 0,
+                hechaAt,
+                // Mismo snapshot que llena el taller al completar una tarea —
+                // la columna «Mantenedor» del registro y el «Realizada por»
+                // del detalle salen de acá.
+                hechaPorNombre: realizadaPor,
+                notas,
+              },
+            ],
+          },
+        },
+        select: ORDEN_SELECT,
+      });
+
+      if (registrosPauta && dto.lectura != null) {
+        const { cycle, milestone, items } = registrosPauta;
+        for (const item of items) {
+          await tx.maintenanceRecord.upsert({
+            where: {
+              planItemId_cycle_milestone: {
+                planItemId: item.id,
+                cycle,
+                milestone,
+              },
+            },
+            create: {
+              equipmentId: equipment.id,
+              planItemId: item.id,
+              cycle,
+              milestone,
+              description: item.description,
+              kind: item.kind,
+              counterAt: dto.lectura,
+              doneAt: hechaAt,
+              doneById: userId,
+              doneByName,
+            },
+            // Ya registrada (marca previa de la grilla): la mantención real
+            // manda sobre cuándo y con qué lectura se hizo.
+            update: { counterAt: dto.lectura, doneAt: hechaAt },
+          });
+        }
+      } else if (servicioLiviano && dto.lectura != null) {
+        await this.crearServicioLiviano(tx, {
+          equipmentId: equipment.id,
+          description: dto.titulo,
+          counterAt: dto.lectura,
+          editor: { id: userId, name: doneByName },
+          doneAt: hechaAt,
+        });
+      }
+      return creada;
     });
 
     this.logger.log(
@@ -331,8 +500,16 @@ export class OrdenesService {
   async update(
     id: string,
     dto: UpdateOrdenDto,
+    editor: Editor,
     expected?: ExpectedValues,
   ): Promise<OrdenResponseDto> {
+    // La lectura de la mantención es del cierre: fuera de él no hay a qué
+    // mantención atribuirla.
+    if (dto.lecturaMantencion != null && dto.estado !== EstadoOT.COMPLETADA) {
+      throw new BadRequestException(
+        'La lectura de la mantención solo se informa al completar la orden',
+      );
+    }
     const ordenAnterior = await this.findOrdenOrThrow(id);
 
     // "Finalizar tarea" del taller: el mantenedor declara cómo queda la
@@ -377,55 +554,72 @@ export class OrdenesService {
       });
     };
 
-    let orden: SelectedOrden;
-    let estadoAnterior = ordenAnterior.estado;
-    if (!expected) {
-      // La escritura y la transición del hallazgo ligado van juntas: una
-      // orden completada cuyo hallazgo quedó ABIERTO contaría dos historias.
-      orden = await this.prisma.$transaction(async (tx) => {
-        const actualizada = await write(tx);
-        await this.syncHallazgoEstado(tx, actualizada, estadoAnterior);
-        await applyEquipmentStatus(tx);
-        return actualizada;
-      });
-    } else {
-      // El estado previo se toma bajo el bloqueo: es el que decide si hubo
-      // transición (y por lo tanto aviso), no el de la lectura de arriba.
-      ({ orden, estadoAnterior } = await this.prisma.$transaction(
-        async (tx) => {
-          const vigente = await assertExpectedLocked({
-            tx,
-            table: 'ordenTrabajo',
-            id,
-            expected,
-            read: (db) =>
-              db.ordenTrabajo.findUnique({
-                where: { id },
-                select: {
-                  estado: true,
-                  asignadoAId: true,
-                  prioridad: true,
-                  titulo: true,
-                },
-              }),
-            // Solo los campos de la ORDEN: `equipmentStatus` no es columna de
-            // la fila y no participa de la precondición.
-            desired: definedFields({
-              estado: dto.estado,
-              asignadoAId: dto.asignadoAId,
-              prioridad: dto.prioridad,
-              titulo: dto.titulo,
+    // El ancla (la última mantención real) se escribe solo en el CRUCE a
+    // COMPLETADA y antes que la orden: si la lectura no vale, el 400 sale
+    // sin haber escrito nada. El reintento de un cierre ya aplicado no cruza
+    // y no la vuelve a escribir.
+    const applyLecturaCierre = async (
+      tx: Prisma.TransactionClient,
+      estadoPrevio: EstadoOT,
+    ) => {
+      if (
+        dto.estado !== EstadoOT.COMPLETADA ||
+        estadoPrevio === EstadoOT.COMPLETADA
+      ) {
+        return;
+      }
+      await this.aplicarLecturaCierre(
+        tx,
+        ordenAnterior,
+        dto.lecturaMantencion,
+        editor,
+      );
+    };
+
+    // La escritura y la transición del hallazgo ligado van juntas: una orden
+    // completada cuyo hallazgo quedó ABIERTO contaría dos historias.
+    //
+    // El estado previo se toma SIEMPRE bajo el bloqueo de la fila, haya o no
+    // `X-Expected` (sin ella no hay precondición que comparar): es el que
+    // decide si hubo transición —y por lo tanto aviso y ancla—, no el de la
+    // lectura de arriba. Dos cierres simultáneos (un reintento offline
+    // mientras el primero confirma) no cruzan los dos: el segundo espera y ve
+    // la orden ya COMPLETADA.
+    const { orden, estadoAnterior } = await this.prisma.$transaction(
+      async (tx) => {
+        const vigente = await assertExpectedLocked({
+          tx,
+          table: 'ordenTrabajo',
+          id,
+          expected,
+          read: (db) =>
+            db.ordenTrabajo.findUnique({
+              where: { id },
+              select: {
+                estado: true,
+                asignadoAId: true,
+                prioridad: true,
+                titulo: true,
+              },
             }),
-            labels: CAMPO_LABEL,
-            notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
-          });
-          const actualizada = await write(tx);
-          await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
-          await applyEquipmentStatus(tx);
-          return { orden: actualizada, estadoAnterior: vigente.estado };
-        },
-      ));
-    }
+          // Solo los campos de la ORDEN: `equipmentStatus` no es columna de
+          // la fila y no participa de la precondición.
+          desired: definedFields({
+            estado: dto.estado,
+            asignadoAId: dto.asignadoAId,
+            prioridad: dto.prioridad,
+            titulo: dto.titulo,
+          }),
+          labels: CAMPO_LABEL,
+          notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
+        });
+        await applyLecturaCierre(tx, vigente.estado);
+        const actualizada = await write(tx);
+        await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
+        await applyEquipmentStatus(tx);
+        return { orden: actualizada, estadoAnterior: vigente.estado };
+      },
+    );
 
     this.logger.log(`Orden de trabajo actualizada: ${id}`);
 
@@ -505,7 +699,10 @@ export class OrdenesService {
    *    grilla de la ficha del equipo y la tarjeta del tablero cuentan la
    *    misma historia, sin estados paralelos.
    * 2. Mueve la orden sola: con la primera tarea hecha pasa a EN_PROCESO, y
-   *    con TODAS hechas a COMPLETADA — el mantenedor no cierra a mano.
+   *    con TODAS hechas a COMPLETADA — el mantenedor no cierra a mano. Al
+   *    completarse, la lectura de la mantención (`lecturaMantencion`, o la
+   *    actual del equipo) queda en los registros del hito: es el ancla. Si la
+   *    marca no completa la orden, la lectura no se usa.
    */
   async updateTarea(
     ordenId: string,
@@ -516,8 +713,9 @@ export class OrdenesService {
       fotoKey?: string;
       insumos?: { insumoId: string; cantidad: number }[];
       branchId?: string;
+      lecturaMantencion?: number;
     },
-    editor: { id: string; name: string },
+    editor: Editor,
   ): Promise<TareaResponseDto> {
     const tarea = await this.prisma.tareaOT.findUnique({
       where: { id: tareaId },
@@ -543,6 +741,21 @@ export class OrdenesService {
       insumos.length > 0
         ? await this.resolveEquipmentId(ordenAnterior.equipoId)
         : null;
+    // Una lectura inválida se rechaza ANTES de marcar nada (ni reclamar la
+    // foto): si esta marca cierra la orden, se vuelve a validar y se escribe
+    // dentro de la transacción.
+    if (
+      dto.lecturaMantencion != null &&
+      dto.hecha &&
+      ordenAnterior.pautaCycle != null &&
+      ordenAnterior.estado !== EstadoOT.COMPLETADA
+    ) {
+      await this.resolverLecturaCierre(
+        this.prisma,
+        ordenAnterior,
+        dto.lecturaMantencion,
+      );
+    }
 
     // La foto se reclama ANTES de la transacción (mismo criterio que
     // `IntervencionesService`): si la escritura falla, se descarta.
@@ -617,6 +830,14 @@ export class OrdenesService {
               data: { estado: nuevoEstado },
               select: ORDEN_SELECT,
             });
+            if (nuevoEstado === EstadoOT.COMPLETADA) {
+              await this.aplicarLecturaCierre(
+                tx,
+                ordenAnterior,
+                dto.lecturaMantencion,
+                editor,
+              );
+            }
           }
         }
         return { updated: tareaActualizada, orden: actualizada };
@@ -649,6 +870,18 @@ export class OrdenesService {
     };
   }
 
+  /** La lectura de una mantención no puede pasar la lectura actual del equipo. */
+  private assertLecturaNoSuperaActual(
+    lectura: number,
+    actual: number | null,
+  ): void {
+    if (actual != null && lectura > actual) {
+      throw new BadRequestException(
+        `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser mayor que la lectura actual del equipo (${NUM_CL.format(actual)}).`,
+      );
+    }
+  }
+
   private async resolveEquipmentId(equipoId: string): Promise<string | null> {
     const byId = await this.prisma.equipment.findUnique({
       where: { id: equipoId },
@@ -661,6 +894,210 @@ export class OrdenesService {
       select: { id: true },
     });
     return byCode?.id ?? null;
+  }
+
+  /**
+   * La orden pasó a COMPLETADA: su mantención queda como ancla (la última
+   * real, desde la que se cuenta la próxima). En una orden de pauta se le
+   * pone la lectura a los registros del hito, escritos al marcar cada tarea
+   * (y se crean los de las tareas sin marcar: un hito cuenta como hecho
+   * aunque no se hayan marcado todas sus operaciones); en la de servicio de
+   * un liviano sin pauta se crea su registro SERVICIO.
+   * Cualquier otra orden no mueve el ancla (no se sabe a qué hito
+   * corresponde) y la lectura se ignora. Va en la transacción del cierre.
+   */
+  private async aplicarLecturaCierre(
+    tx: Prisma.TransactionClient,
+    orden: SelectedOrden,
+    lectura: number | undefined,
+    editor: Editor,
+  ): Promise<void> {
+    const cierre = await this.resolverLecturaCierre(tx, orden, lectura);
+    if (!cierre) return;
+
+    if (cierre.tipo === 'LIVIANO') {
+      // Sin kilometraje el registro no serviría de ancla y gastaría un número
+      // de servicio.
+      if (cierre.lectura == null) return;
+      await this.crearServicioLiviano(tx, {
+        equipmentId: cierre.equipmentId,
+        description: orden.titulo,
+        counterAt: cierre.lectura,
+        editor,
+      });
+      return;
+    }
+
+    // El admin puede «Finalizar» una orden olvidada con tareas sin marcar:
+    // sus operaciones igual quedan hechas en el hito (sin marcar las tareas).
+    // Las que ya tienen registro no se tocan (`skipDuplicates` sobre la
+    // única `planItemId_cycle_milestone`); las de una operación borrada de
+    // la pauta no se registran.
+    const planItemIds = [
+      ...new Set(
+        orden.tareas
+          .map((t) => t.planItemId)
+          .filter((planItemId): planItemId is string => planItemId != null),
+      ),
+    ];
+    if (planItemIds.length > 0) {
+      const items = await tx.maintenancePlanItem.findMany({
+        where: { id: { in: planItemIds } },
+        select: { id: true, description: true, kind: true },
+      });
+      if (items.length > 0) {
+        await tx.maintenanceRecord.createMany({
+          data: items.map((item) => ({
+            equipmentId: cierre.equipmentId,
+            planItemId: item.id,
+            cycle: cierre.cycle,
+            milestone: cierre.milestone,
+            description: item.description,
+            kind: item.kind,
+            counterAt: cierre.lectura,
+            doneById: editor.id,
+            doneByName: editor.name,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    // `equipoId` de la OT es el que usó `syncRegistroCiclo` al marcar; el id
+    // resuelto cubre una orden que guardó el código interno.
+    await tx.maintenanceRecord.updateMany({
+      where: {
+        equipmentId: { in: [...new Set([cierre.equipmentId, orden.equipoId])] },
+        planItemId: { not: null },
+        cycle: cierre.cycle,
+        milestone: cierre.milestone,
+      },
+      data: {
+        // Sin lectura (equipo sin contador) se deja la de cada marca.
+        ...(cierre.lectura != null ? { counterAt: cierre.lectura } : {}),
+        doneAt: new Date(),
+      },
+    });
+  }
+
+  /**
+   * Qué ancla escribe el cierre de la orden y con qué lectura, sin escribir
+   * nada: si la lectura informada no vale, responde 400. La misma lectura
+   * da siempre la misma respuesta (el reintento offline no cambia de suerte).
+   * Null = la orden no mueve el ancla.
+   */
+  private async resolverLecturaCierre(
+    db: Db,
+    orden: SelectedOrden,
+    lectura: number | undefined,
+  ): Promise<CierreLectura | null> {
+    const pauta =
+      orden.pautaCycle != null && orden.pautaMilestone != null
+        ? { cycle: orden.pautaCycle, milestone: orden.pautaMilestone }
+        : null;
+    const servicioLiviano =
+      !pauta &&
+      orden.origen === OrigenOT.PREVENTIVO &&
+      orden.tipo === TipoOT.PREVENTIVA &&
+      (orden.origenDetalle?.startsWith(LIGHT_SERVICE_ORIGEN_PREFIX) ?? false);
+    if (!pauta && !servicioLiviano) return null;
+
+    // Mismo criterio que `resolveEquipmentId`: id de Flota o código interno.
+    const select = {
+      id: true,
+      equipmentClass: true,
+      controlUnit: true,
+      currentHourmeter: true,
+      currentMileage: true,
+    } satisfies Prisma.EquipmentSelect;
+    const equipo =
+      (await db.equipment.findUnique({
+        where: { id: orden.equipoId },
+        select,
+      })) ??
+      (await db.equipment.findUnique({
+        where: { internalCode: orden.equipoId },
+        select,
+      }));
+    if (!equipo) return null;
+
+    // La regla de los 10.000 km es solo de los livianos en km sin pauta: si
+    // después recibió pauta, manda la pauta.
+    if (servicioLiviano) {
+      if (equipo.equipmentClass !== 'LIGHT' || equipo.controlUnit !== 'KM') {
+        return null;
+      }
+      const plan = await db.maintenancePlan.findUnique({
+        where: { equipmentId: equipo.id },
+        select: { id: true },
+      });
+      if (plan) return null;
+    }
+
+    const actual =
+      equipo.controlUnit === 'KM'
+        ? equipo.currentMileage
+        : equipo.currentHourmeter;
+
+    if (lectura != null) {
+      this.assertLecturaNoSuperaActual(lectura, actual);
+      // La anterior es la del mismo tipo de ancla. En la pauta se excluye
+      // este hito y vuelta: sus registros (de las marcas) ya pueden ser el
+      // ancla, y corregir la lectura hacia abajo no puede chocar consigo.
+      const anclas = pauta
+        ? await loadPlanAnchors(db, [equipo.id], pauta)
+        : await loadLightAnchors(db, [equipo.id]);
+      const anterior = anclas.get(equipo.id);
+      if (anterior && lectura < anterior.counterAt) {
+        throw new BadRequestException(
+          `La lectura de la mantención (${NUM_CL.format(lectura)}) no puede ser menor que la de la mantención anterior (${NUM_CL.format(anterior.counterAt)}).`,
+        );
+      }
+    }
+
+    const usada = lectura ?? actual;
+    return pauta
+      ? { tipo: 'PAUTA', equipmentId: equipo.id, ...pauta, lectura: usada }
+      : { tipo: 'LIVIANO', equipmentId: equipo.id, lectura: usada };
+  }
+
+  /**
+   * El registro del servicio de un liviano sin pauta (no es de ninguna
+   * operación): `planItemId` nulo, `kind` SERVICIO y el intervalo de 10.000
+   * km como hito. La vuelta es el número de servicio del equipo.
+   */
+  private async crearServicioLiviano(
+    tx: Prisma.TransactionClient,
+    servicio: {
+      equipmentId: string;
+      description: string;
+      counterAt: number;
+      editor: Editor;
+      /** Por defecto, ahora. */
+      doneAt?: Date;
+    },
+  ): Promise<void> {
+    const previos = await tx.maintenanceRecord.count({
+      where: {
+        equipmentId: servicio.equipmentId,
+        planItemId: null,
+        kind: LIGHT_SERVICE_RECORD_KIND,
+      },
+    });
+    await tx.maintenanceRecord.create({
+      data: {
+        equipmentId: servicio.equipmentId,
+        planItemId: null,
+        kind: LIGHT_SERVICE_RECORD_KIND,
+        milestone: LIGHT_SERVICE_INTERVAL_KM,
+        cycle: previos + 1,
+        description: servicio.description,
+        counterAt: servicio.counterAt,
+        doneById: servicio.editor.id,
+        doneByName: servicio.editor.name,
+        ...(servicio.doneAt ? { doneAt: servicio.doneAt } : {}),
+      },
+    });
   }
 
   /**

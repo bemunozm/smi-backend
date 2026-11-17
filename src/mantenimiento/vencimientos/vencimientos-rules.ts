@@ -8,6 +8,10 @@ import { daysBetweenDateOnly } from '../../equipment/document-expiry';
 /** Cada cuántos km se hace la mantención de un vehículo liviano. */
 export const LIGHT_SERVICE_INTERVAL_KM = 10_000;
 
+/** Así empieza el `origenDetalle` de la orden de servicio de un liviano: la
+ * identifica al crearla y al cerrarla (el cierre escribe su ancla). */
+export const LIGHT_SERVICE_ORIGEN_PREFIX = 'Livianos: ';
+
 /** Con cuántos km de anticipación se avisa (y se crea la orden del taller). */
 export const LIGHT_SERVICE_ALERT_KM = 1_000;
 
@@ -17,23 +21,30 @@ export const DOCUMENT_TYPES_WITHOUT_EXPIRY = ['MAINTENANCE_MANUAL'] as const;
 export interface LightService {
   /** El kilometraje en que toca la próxima mantención (20.000, 30.000…). */
   nextKm: number;
-  /** Cuántos km faltan. 0 = toca ahora. */
+  /** Cuántos km faltan. 0 = toca ahora; negativo = atrasada (solo con último servicio). */
   remainingKm: number;
   /** Ya está dentro del margen de aviso. */
   due: boolean;
 }
 
 /**
- * La próxima mantención por kilometraje: el siguiente múltiplo de 10.000 km.
- * Con el odómetro justo en un múltiplo, toca ahora. Sin lectura, `null`.
+ * La próxima mantención por kilometraje. Con un servicio registrado
+ * (`anchorKm`, los km del último), toca 10.000 km después de él y lo que
+ * falta puede ser negativo si ya se pasó. Sin él, el respaldo es el siguiente
+ * múltiplo de 10.000 km; con el odómetro justo en un múltiplo, toca ahora.
+ * Sin lectura, `null`.
  */
 export function nextLightService(
   mileage: number | null,
   interval = LIGHT_SERVICE_INTERVAL_KM,
   alertKm = LIGHT_SERVICE_ALERT_KM,
+  anchorKm: number | null = null,
 ): LightService | null {
   if (mileage == null || mileage < 0) return null;
-  const nextKm = Math.max(interval, Math.ceil(mileage / interval) * interval);
+  const nextKm =
+    anchorKm != null
+      ? anchorKm + interval
+      : Math.max(interval, Math.ceil(mileage / interval) * interval);
   const remainingKm = Math.round((nextKm - mileage) * 10) / 10;
   return { nextKm, remainingKm, due: remainingKm <= alertKm };
 }

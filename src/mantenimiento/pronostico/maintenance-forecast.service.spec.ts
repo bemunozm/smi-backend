@@ -10,6 +10,8 @@ function build() {
   const prisma = {
     equipment: { findMany: jest.fn(), findUnique: jest.fn() },
     registroHorometro: { findMany: jest.fn().mockResolvedValue([]) },
+    // Sin servicios registrados: el liviano va por el múltiplo de 10.000 km.
+    maintenanceRecord: { findMany: jest.fn().mockResolvedValue([]) },
   };
   const plans = { statusForAll: jest.fn().mockResolvedValue([]) };
   const service = new MaintenanceForecastService(
@@ -90,6 +92,38 @@ describe('MaintenanceForecastService', () => {
       status: 'FALTAN_DATOS',
       estimatedDate: null,
     });
+  });
+
+  it('liviano: cuenta desde el último servicio registrado', async () => {
+    const { prisma, service } = build();
+    prisma.equipment.findMany.mockResolvedValue([PESADO, LIVIANO]);
+    prisma.maintenanceRecord.findMany.mockResolvedValue([
+      {
+        equipmentId: 'eq_l',
+        milestone: 10000,
+        cycle: 1,
+        counterAt: 19_000,
+        doneAt: haceDias(60),
+      },
+    ]);
+
+    const filas = await service.forAll(NOW);
+
+    // El servicio fue a los 19.000: tocaba a los 29.000 y van 530 km de atraso.
+    expect(filas.find((f) => f.equipmentId === 'eq_l')).toMatchObject({
+      source: 'LIVIANO',
+      nextAt: 29000,
+      remaining: -530,
+      status: 'TOCA_AHORA',
+    });
+    // Solo se busca el ancla de los livianos sin pauta.
+    expect(prisma.maintenanceRecord.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          equipmentId: { in: ['eq_l'] },
+        }) as unknown,
+      }),
+    );
   });
 
   it('un pesado sin pauta no tiene próxima mantención: no aparece', async () => {

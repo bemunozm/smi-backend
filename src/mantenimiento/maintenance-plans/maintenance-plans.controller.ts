@@ -39,6 +39,16 @@ export class MaintenancePlansController {
     return { data: await this.service.statusForAll(), message: 'ok' };
   }
 
+  /**
+   * La pizarra de mantenciones: todos los equipos con su último cambio y su
+   * próximo. Mismos roles que `status`; va antes de `:equipmentId`.
+   */
+  @Get('board')
+  @Roles([...LECTORES, ROLES.SECRETARIA])
+  async board() {
+    return { data: await this.service.board(), message: 'ok' };
+  }
+
   @Get(':equipmentId')
   @Roles(LECTORES)
   async findOne(@Param('equipmentId') equipmentId: string) {

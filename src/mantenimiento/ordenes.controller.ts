@@ -94,10 +94,17 @@ export class OrdenesController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateOrdenDto,
+    @Session() session: UserSession,
     @ExpectedFields() expected?: ExpectedValues,
   ): Promise<OrdenDetailResponse> {
     assertNonEmptyId(id);
-    const data = await this.ordenesService.update(id, dto, expected);
+    // El editor firma el registro del servicio de un liviano al completar.
+    const data = await this.ordenesService.update(
+      id,
+      dto,
+      { id: session.user.id, name: session.user.name },
+      expected,
+    );
     return { data, message: 'Orden de trabajo actualizada' };
   }
 

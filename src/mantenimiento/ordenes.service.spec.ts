@@ -86,6 +86,13 @@ describe('OrdenesService', () => {
   const tareaOTFindMany = jest.fn();
   const recordUpsert = jest.fn();
   const recordDeleteMany = jest.fn();
+  const recordFindMany = jest.fn();
+  const recordUpdateMany = jest.fn();
+  const recordCreate = jest.fn();
+  const recordCount = jest.fn();
+  const recordCreateMany = jest.fn();
+  const planItemFindMany = jest.fn();
+  const planFindUnique = jest.fn();
   const planItemFindUnique = jest.fn();
   const equipmentFindUnique = jest.fn();
   const equipmentUpdate = jest.fn();
@@ -111,6 +118,19 @@ describe('OrdenesService', () => {
     tareaOTFindMany.mockReset();
     recordUpsert.mockReset();
     recordDeleteMany.mockReset();
+    // Sin mantenciones anteriores con contador: nada contra qué validar.
+    recordFindMany.mockReset();
+    recordFindMany.mockResolvedValue([]);
+    recordUpdateMany.mockReset();
+    recordUpdateMany.mockResolvedValue({ count: 2 });
+    recordCreate.mockReset();
+    recordCount.mockReset();
+    recordCount.mockResolvedValue(0);
+    recordCreateMany.mockReset();
+    planItemFindMany.mockReset();
+    planItemFindMany.mockResolvedValue([]);
+    planFindUnique.mockReset();
+    planFindUnique.mockResolvedValue(null);
     planItemFindUnique.mockReset();
     planItemFindUnique.mockResolvedValue({
       description: 'Cambio de aceite',
@@ -144,6 +164,8 @@ describe('OrdenesService', () => {
     userFindMany.mockReset();
     emit.mockReset();
     queryRaw.mockReset();
+    // `update` bloquea siempre la fila (`SELECT ... FOR UPDATE`): existe.
+    queryRaw.mockResolvedValue([{ id: 'orden_1' }]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -172,6 +194,9 @@ describe('OrdenesService', () => {
               findUnique: equipmentFindUnique,
               update: equipmentUpdate,
             },
+            // La lectura del cierre se valida antes de abrir la transacción.
+            maintenanceRecord: { findMany: recordFindMany },
+            maintenancePlan: { findUnique: planFindUnique },
             // Con `X-Expected` la escritura va en una transacción que bloquea
             // la fila: el mock ejecuta el callback con el mismo cliente.
             $queryRaw: queryRaw,
@@ -194,8 +219,17 @@ describe('OrdenesService', () => {
                 maintenanceRecord: {
                   upsert: recordUpsert,
                   deleteMany: recordDeleteMany,
+                  findMany: recordFindMany,
+                  updateMany: recordUpdateMany,
+                  create: recordCreate,
+                  count: recordCount,
+                  createMany: recordCreateMany,
                 },
-                maintenancePlanItem: { findUnique: planItemFindUnique },
+                maintenancePlanItem: {
+                  findUnique: planItemFindUnique,
+                  findMany: planItemFindMany,
+                },
+                maintenancePlan: { findUnique: planFindUnique },
                 equipment: {
                   findUnique: equipmentFindUnique,
                   update: equipmentUpdate,
@@ -553,10 +587,14 @@ describe('OrdenesService', () => {
       });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
-      await service.update('orden_1', {
-        estado: 'ASIGNADA',
-        asignadoAId: 'user_mantenedor',
-      } as never);
+      await service.update(
+        'orden_1',
+        {
+          estado: 'ASIGNADA',
+          asignadoAId: 'user_mantenedor',
+        } as never,
+        MOCK_MANTENEDOR,
+      );
 
       expect(emit).toHaveBeenCalledWith(DOMAIN_EVENTS.ORDEN_ASSIGNED, {
         ordenId: 'orden_1',
@@ -577,7 +615,11 @@ describe('OrdenesService', () => {
       });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
-      await service.update('orden_1', { estado: 'COMPLETADA' } as never);
+      await service.update(
+        'orden_1',
+        { estado: 'COMPLETADA' } as never,
+        MOCK_MANTENEDOR,
+      );
 
       expect(emit).toHaveBeenCalledWith(DOMAIN_EVENTS.ORDEN_COMPLETED, {
         ordenId: 'orden_1',
@@ -598,9 +640,13 @@ describe('OrdenesService', () => {
       });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
-      await service.update('orden_1', {
-        titulo: 'Título editado',
-      });
+      await service.update(
+        'orden_1',
+        {
+          titulo: 'Título editado',
+        },
+        MOCK_MANTENEDOR,
+      );
 
       expect(emit).not.toHaveBeenCalled();
     });
@@ -783,6 +829,238 @@ describe('OrdenesService', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(ordenTrabajoCreate).not.toHaveBeenCalled();
     });
+
+    describe('con registros estructurados (ancla)', () => {
+      const PESADO = {
+        id: 'eq_flota_1',
+        internalCode: 'CM-003',
+        equipmentClass: 'HEAVY',
+        controlUnit: 'HOURS',
+        currentHourmeter: 1_300,
+        currentMileage: null,
+      };
+      const LIVIANO = {
+        id: 'eq_liv',
+        internalCode: 'CM-010',
+        equipmentClass: 'LIGHT',
+        controlUnit: 'KM',
+        currentHourmeter: null,
+        currentMileage: 31_000,
+      };
+      const PLAN = {
+        milestones: [250, 500],
+        initialMilestone: 50,
+        items: [
+          {
+            id: 'item_a',
+            description: 'Cambio de aceite',
+            kind: 'ACEITE',
+            milestones: [250, 500],
+          },
+          {
+            id: 'item_b',
+            description: 'Cambio de correa',
+            kind: 'CORREA',
+            milestones: [500],
+          },
+        ],
+      };
+
+      beforeEach(() => {
+        ordenTrabajoCreate.mockResolvedValue(MOCK_HISTORICA);
+        userFindMany.mockResolvedValue([{ id: 'u_admin', name: 'Admin SMI' }]);
+        planFindUnique.mockResolvedValue(PLAN);
+      });
+
+      it('historica with milestone writes one record per item at that milestone', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await service.createHistorica(
+          { ...DTO, milestone: 500, lectura: 1_250 },
+          'u_admin',
+        );
+
+        // 1.250 h con ciclo de 500 h = vuelta 3.
+        expect(recordUpsert).toHaveBeenCalledTimes(2);
+        const doneAt = new Date('2025-06-15T12:00:00.000Z');
+        expect(recordUpsert).toHaveBeenCalledWith({
+          where: {
+            planItemId_cycle_milestone: {
+              planItemId: 'item_b',
+              cycle: 3,
+              milestone: 500,
+            },
+          },
+          create: {
+            equipmentId: 'eq_flota_1',
+            planItemId: 'item_b',
+            cycle: 3,
+            milestone: 500,
+            description: 'Cambio de correa',
+            kind: 'CORREA',
+            counterAt: 1_250,
+            doneAt,
+            doneById: 'u_admin',
+            doneByName: 'Admin SMI',
+          },
+          update: { counterAt: 1_250, doneAt },
+        });
+        expect(ordenTrabajoCreate).toHaveBeenCalledTimes(1);
+      });
+
+      it('historica con el hito inicial escribe la vuelta 1 y prefiere realizadaPor', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+        planFindUnique.mockResolvedValue({
+          ...PLAN,
+          items: [{ ...PLAN.items[0], milestones: [50, 250] }, PLAN.items[1]],
+        });
+
+        await service.createHistorica(
+          { ...DTO, milestone: 50, lectura: 60, realizadaPor: ' Taller Díaz ' },
+          'u_admin',
+        );
+
+        expect(recordUpsert).toHaveBeenCalledTimes(1);
+        const [{ create }] = recordUpsert.mock.calls[0] as [
+          { create: Record<string, unknown> },
+        ];
+        expect(create).toMatchObject({
+          cycle: 1,
+          milestone: 50,
+          doneByName: 'Taller Díaz',
+        });
+      });
+
+      it('historica on light without plan writes SERVICIO anchor', async () => {
+        equipmentFindUnique.mockResolvedValue(LIVIANO);
+        planFindUnique.mockResolvedValue(null);
+        recordCount.mockResolvedValue(2);
+
+        await service.createHistorica({ ...DTO, lectura: 30_000 }, 'u_admin');
+
+        expect(recordCreate).toHaveBeenCalledWith({
+          data: {
+            equipmentId: 'eq_liv',
+            planItemId: null,
+            kind: 'SERVICIO',
+            milestone: 10_000,
+            cycle: 3,
+            description: DTO.titulo,
+            counterAt: 30_000,
+            doneById: 'u_admin',
+            doneByName: 'Admin SMI',
+            doneAt: new Date('2025-06-15T12:00:00.000Z'),
+          },
+        });
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('una CORRECTIVA con hito se rechaza: solo una preventiva cuenta para la pauta', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await expect(
+          service.createHistorica(
+            { ...DTO, tipo: 'CORRECTIVA', milestone: 500, lectura: 1_250 },
+            'u_admin',
+          ),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'Solo una mantención preventiva cuenta para la pauta.',
+          ),
+        );
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('una CORRECTIVA de un liviano sin pauta no escribe el servicio (ancla)', async () => {
+        equipmentFindUnique.mockResolvedValue(LIVIANO);
+        planFindUnique.mockResolvedValue(null);
+        recordCount.mockResolvedValue(2);
+
+        await service.createHistorica(
+          { ...DTO, tipo: 'CORRECTIVA', lectura: 30_000 },
+          'u_admin',
+        );
+
+        expect(ordenTrabajoCreate).toHaveBeenCalledTimes(1);
+        expect(recordCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('historica milestone without lectura is rejected', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await expect(
+          service.createHistorica({ ...DTO, milestone: 500 }, 'u_admin'),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'Indica el horómetro/kilometraje de la mantención',
+          ),
+        );
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('historica milestone not in plan is rejected', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await expect(
+          service.createHistorica(
+            { ...DTO, milestone: 750, lectura: 700 },
+            'u_admin',
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('historica milestone without items is rejected', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+        planFindUnique.mockResolvedValue({
+          ...PLAN,
+          milestones: [250, 500, 750],
+        });
+
+        await expect(
+          service.createHistorica(
+            { ...DTO, milestone: 750, lectura: 700 },
+            'u_admin',
+          ),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'Esa mantención no tiene operaciones en la pauta',
+          ),
+        );
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+      });
+
+      it('historica lectura above current counter is rejected', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await expect(
+          service.createHistorica(
+            { ...DTO, milestone: 500, lectura: 1_400 },
+            'u_admin',
+          ),
+        ).rejects.toThrow(
+          new BadRequestException(
+            'La lectura de la mantención (1.400) no puede ser mayor que la lectura actual del equipo (1.300).',
+          ),
+        );
+        expect(ordenTrabajoCreate).not.toHaveBeenCalled();
+        expect(recordUpsert).not.toHaveBeenCalled();
+      });
+
+      it('sin milestone en un equipo con pauta no escribe registros (flujo de la ficha)', async () => {
+        equipmentFindUnique.mockResolvedValue(PESADO);
+
+        await service.createHistorica({ ...DTO, lectura: 1_000 }, 'u_admin');
+
+        expect(recordUpsert).not.toHaveBeenCalled();
+        expect(recordCreate).not.toHaveBeenCalled();
+        expect(ordenTrabajoCreate).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   describe('update con X-Expected', () => {
@@ -802,11 +1080,9 @@ describe('OrdenesService', () => {
         });
 
       await expect(
-        service.update(
-          'orden_1',
-          { estado: 'COMPLETADA' },
-          { estado: 'PENDIENTE' },
-        ),
+        service.update('orden_1', { estado: 'COMPLETADA' }, MOCK_MANTENEDOR, {
+          estado: 'PENDIENTE',
+        }),
       ).rejects.toMatchObject({
         response: { code: ERROR_CODES.STALE_UPDATE },
       });
@@ -831,6 +1107,7 @@ describe('OrdenesService', () => {
       await service.update(
         'orden_1',
         { estado: 'COMPLETADA' },
+        MOCK_MANTENEDOR,
         { estado: 'PENDIENTE' },
       );
 
@@ -857,6 +1134,7 @@ describe('OrdenesService', () => {
       await service.update(
         'orden_1',
         { estado: 'COMPLETADA' },
+        MOCK_MANTENEDOR,
         { estado: 'PENDIENTE' },
       );
 
@@ -875,11 +1153,9 @@ describe('OrdenesService', () => {
       ordenTrabajoUpdate.mockRejectedValue(new Error('boom'));
 
       await expect(
-        service.update(
-          'orden_1',
-          { estado: 'COMPLETADA' },
-          { estado: 'PENDIENTE' },
-        ),
+        service.update('orden_1', { estado: 'COMPLETADA' }, MOCK_MANTENEDOR, {
+          estado: 'PENDIENTE',
+        }),
       ).rejects.toThrow('boom');
       expect(emit).not.toHaveBeenCalled();
     });
@@ -899,10 +1175,14 @@ describe('OrdenesService', () => {
         estado: 'COMPLETADA',
       });
 
-      await service.update('orden_1', {
-        estado: 'COMPLETADA',
-        equipmentStatus: 'OUT_OF_SERVICE',
-      });
+      await service.update(
+        'orden_1',
+        {
+          estado: 'COMPLETADA',
+          equipmentStatus: 'OUT_OF_SERVICE',
+        },
+        MOCK_MANTENEDOR,
+      );
 
       // `equipoId` de la OT ('CM-003') resuelto contra Flota, como en insumos.
       expect(equipmentUpdate).toHaveBeenCalledWith({
@@ -915,10 +1195,14 @@ describe('OrdenesService', () => {
       ordenTrabajoFindUnique.mockResolvedValue(enProceso);
 
       await expect(
-        service.update('orden_1', {
-          titulo: 'Otro título',
-          equipmentStatus: 'OPERATIONAL',
-        }),
+        service.update(
+          'orden_1',
+          {
+            titulo: 'Otro título',
+            equipmentStatus: 'OPERATIONAL',
+          },
+          MOCK_MANTENEDOR,
+        ),
       ).rejects.toMatchObject({ status: 400 });
       expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
       expect(equipmentUpdate).not.toHaveBeenCalled();
@@ -932,10 +1216,14 @@ describe('OrdenesService', () => {
       });
       equipmentFindUnique.mockResolvedValue(null);
 
-      await service.update('orden_1', {
-        estado: 'COMPLETADA',
-        equipmentStatus: 'OPERATIONAL',
-      });
+      await service.update(
+        'orden_1',
+        {
+          estado: 'COMPLETADA',
+          equipmentStatus: 'OPERATIONAL',
+        },
+        MOCK_MANTENEDOR,
+      );
 
       expect(ordenTrabajoUpdate).toHaveBeenCalled();
       expect(equipmentUpdate).not.toHaveBeenCalled();
@@ -959,6 +1247,7 @@ describe('OrdenesService', () => {
       await service.update(
         'orden_1',
         { estado: 'COMPLETADA', equipmentStatus: 'OPERATIONAL' },
+        MOCK_MANTENEDOR,
         { estado: 'EN_PROCESO' },
       );
 
@@ -1061,7 +1350,11 @@ describe('OrdenesService', () => {
       });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
-      await service.update('orden_1', { estado: 'COMPLETADA' });
+      await service.update(
+        'orden_1',
+        { estado: 'COMPLETADA' },
+        MOCK_MANTENEDOR,
+      );
 
       // Condicionado a EN_PROCESO: no pisa un cierre manual del supervisor.
       expect(hallazgoUpdateMany).toHaveBeenCalledWith({
@@ -1083,7 +1376,7 @@ describe('OrdenesService', () => {
       });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
-      await service.update('orden_1', { estado: 'CANCELADA' });
+      await service.update('orden_1', { estado: 'CANCELADA' }, MOCK_MANTENEDOR);
 
       expect(hallazgoUpdateMany).toHaveBeenCalledWith({
         where: { id: 'hallazgo_1', estado: 'EN_PROCESO' },
@@ -1104,10 +1397,358 @@ describe('OrdenesService', () => {
       });
       userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
 
-      await service.update('orden_1', { titulo: 'Otro título' });
+      await service.update(
+        'orden_1',
+        { titulo: 'Otro título' },
+        MOCK_MANTENEDOR,
+      );
 
       expect(hallazgoUpdate).not.toHaveBeenCalled();
       expect(hallazgoUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lectura de la mantención al completar (ancla)', () => {
+    /** La OT que crea `checkLightServices` para un liviano sin pauta. */
+    const MOCK_LIVIANO = {
+      ...MOCK_ORDEN,
+      id: 'orden_liv',
+      equipoId: 'eq_liv',
+      titulo: 'Mantención 30.000 km · CM-010',
+      estado: 'EN_PROCESO',
+      tipo: 'PREVENTIVA',
+      origen: 'PREVENTIVO',
+      origenDetalle: 'Livianos: mantención de 30.000 km',
+    };
+    const CAMIONETA = {
+      id: 'eq_liv',
+      equipmentClass: 'LIGHT',
+      controlUnit: 'KM',
+      currentHourmeter: null,
+      currentMileage: 31_500,
+    };
+
+    /** El último tick de la orden de pauta: la orden pasa sola a COMPLETADA. */
+    const ultimoTick = (dto: { lecturaMantencion?: number }) => {
+      tareaOTFindUnique.mockResolvedValue({
+        id: 'tarea_b',
+        ordenId: 'orden_prev',
+        planItemId: 'item_b',
+        texto: 'Cambio de filtro',
+      });
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'EN_PROCESO',
+      });
+      tareaOTUpdate.mockResolvedValue({
+        id: 'tarea_b',
+        texto: 'Cambio de filtro',
+        hecha: true,
+        posicion: 1,
+        notas: null,
+        fotoKey: null,
+      });
+      tareaOTFindMany.mockResolvedValue([{ hecha: true }, { hecha: true }]);
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'COMPLETADA',
+      });
+      return service.updateTarea(
+        'orden_prev',
+        'tarea_b',
+        { hecha: true, ...dto },
+        MOCK_MANTENEDOR,
+      );
+    };
+
+    /** El argumento de la última llamada a un mock sin tipar: afirmarlo con
+     * `expect.any()` dentro de un literal dispara `no-unsafe-assignment`. */
+    const ultimaLlamada = (mockFn: jest.Mock) => {
+      const calls = mockFn.mock.calls as unknown as Array<
+        [{ where: Record<string, unknown>; data: Record<string, unknown> }]
+      >;
+      return calls[calls.length - 1][0];
+    };
+
+    beforeEach(() => {
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+    });
+
+    it('last tick with lecturaMantencion rewrites counterAt of the milestone records', async () => {
+      await ultimoTick({ lecturaMantencion: 240 });
+
+      const { where, data } = ultimaLlamada(recordUpdateMany);
+      expect(where).toEqual({
+        equipmentId: { in: ['eq_flota_1', 'CM-003'] },
+        planItemId: { not: null },
+        cycle: 1,
+        milestone: 250,
+      });
+      expect(data.counterAt).toBe(240);
+      expect(data.doneAt).toBeInstanceOf(Date);
+      expect(ordenTrabajoUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { estado: 'COMPLETADA' } }),
+      );
+    });
+
+    it('completion without lecturaMantencion uses the current counter', async () => {
+      await ultimoTick({});
+
+      expect(ultimaLlamada(recordUpdateMany).data.counterAt).toBe(245);
+    });
+
+    it('lecturaMantencion above current counter is rejected and nothing is written', async () => {
+      await expect(ultimoTick({ lecturaMantencion: 300 })).rejects.toThrow(
+        new BadRequestException(
+          'La lectura de la mantención (300) no puede ser mayor que la lectura actual del equipo (245).',
+        ),
+      );
+      expect(tareaOTUpdate).not.toHaveBeenCalled();
+      expect(recordUpsert).not.toHaveBeenCalled();
+      expect(recordUpdateMany).not.toHaveBeenCalled();
+      expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
+    });
+
+    it('lecturaMantencion below previous anchor is rejected', async () => {
+      equipmentFindUnique.mockResolvedValue({
+        id: 'eq_flota_1',
+        equipmentClass: 'HEAVY',
+        controlUnit: 'HOURS',
+        currentHourmeter: 1_300,
+        currentMileage: null,
+      });
+      recordFindMany.mockResolvedValue([
+        {
+          equipmentId: 'eq_flota_1',
+          milestone: 500,
+          cycle: 0,
+          counterAt: 1_200,
+          doneAt: new Date('2026-10-01T12:00:00.000Z'),
+        },
+      ]);
+
+      await expect(ultimoTick({ lecturaMantencion: 1_100 })).rejects.toThrow(
+        new BadRequestException(
+          'La lectura de la mantención (1.100) no puede ser menor que la de la mantención anterior (1.200).',
+        ),
+      );
+      expect(tareaOTUpdate).not.toHaveBeenCalled();
+      expect(recordUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it('la mantención anterior no cuenta los registros de esta misma orden (marcados al tickear)', async () => {
+      await ultimoTick({ lecturaMantencion: 240 });
+
+      // Los registros de este hito y vuelta ya pueden ser el ancla: corregir
+      // la lectura hacia abajo no puede chocar contra sí misma.
+      const { where } = ultimaLlamada(recordFindMany);
+      expect(where.planItemId).toEqual({ not: null });
+      expect(where.NOT).toEqual({ cycle: 1, milestone: 250 });
+    });
+
+    it('completing a light service OT creates the SERVICIO anchor record', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(MOCK_LIVIANO);
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_LIVIANO,
+        estado: 'COMPLETADA',
+      });
+      equipmentFindUnique.mockResolvedValue(CAMIONETA);
+      recordCount.mockResolvedValue(2);
+
+      await service.update(
+        'orden_liv',
+        { estado: 'COMPLETADA', lecturaMantencion: 31_000 },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(recordCount).toHaveBeenCalledWith({
+        where: { equipmentId: 'eq_liv', planItemId: null, kind: 'SERVICIO' },
+      });
+      expect(recordCreate).toHaveBeenCalledWith({
+        data: {
+          equipmentId: 'eq_liv',
+          planItemId: null,
+          kind: 'SERVICIO',
+          milestone: 10_000,
+          cycle: 3,
+          description: 'Mantención 30.000 km · CM-010',
+          counterAt: 31_000,
+          doneById: MOCK_MANTENEDOR.id,
+          doneByName: MOCK_MANTENEDOR.name,
+        },
+      });
+    });
+
+    it('un liviano con pauta no escribe el ancla de servicio', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(MOCK_LIVIANO);
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_LIVIANO,
+        estado: 'COMPLETADA',
+      });
+      equipmentFindUnique.mockResolvedValue(CAMIONETA);
+      planFindUnique.mockResolvedValue({ id: 'plan_1' });
+
+      await service.update(
+        'orden_liv',
+        { estado: 'COMPLETADA', lecturaMantencion: 31_000 },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(recordCreate).not.toHaveBeenCalled();
+      expect(ordenTrabajoUpdate).toHaveBeenCalled();
+    });
+
+    it('lecturaMantencion on a non-completing update is rejected', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(MOCK_LIVIANO);
+
+      await expect(
+        service.update(
+          'orden_liv',
+          { titulo: 'Otro título', lecturaMantencion: 31_000 },
+          MOCK_MANTENEDOR,
+        ),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'La lectura de la mantención solo se informa al completar la orden',
+        ),
+      );
+      expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
+      expect(recordCreate).not.toHaveBeenCalled();
+    });
+
+    it('el reintento de un cierre ya aplicado no vuelve a escribir el ancla', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_LIVIANO,
+        estado: 'COMPLETADA',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_LIVIANO,
+        estado: 'COMPLETADA',
+      });
+      equipmentFindUnique.mockResolvedValue(CAMIONETA);
+
+      await service.update(
+        'orden_liv',
+        { estado: 'COMPLETADA', lecturaMantencion: 31_000 },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(recordCreate).not.toHaveBeenCalled();
+    });
+
+    it('a close whose in-transaction state is already COMPLETADA writes no SERVICIO record', async () => {
+      // Fuera de la transacción se veía EN_PROCESO; bajo el bloqueo, otro
+      // cierre (un reintento offline) ya la dejó COMPLETADA.
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce(MOCK_LIVIANO)
+        .mockResolvedValueOnce({ ...MOCK_LIVIANO, estado: 'COMPLETADA' });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_LIVIANO,
+        estado: 'COMPLETADA',
+      });
+      equipmentFindUnique.mockResolvedValue(CAMIONETA);
+
+      await service.update(
+        'orden_liv',
+        { estado: 'COMPLETADA', lecturaMantencion: 31_000 },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(queryRaw).toHaveBeenCalled();
+      expect(recordCreate).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it('un liviano sin kilometraje no gasta un número de servicio', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(MOCK_LIVIANO);
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_LIVIANO,
+        estado: 'COMPLETADA',
+      });
+      equipmentFindUnique.mockResolvedValue({
+        ...CAMIONETA,
+        currentMileage: null,
+      });
+
+      await service.update(
+        'orden_liv',
+        { estado: 'COMPLETADA' },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(recordCreate).not.toHaveBeenCalled();
+      expect(ordenTrabajoUpdate).toHaveBeenCalled();
+    });
+
+    it('pauta OT closed via update with zero ticked tasks creates records for its plan tasks with the reading', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'EN_PROCESO',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_PREVENTIVA,
+        estado: 'COMPLETADA',
+      });
+      planItemFindMany.mockResolvedValue([
+        { id: 'item_a', description: 'Cambio de aceite', kind: 'LUBRICANTE' },
+        { id: 'item_b', description: 'Cambio de filtro', kind: 'FILTRO' },
+      ]);
+
+      await service.update(
+        'orden_prev',
+        { estado: 'COMPLETADA', lecturaMantencion: 240 },
+        MOCK_MANTENEDOR,
+      );
+
+      const registro = (
+        planItemId: string,
+        description: string,
+        kind: string,
+      ) => ({
+        equipmentId: 'eq_flota_1',
+        planItemId,
+        cycle: 1,
+        milestone: 250,
+        description,
+        kind,
+        counterAt: 240,
+        doneById: MOCK_MANTENEDOR.id,
+        doneByName: MOCK_MANTENEDOR.name,
+      });
+      expect(planItemFindMany).toHaveBeenCalledWith({
+        where: { id: { in: ['item_a', 'item_b'] } },
+        select: { id: true, description: true, kind: true },
+      });
+      expect(recordCreateMany).toHaveBeenCalledWith({
+        data: [
+          registro('item_a', 'Cambio de aceite', 'LUBRICANTE'),
+          registro('item_b', 'Cambio de filtro', 'FILTRO'),
+        ],
+        skipDuplicates: true,
+      });
+      expect(ultimaLlamada(recordUpdateMany).data.counterAt).toBe(240);
+      // Las tareas quedan como estaban: solo el hito se da por hecho.
+      expect(tareaOTUpdate).not.toHaveBeenCalled();
+    });
+
+    it('una orden corriente completada no escribe ancla', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+      });
+      ordenTrabajoUpdate.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'COMPLETADA',
+      });
+
+      await service.update(
+        'orden_1',
+        { estado: 'COMPLETADA', lecturaMantencion: 100 },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(recordCreate).not.toHaveBeenCalled();
+      expect(recordUpdateMany).not.toHaveBeenCalled();
     });
   });
 });

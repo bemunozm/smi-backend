@@ -79,12 +79,20 @@ export function cycleColumns(params: {
   counter: number | null;
   /** Contador con que el equipo entró al sistema; ver `MaintenancePlan.baselineCounter`. */
   baselineCounter?: number | null;
+  /**
+   * Contador en que está el hito 0 de esta vuelta cuando se cuenta desde el
+   * último cambio real (ver `MaintenanceStatus.cycleOrigin`). Reemplaza a los
+   * múltiplos del ciclo y apaga `baselineCounter`: lo «previo al sistema» es
+   * solo el respaldo de los equipos sin ancla.
+   */
+  cycleBase?: number;
 }): CycleColumn[] {
   const { initialMilestone, items, records, cycle, counter } = params;
-  const baseline = params.baselineCounter ?? null;
+  const anclado = params.cycleBase != null;
+  const baseline = anclado ? null : (params.baselineCounter ?? null);
   const milestones = [...params.milestones].sort((a, b) => a - b);
   const cycleLength = milestones[milestones.length - 1] ?? 0;
-  const base = (cycle - 1) * cycleLength;
+  const base = params.cycleBase ?? (cycle - 1) * cycleLength;
 
   const hechas = new Set(records.map((r) => `${r.planItemId}|${r.milestone}`));
   const columna = (

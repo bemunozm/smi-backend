@@ -26,10 +26,16 @@ describe('MaintenancePlansService', () => {
       upsert: jest.fn(),
       deleteMany: jest.fn(),
       count: jest.fn(),
+      createMany: jest.fn(),
     },
-    ordenTrabajo: { findFirst: jest.fn(), create: jest.fn() },
+    ordenTrabajo: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      create: jest.fn(),
+    },
     $executeRaw: jest.fn(),
     inventoryItem: { count: jest.fn() },
+    lightVehicleConfig: { findMany: jest.fn() },
     $transaction: jest.fn(),
   };
   const changeLog = { record: jest.fn(), findFor: jest.fn() };
@@ -103,6 +109,8 @@ describe('MaintenancePlansService', () => {
         Promise.resolve({ id: `creada:${data.description}` }),
     );
     prisma.equipment.findUnique.mockResolvedValue(D6);
+    // Sin cambios registrados: sin ancla, la próxima sale de los hitos absolutos.
+    prisma.maintenanceRecord.findMany.mockResolvedValue([]);
     prisma.maintenancePlan.findUnique.mockResolvedValue(null);
     prisma.maintenancePlan.upsert.mockResolvedValue({ id: 'p1' });
     prisma.maintenancePlan.findUniqueOrThrow.mockResolvedValue(guardada(pauta));
@@ -220,6 +228,70 @@ describe('MaintenancePlansService', () => {
     expect(filas).toHaveLength(1);
     expect(filas[0]).toMatchObject({ equipmentId: 'e1', unit: 'h' });
     expect(filas[0].status.next?.milestone).toBe(250);
+  });
+
+  /** Un cambio registrado del equipo, como lo devuelve la consulta del ancla. */
+  const cambio = (milestone: number, cycle: number, counterAt: number) => ({
+    equipmentId: 'e1',
+    milestone,
+    cycle,
+    counterAt,
+    doneAt: new Date('2026-11-01T12:00:00Z'),
+  });
+
+  /**
+   * La consulta del ancla pide solo registros con contador; la de la vuelta,
+   * los de un ciclo. El mock responde a cada una por su filtro.
+   */
+  const conAncla = (...anclas: ReturnType<typeof cambio>[]) =>
+    prisma.maintenanceRecord.findMany.mockImplementation(
+      ({ where }: { where: { counterAt?: unknown } }) =>
+        Promise.resolve(where.counterAt ? anclas : []),
+    );
+
+  it('statusForAll usa el último cambio registrado como ancla', async () => {
+    const hitos = [250, 500, 750, 1000, 1250, 1500, 1750, 2000];
+    prisma.maintenancePlan.findMany.mockResolvedValue([
+      guardada({
+        milestones: hitos,
+        items: [{ kind: 'FILTRO', description: 'Filtro', milestones: hitos }],
+      }),
+    ]);
+    prisma.equipment.findMany.mockResolvedValue([
+      { ...D6, currentHourmeter: 2_600 },
+    ]);
+    conAncla(cambio(500, 2, 2_480), cambio(250, 2, 2_230));
+
+    const [fila] = await service.statusForAll();
+
+    // La de 500 se hizo a las 2.480 h: la de 750 toca a las 2.730, no a las 2.750.
+    expect(fila.status.next).toMatchObject({
+      milestone: 750,
+      dueAt: 2_730,
+      remaining: 130,
+    });
+    expect(fila.status.anchor).toMatchObject({
+      milestone: 500,
+      counterAt: 2_480,
+    });
+    expect(fila.status.estimated).toBe(false);
+    // Una sola consulta para todos los equipos, del último cambio de la secuencia hacia atrás.
+    expect(prisma.maintenanceRecord.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.maintenanceRecord.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          equipmentId: { in: ['e1'] },
+          planItemId: { not: null },
+          counterAt: { not: null },
+        },
+        orderBy: [
+          { cycle: 'desc' },
+          { milestone: 'desc' },
+          { counterAt: 'desc' },
+          { doneAt: 'desc' },
+        ],
+      }),
+    );
   });
 
   /**
@@ -398,6 +470,32 @@ describe('MaintenancePlansService', () => {
       expect(arg.create.baselineCounter).toBe(2100);
     });
 
+    it('getCycle con ancla toma la vuelta en curso del ancla y corre los vencimientos', async () => {
+      // La de 1.000 del ciclo 1 se hizo a las 1.900 h: la vuelta empezó en las
+      // 900 y la de 2.000 toca a las 2.900. Por horómetro absoluto (2.100 h)
+      // diría ciclo 2.
+      conAncla(cambio(1000, 1, 1_900));
+
+      const v = await service.getCycle('e1');
+
+      expect(v).toMatchObject({
+        currentCycle: 1,
+        cycle: 1,
+        cycleStart: 900,
+        cycleEnd: 2_900,
+      });
+      expect(v.columns.map((c) => c.dueAt)).toEqual([
+        1_150, 1_400, 1_900, 2_900,
+      ]);
+      await expect(
+        service.setRecord(
+          'e1',
+          { planItemId: 'i0', cycle: 2, milestone: 250, done: true },
+          editor,
+        ),
+      ).rejects.toThrow(/va en el ciclo 1/);
+    });
+
     it('rechaza marcar una operación en un hito donde no figura', async () => {
       await expect(
         service.setRecord(
@@ -423,7 +521,20 @@ describe('MaintenancePlansService', () => {
     beforeEach(() => {
       prisma.maintenanceRecord.count.mockResolvedValue(0);
       prisma.ordenTrabajo.findFirst.mockResolvedValue(null);
+      prisma.ordenTrabajo.findMany.mockResolvedValue([]);
       prisma.ordenTrabajo.create.mockResolvedValue({ id: 'ot1' });
+    });
+
+    /** Una orden de la pauta que ya tiene el `origenDetalle` de la próxima. */
+    const previa = (estado: string, extra: Record<string, unknown> = {}) => ({
+      id: 'ot-vieja',
+      estado,
+      pautaCycle: null,
+      pautaMilestone: null,
+      updatedAt: new Date('2026-10-20T15:00:00Z'),
+      createdById: null,
+      tareas: [],
+      ...extra,
     });
 
     it('a 150 h de la de 250 con aviso de 200 h crea la orden con sus tareas', async () => {
@@ -488,11 +599,152 @@ describe('MaintenancePlansService', () => {
 
     it('no repite la orden de un hito y ciclo que ya avisó', async () => {
       prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200));
-      prisma.ordenTrabajo.findFirst.mockResolvedValue({ id: 'ot-vieja' });
+      prisma.ordenTrabajo.findMany.mockResolvedValue([previa('PENDIENTE')]);
 
       expect(await service.checkAlert('e1')).toBeNull();
       expect(prisma.ordenTrabajo.create).not.toHaveBeenCalled();
       expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('una orden CANCELADA del mismo hito frena el aviso mientras no esté atrasada', async () => {
+      // BD-005 con 2.100 h: faltan 150 h para la de 250 del ciclo 2.
+      prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200));
+      prisma.ordenTrabajo.findMany.mockResolvedValue([previa('CANCELADA')]);
+
+      expect(await service.checkAlert('e1')).toBeNull();
+      expect(prisma.ordenTrabajo.create).not.toHaveBeenCalled();
+    });
+
+    it('atrasada, una orden CANCELADA del mismo hito ya no frena: se crea otra', async () => {
+      // La de 1.000 del ciclo 1 a las 1.000 h: la de 2.000 va 100 h atrasada.
+      prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200, 2100));
+      conAncla(cambio(1000, 1, 1_000));
+      prisma.ordenTrabajo.findMany.mockResolvedValue([previa('CANCELADA')]);
+      // Por si se busca de a una: la del mismo `origenDetalle` es la cancelada.
+      prisma.ordenTrabajo.findFirst.mockImplementation(
+        ({ where }: { where: { origenDetalle?: string } }) =>
+          Promise.resolve(where.origenDetalle ? previa('CANCELADA') : null),
+      );
+
+      expect(await service.checkAlert('e1')).toBe('ot1');
+      expect(prisma.ordenTrabajo.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('atrasada, una COMPLETADA del mismo hito sigue frenando aunque haya una CANCELADA', async () => {
+      prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200, 2100));
+      conAncla(cambio(1000, 1, 1_000));
+      prisma.ordenTrabajo.findMany.mockResolvedValue([
+        previa('CANCELADA'),
+        previa('COMPLETADA'),
+      ]);
+
+      expect(await service.checkAlert('e1')).toBeNull();
+      expect(prisma.ordenTrabajo.create).not.toHaveBeenCalled();
+    });
+
+    it('una orden de pauta COMPLETADA sin registro del hito lo escribe y no crea otra', async () => {
+      // Cerrada antes de que el cierre escribiera el ancla: el hito quedó sin
+      // registro y, contada desde el ancla, la próxima sigue siendo esa.
+      prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200, 2100));
+      conAncla(cambio(1000, 1, 1_000));
+      const cerrada = new Date('2026-10-20T15:00:00Z');
+      prisma.ordenTrabajo.findMany.mockResolvedValue([
+        previa('COMPLETADA', {
+          pautaCycle: 1,
+          pautaMilestone: 2000,
+          updatedAt: cerrada,
+          createdById: 'u-admin',
+          tareas: [
+            { planItemId: 'i0', texto: 'Filtro aceite motor · 1' },
+            { planItemId: 'i1', texto: 'Aceite motor 15W-40 · 24 LT' },
+            { planItemId: null, texto: 'Revisar fugas' },
+          ],
+        }),
+      ]);
+
+      expect(await service.checkAlert('e1')).toBeNull();
+
+      expect(prisma.ordenTrabajo.create).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(prisma.maintenanceRecord.createMany).toHaveBeenCalledWith({
+        data: [
+          expect.objectContaining({
+            equipmentId: 'e1',
+            planItemId: 'i0',
+            cycle: 1,
+            milestone: 2000,
+            description: 'Filtro aceite motor',
+            kind: 'FILTRO',
+            counterAt: 2000,
+            doneAt: cerrada,
+            doneById: 'u-admin',
+            doneByName: 'Sistema (cierre previo)',
+          }),
+          expect.objectContaining({
+            planItemId: 'i1',
+            description: 'Aceite motor 15W-40',
+            kind: 'ACEITE',
+          }),
+        ],
+        skipDuplicates: true,
+      });
+    });
+
+    it('una COMPLETADA sin hito de pauta no se repara: solo frena', async () => {
+      prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200, 2100));
+      conAncla(cambio(1000, 1, 1_000));
+      prisma.ordenTrabajo.findMany.mockResolvedValue([previa('COMPLETADA')]);
+
+      expect(await service.checkAlert('e1')).toBeNull();
+      expect(prisma.maintenanceRecord.createMany).not.toHaveBeenCalled();
+      expect(prisma.ordenTrabajo.create).not.toHaveBeenCalled();
+    });
+
+    it('no crea una segunda orden si el equipo ya tiene una preventiva abierta de otro hito', async () => {
+      prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200));
+      // Nada con este `origenDetalle`, pero sí una preventiva sin cerrar.
+      prisma.ordenTrabajo.findFirst.mockImplementation(
+        ({ where }: { where: { estado?: unknown } }) =>
+          Promise.resolve(where.estado ? { id: 'ot-abierta' } : null),
+      );
+
+      expect(await service.checkAlert('e1')).toBeNull();
+      expect(prisma.ordenTrabajo.create).not.toHaveBeenCalled();
+      expect(prisma.ordenTrabajo.findFirst).toHaveBeenCalledWith({
+        where: {
+          equipoId: { in: ['e1', 'BD-005'] },
+          origen: 'PREVENTIVO',
+          estado: { in: ['PENDIENTE', 'ASIGNADA', 'EN_PROCESO'] },
+        },
+        select: { id: true },
+      });
+    });
+
+    it('anclado y atrasado: crea la orden con prioridad ALTA y la vuelta del ancla', async () => {
+      // Entró con 2.100 h, pero hay un cambio real: lo previo al sistema ya no
+      // descarta nada. La de 1.000 del ciclo 1 se hizo a las 1.000 h: la de
+      // 2.000 tocaba a las 2.000 y van 100 h de atraso.
+      prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200, 2100));
+      conAncla(cambio(1000, 1, 1_000));
+
+      expect(await service.checkAlert('e1')).toBe('ot1');
+
+      const [arg] = prisma.ordenTrabajo.create.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(arg.data).toMatchObject({
+        titulo: 'Mantención preventiva 2.000 h · BD-005',
+        origenDetalle: 'Pauta: 2.000 h · ciclo 1',
+        pautaMilestone: 2000,
+        pautaCycle: 1,
+        prioridad: 'ALTA',
+      });
+      expect(prisma.maintenanceRecord.count).toHaveBeenCalledWith({
+        where: expect.objectContaining({
+          cycle: 1,
+          milestone: 2000,
+        }) as unknown,
+      });
     });
 
     it('no avisa si el mantenedor ya registró ese hito completo', async () => {
@@ -509,6 +761,66 @@ describe('MaintenancePlansService', () => {
       prisma.maintenancePlan.findUnique.mockResolvedValue(conAviso(200));
 
       expect(await service.checkAll()).toBe(1);
+    });
+  });
+  describe('board', () => {
+    it('devuelve una fila por equipo, con consultas fijas', async () => {
+      const base = {
+        brand: 'CAT',
+        model: 'X',
+        status: 'OPERATIONAL',
+        currentHourmeter: null,
+        currentMileage: null,
+      };
+      prisma.equipment.findMany.mockResolvedValue([
+        {
+          ...base,
+          id: 'e1',
+          internalCode: 'BD-005',
+          type: 'Bulldozer',
+          equipmentClass: 'HEAVY',
+          controlUnit: 'HOURS',
+          currentHourmeter: 2100,
+        },
+        {
+          ...base,
+          id: 'e2',
+          internalCode: 'LV-001',
+          type: 'Camioneta',
+          equipmentClass: 'LIGHT',
+          controlUnit: 'KM',
+          currentMileage: 24000,
+          status: 'OUT_OF_SERVICE',
+        },
+        {
+          ...base,
+          id: 'e3',
+          internalCode: 'GR-001',
+          type: 'Grua',
+          equipmentClass: 'HEAVY',
+          controlUnit: 'HOURS',
+        },
+      ]);
+      prisma.maintenancePlan.findMany.mockResolvedValue([
+        { ...guardada(pauta), equipmentId: 'e1', alertBefore: 20 },
+      ]);
+      prisma.lightVehicleConfig.findMany.mockResolvedValue([
+        { equipmentId: 'e2', serviceAlertKm: 1500 },
+      ]);
+      prisma.maintenanceRecord.findMany.mockResolvedValue([]);
+
+      const filas = await service.board();
+
+      expect(filas.map((f) => [f.equipmentId, f.source])).toEqual([
+        ['e1', 'PAUTA'],
+        ['e2', 'LIVIANO'],
+        ['e3', 'SIN_PAUTA'],
+      ]);
+      expect(filas[1].alertBefore).toBe(1500);
+      expect(prisma.equipment.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.maintenancePlan.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.lightVehicleConfig.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.maintenanceRecord.findMany).toHaveBeenCalledTimes(2);
     });
   });
 });

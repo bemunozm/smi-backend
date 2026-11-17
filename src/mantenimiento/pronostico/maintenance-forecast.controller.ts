@@ -16,8 +16,9 @@ const LECTORES = [ROLES.ADMIN, ROLES.MANTENEDOR, ROLES.SUPERVISOR];
 export class MaintenanceForecastController {
   constructor(private readonly service: MaintenanceForecastService) {}
 
+  // SECRETARIA también: la pizarra de mantenciones muestra la fecha estimada.
   @Get()
-  @Roles(LECTORES)
+  @Roles([...LECTORES, ROLES.SECRETARIA])
   async forAll() {
     return { data: await this.service.forAll(), message: 'ok' };
   }

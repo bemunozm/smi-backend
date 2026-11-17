@@ -3,6 +3,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { todayInBusinessTimeZone } from '../../common/dates/business-time';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { MaintenancePlansService } from '../maintenance-plans/maintenance-plans.service';
+import { loadLightAnchors } from '../maintenance-plans/maintenance-anchors';
 import {
   LIGHT_SERVICE_INTERVAL_KM,
   nextLightService,
@@ -90,8 +91,22 @@ export class MaintenanceForecastService {
     const pautas = new Map(
       (await this.plans.statusForAll()).map((p) => [p.equipmentId, p]),
     );
+    // Un liviano sin pauta cuenta desde su último servicio registrado: se
+    // buscan solo los de esos equipos, en una consulta.
+    const anclas = await loadLightAnchors(
+      this.prisma,
+      equipos
+        .filter(
+          (e) =>
+            !pautas.has(e.id) &&
+            e.equipmentClass === 'LIGHT' &&
+            e.controlUnit === 'KM',
+        )
+        .map((e) => e.id),
+    );
 
-    // Lo que falta: la pauta manda; un liviano sin pauta va por el ciclo de 10.000 km.
+    // Lo que falta: la pauta manda; un liviano sin pauta va por el ciclo de
+    // 10.000 km. Atrasada (lo que falta es negativo) sale como «toca ahora».
     const proximas = equipos.flatMap((e): Proxima[] => {
       const pauta = pautas.get(e.id);
       if (pauta?.status.next) {
@@ -111,6 +126,8 @@ export class MaintenanceForecastService {
       const liviano = nextLightService(
         e.currentMileage,
         LIGHT_SERVICE_INTERVAL_KM,
+        undefined,
+        anclas.get(e.id)?.counterAt ?? null,
       );
       if (!liviano) return [];
       return [

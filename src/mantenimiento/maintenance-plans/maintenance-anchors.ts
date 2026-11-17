@@ -1,0 +1,143 @@
+/**
+ * El «ancla» de cada equipo: su último cambio real, desde el que se cuenta la
+ * próxima mantención (ver `computeMaintenanceStatus`).
+ *
+ * Se lee en una sola consulta para todos los equipos pedidos —la tabla de
+ * Equipos, el pronóstico y la revisión periódica la piden de muchos a la vez—
+ * y acepta el `tx` de una transacción: el cierre de una OT escribe el ancla y
+ * la vuelve a leer dentro de la misma.
+ */
+import { EstadoOT, type Prisma } from '@prisma/client';
+
+import type { PrismaService } from '../../common/prisma/prisma.service';
+import type { MaintenanceAnchor } from './maintenance-plan-status';
+
+type Db = Prisma.TransactionClient | PrismaService;
+
+/** El registro que marca el servicio de un liviano sin pauta (no es de ninguna operación). */
+export const LIGHT_SERVICE_RECORD_KIND = 'SERVICIO';
+
+/**
+ * El último cambio de la pauta de cada equipo: el registro de una operación
+ * con contador que va más adelante en la secuencia —la vuelta más alta y, en
+ * ella, el hito más alto— y, entre las operaciones de un mismo hito, la de
+ * mayor contador y la más reciente. No se ordena por contador: la grilla del
+ * ciclo guarda el horómetro de hoy al marcar, y completar ahí una operación de
+ * una vuelta pasada no puede volver atrás la próxima mantención. El servicio
+ * inicial queda antes del primer hito de la vuelta 1 por ser menor (la pauta
+ * no acepta uno que no lo sea). Los registros sin contador no sirven: no dicen
+ * desde dónde contar.
+ *
+ * `excluir` deja fuera un hito y vuelta: al cerrar una orden de pauta, sus
+ * propios registros (escritos al marcar cada tarea) no son «la anterior».
+ */
+export function loadPlanAnchors(
+  db: Db,
+  equipmentIds: string[],
+  excluir?: { cycle: number; milestone: number },
+): Promise<Map<string, MaintenanceAnchor>> {
+  return ultimos(
+    db,
+    equipmentIds,
+    {
+      planItemId: { not: null },
+      ...(excluir
+        ? { NOT: { cycle: excluir.cycle, milestone: excluir.milestone } }
+        : {}),
+    },
+    [{ cycle: 'desc' }, { milestone: 'desc' }, ...POR_CONTADOR],
+  );
+}
+
+/**
+ * El último servicio de cada liviano sin pauta: no tiene operación de pauta
+ * (`planItemId` nulo) y se guarda con `kind = 'SERVICIO'`. Manda la vuelta más
+ * alta y, en ella, el mayor contador.
+ */
+export function loadLightAnchors(
+  db: Db,
+  equipmentIds: string[],
+): Promise<Map<string, MaintenanceAnchor>> {
+  return ultimos(
+    db,
+    equipmentIds,
+    { planItemId: null, kind: LIGHT_SERVICE_RECORD_KIND },
+    [{ cycle: 'desc' }, ...POR_CONTADOR],
+  );
+}
+
+/** Las órdenes que siguen en el tablero del taller (no cerradas ni canceladas). */
+const ESTADOS_ABIERTOS: EstadoOT[] = [
+  EstadoOT.PENDIENTE,
+  EstadoOT.ASIGNADA,
+  EstadoOT.EN_PROCESO,
+];
+
+/**
+ * El equipo ya tiene una orden PREVENTIVA sin cerrar, de cualquier hito o
+ * kilometraje. Es el resguardo contra órdenes preventivas duplicadas que
+ * comparten el aviso de pauta y el de livianos: contada desde el ancla, la
+ * vuelta (o el km) puede no coincidir con el `origenDetalle` de una orden
+ * creada con la regla anterior, y mientras haya una abierta no se crea otra.
+ * `equipoId` es texto libre: el taller suele guardar el código interno (ver
+ * `OrdenesService.resolveEquipmentId`), así que se aceptan ambos.
+ */
+export async function tienePreventivaAbierta(
+  db: Db,
+  equipmentId: string,
+  internalCode: string,
+): Promise<boolean> {
+  const abierta = await db.ordenTrabajo.findFirst({
+    where: {
+      equipoId: { in: [equipmentId, internalCode] },
+      origen: 'PREVENTIVO',
+      estado: { in: ESTADOS_ABIERTOS },
+    },
+    select: { id: true },
+  });
+  return abierta != null;
+}
+
+/** El desempate: el mayor contador y, entre iguales, el más reciente. */
+const POR_CONTADOR: Prisma.MaintenanceRecordOrderByWithRelationInput[] = [
+  { counterAt: 'desc' },
+  { doneAt: 'desc' },
+];
+
+async function ultimos(
+  db: Db,
+  equipmentIds: string[],
+  filtro: Prisma.MaintenanceRecordWhereInput,
+  orderBy: Prisma.MaintenanceRecordOrderByWithRelationInput[],
+): Promise<Map<string, MaintenanceAnchor>> {
+  const anclas = new Map<string, MaintenanceAnchor>();
+  if (equipmentIds.length === 0) return anclas;
+  const registros = await db.maintenanceRecord.findMany({
+    where: {
+      equipmentId: { in: [...new Set(equipmentIds)] },
+      ...filtro,
+      counterAt: { not: null },
+    },
+    orderBy,
+    select: {
+      equipmentId: true,
+      milestone: true,
+      cycle: true,
+      counterAt: true,
+      doneAt: true,
+    },
+  });
+  // Vienen del último cambio de la secuencia hacia atrás: el primero de cada
+  // equipo es su ancla. Un hito tiene una fila por operación, cada una con el
+  // contador de cuando se marcó: manda la última.
+  for (const r of registros) {
+    if (anclas.has(r.equipmentId) || r.counterAt == null) continue;
+    anclas.set(r.equipmentId, {
+      milestone: r.milestone,
+      cycle: r.cycle,
+      counterAt: r.counterAt,
+      doneAt: r.doneAt,
+    });
+  }
+  return anclas;
+}

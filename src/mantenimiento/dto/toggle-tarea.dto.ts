@@ -2,9 +2,12 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -38,4 +41,13 @@ export class ToggleTareaDto {
   @IsOptional()
   @IsString()
   branchId?: string;
+
+  /** Horómetro o km del equipo cuando se hizo la mantención. Solo se
+   * informa al completar la orden: pasa a ser el ancla desde la que se
+   * cuenta la próxima. Sin ella vale la lectura actual del equipo. */
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(1_000_000)
+  lecturaMantencion?: number;
 }

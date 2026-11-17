@@ -180,3 +180,25 @@ describe('mantenciones previas al sistema', () => {
     expect(cols.some((c) => c.preSystem)).toBe(false);
   });
 });
+
+describe('cycleColumns con cycleBase (vuelta anclada al último cambio real)', () => {
+  it('cuenta los hitos desde la base dada y no da nada por hecho antes de entrar', () => {
+    const [h250, h500] = cycleColumns({
+      milestones: [250, 500],
+      initialMilestone: null,
+      items: [{ id: 'aceite', milestones: [250, 500] }],
+      records: [],
+      cycle: 2,
+      counter: 800,
+      baselineCounter: 5_000,
+      cycleBase: 530,
+    });
+
+    expect(h250).toMatchObject({ dueAt: 780, preSystem: false, reached: true });
+    expect(h500).toMatchObject({
+      dueAt: 1_030,
+      preSystem: false,
+      reached: false,
+    });
+  });
+});
