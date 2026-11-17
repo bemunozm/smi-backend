@@ -491,7 +491,14 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       : await loadLightAnchors(this.prisma, [equipmentId], {
           cycle: ancla.cycle,
         });
-    assertLecturaNoBajaDeAnterior(dto.counterAt, anteriores.get(equipmentId));
+    const anterior = anteriores.get(equipmentId);
+    assertLecturaNoBajaDeAnterior(dto.counterAt, anterior);
+    // Tampoco puede quedar antes que el cambio previo: el mismo día sí.
+    if (anterior && dto.doneAt < todayInBusinessTimeZone(anterior.doneAt)) {
+      throw new BadRequestException(
+        'La fecha del último cambio no puede ser anterior a la del cambio previo.',
+      );
+    }
 
     const etiquetaContador = unit === 'km' ? 'Kilometraje' : 'Horómetro';
     const cambios: FieldChange[] = [];
@@ -544,7 +551,9 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         );
       });
       // Con el ancla corregida la próxima mantención puede quedar dentro del
-      // margen de aviso.
+      // margen de aviso. El de un liviano sin pauta lo crea la revisión
+      // periódica de `VencimientosService` (que ya depende de este servicio:
+      // llamarla desde acá sería una dependencia circular).
       if (plan) await this.checkAlert(equipmentId);
     }
 

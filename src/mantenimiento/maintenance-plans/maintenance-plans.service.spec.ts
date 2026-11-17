@@ -877,7 +877,9 @@ describe('MaintenancePlansService', () => {
     const conAnclas = () =>
       prisma.maintenanceRecord.findMany
         .mockResolvedValueOnce([registro('e1', 500, 2, 2_050)])
-        .mockResolvedValueOnce([registro('e1', 250, 2, 1_800)]);
+        .mockResolvedValueOnce([
+          registro('e1', 250, 2, 1_800, new Date('2026-10-01T15:00:00.000Z')),
+        ]);
 
     it('corrige todos los registros del hito y vuelta del último cambio', async () => {
       conAnclas();
@@ -922,7 +924,15 @@ describe('MaintenancePlansService', () => {
       prisma.maintenancePlan.findMany.mockResolvedValue([]);
       prisma.maintenanceRecord.findMany
         .mockResolvedValueOnce([registro('e2', 10_000, 3, 29_000)])
-        .mockResolvedValueOnce([registro('e2', 10_000, 2, 20_000)]);
+        .mockResolvedValueOnce([
+          registro(
+            'e2',
+            10_000,
+            2,
+            20_000,
+            new Date('2026-06-01T15:00:00.000Z'),
+          ),
+        ]);
 
       const fila = await service.correctLastChange(
         'e2',
@@ -988,6 +998,34 @@ describe('MaintenancePlansService', () => {
         ),
       ).rejects.toThrow('no puede ser menor que la de la mantención anterior');
       expect(prisma.maintenanceRecord.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rechaza una fecha anterior a la del cambio previo', async () => {
+      // La anterior (250 h) es del 01-10-2026.
+      conAnclas();
+
+      await expect(
+        service.correctLastChange(
+          'e1',
+          { doneAt: '2026-09-30', counterAt: 2_040 },
+          editor,
+        ),
+      ).rejects.toThrow(
+        'La fecha del último cambio no puede ser anterior a la del cambio previo.',
+      );
+      expect(prisma.maintenanceRecord.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('acepta el mismo día del cambio previo', async () => {
+      conAnclas();
+
+      await service.correctLastChange(
+        'e1',
+        { doneAt: '2026-10-01', counterAt: 2_040 },
+        editor,
+      );
+
+      expect(prisma.maintenanceRecord.updateMany).toHaveBeenCalled();
     });
 
     it('sin último cambio no hay nada que corregir', async () => {
