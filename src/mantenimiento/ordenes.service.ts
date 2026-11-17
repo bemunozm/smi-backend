@@ -721,6 +721,13 @@ export class OrdenesService {
         });
       }
       await tx.ordenTrabajo.delete({ where: { id } });
+      // Los registros del hito (los de «ya se hizo» y los de tareas marcadas)
+      // se quedan, pero sin apuntar a una orden que ya no existe: la pizarra
+      // los trata como un cambio sin orden.
+      await tx.maintenanceRecord.updateMany({
+        where: { ordenId: id },
+        data: { ordenId: null },
+      });
     });
 
     for (const key of fotos) await this.storage.deleteBestEffort(key);

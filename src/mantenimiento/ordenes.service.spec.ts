@@ -703,6 +703,11 @@ describe('OrdenesService', () => {
         where: { id: 'orden_1' },
       });
       expect(recordCreateMany).not.toHaveBeenCalled();
+      // Los registros que la apuntaban quedan sin orden (no apuntan a una borrada).
+      expect(recordUpdateMany).toHaveBeenCalledWith({
+        where: { ordenId: 'orden_1' },
+        data: { ordenId: null },
+      });
     });
 
     it('una preventiva «ya hecha» registra sus operaciones en el hito antes de borrarse', async () => {
