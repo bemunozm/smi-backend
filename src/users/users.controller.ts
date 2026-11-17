@@ -46,10 +46,12 @@ function assertNonEmptyId(id: string): void {
 }
 
 function isAdminSession(session: UserSession): boolean {
+  return sessionIs(session, ROLES.ADMIN);
+}
+
+function sessionIs(session: UserSession, rol: string): boolean {
   const { role } = session.user;
-  return Array.isArray(role)
-    ? role.includes(ROLES.ADMIN)
-    : role === ROLES.ADMIN;
+  return Array.isArray(role) ? role.includes(rol) : role === rol;
 }
 
 // Solo ADMIN: gestión de usuarios es información sensible (roles, estado de
@@ -68,13 +70,17 @@ export class UsersController {
    * método que `EquipmentController.updateStatus`). El resto de la gestión
    * de usuarios (crear/editar/banear) se mantiene ADMIN-only.
    *
+   * MANTENEDOR (17/11/2026): solo `?role=MANTENEDOR`, para elegir el
+   * responsable al editar una operación del taller. Cualquier otro rol se le
+   * rechaza: no necesita ver a supervisores ni administradores.
+   *
    * Sin `?role=`, la respuesta es el directorio COMPLETO (email, rol, estado
    * de baneo de TODOS los usuarios, incluidos otros ADMIN) — eso se reserva
    * a ADMIN. Un SUPERVISOR que llame sin `?role=` se rechaza en vez de caer
    * silenciosamente al listado completo: de lo contrario podría enumerar
    * todo el directorio con la excusa de poblar un picker.
    */
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR])
   @Get()
   async findAll(
     @Query() query: QueryUsersDto,
@@ -83,6 +89,15 @@ export class UsersController {
     if (!query.role && !isAdminSession(session)) {
       throw new ForbiddenException(
         'Debes indicar "?role=" para listar usuarios — el directorio completo es solo para ADMIN',
+      );
+    }
+    const soloMantenedor =
+      sessionIs(session, ROLES.MANTENEDOR) &&
+      !isAdminSession(session) &&
+      !sessionIs(session, ROLES.SUPERVISOR);
+    if (soloMantenedor && query.role !== ROLES.MANTENEDOR) {
+      throw new ForbiddenException(
+        'El mantenedor solo puede listar a los mantenedores',
       );
     }
     const data = query.role

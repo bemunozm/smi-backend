@@ -66,6 +66,27 @@ describe('UsersController', () => {
       expect(findByRole).not.toHaveBeenCalled();
     });
 
+    it('un MANTENEDOR lista solo a los mantenedores (responsable de una operación)', async () => {
+      findByRole.mockResolvedValue([]);
+
+      await controller.findAll(
+        { role: ROLES.MANTENEDOR },
+        sessionWithRole(ROLES.MANTENEDOR),
+      );
+
+      expect(findByRole).toHaveBeenCalledWith(ROLES.MANTENEDOR);
+    });
+
+    it('un MANTENEDOR no puede listar otros roles', async () => {
+      await expect(
+        controller.findAll(
+          { role: ROLES.ADMIN },
+          sessionWithRole(ROLES.MANTENEDOR),
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(findByRole).not.toHaveBeenCalled();
+    });
+
     it('permite a un ADMIN filtrar con ?role= igual que a un SUPERVISOR', async () => {
       findByRole.mockResolvedValue([]);
 

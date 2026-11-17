@@ -536,12 +536,24 @@ export class OrdenesService {
       );
     }
 
-    const write = (db: Prisma.TransactionClient) =>
+    // Quien la pasa a EN_PROCESO o la completa queda como responsable si
+    // nadie estaba asignado (pedido del cliente, 17/11/2026: el tablero
+    // mostraba «Sin asignar» en operaciones que alguien sí trabajó).
+    const write = (
+      db: Prisma.TransactionClient,
+      asignadoPrevio: string | null,
+    ) =>
       db.ordenTrabajo.update({
         where: { id },
         data: {
           estado: dto.estado,
-          asignadoAId: dto.asignadoAId,
+          asignadoAId:
+            dto.asignadoAId ??
+            (asignadoPrevio == null &&
+            (dto.estado === EstadoOT.EN_PROCESO ||
+              dto.estado === EstadoOT.COMPLETADA)
+              ? editor.id
+              : undefined),
           prioridad: dto.prioridad,
           titulo: dto.titulo,
         },
@@ -618,7 +630,7 @@ export class OrdenesService {
           notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
         });
         await applyLecturaCierre(tx, vigente.estado);
-        const actualizada = await write(tx);
+        const actualizada = await write(tx, vigente.asignadoAId);
         await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
         await applyEquipmentStatus(tx);
         return { orden: actualizada, estadoAnterior: vigente.estado };
@@ -635,6 +647,129 @@ export class OrdenesService {
       orden.asignadoAId,
     ]);
     return this.toResponseDto(orden, asignados);
+  }
+
+  /**
+   * Borra una operación PENDIENTE, ASIGNADA o EN_PROCESO (las completadas y
+   * canceladas son historial). Pedido del cliente (17/11/2026).
+   *
+   * - `yaHecha` (solo preventivas de la pauta): antes de borrar escribe el
+   *   registro del hito, igual que al completarla (`aplicarLecturaCierre`):
+   *   queda como último cambio y la pauta no la vuelve a crear. Sin él, la
+   *   revisión automática la vuelve a crear cuando le toque.
+   * - Un hallazgo ligado que seguía EN_PROCESO vuelve a ABIERTO (a la bandeja
+   *   del taller), igual que al cancelar.
+   * - Tareas e intervenciones se van por cascada; los insumos ya descontados
+   *   no se devuelven (se usaron). Las fotos se borran del bucket después.
+   */
+  async remove(
+    id: string,
+    opciones: { yaHecha?: boolean; lecturaMantencion?: number },
+    editor: Editor,
+  ): Promise<{ registradaComoHecha: boolean }> {
+    const orden = await this.findOrdenOrThrow(id);
+    if (
+      orden.estado === EstadoOT.COMPLETADA ||
+      orden.estado === EstadoOT.CANCELADA
+    ) {
+      throw new ConflictException(
+        'Solo se eliminan operaciones pendientes o en proceso: las finalizadas quedan en el historial.',
+      );
+    }
+    const registrar = opciones.yaHecha === true;
+    // Lo que se registra como hecho: la orden tal cual (pauta con hito y
+    // vuelta, o servicio de un liviano) o, en una orden de pauta anterior a
+    // esos campos, la misma orden con el hito y la vuelta leídos de su
+    // «Pauta: 250 h · ciclo 2» y las operaciones de la pauta de ese hito.
+    const aRegistrar = registrar ? await this.ordenParaRegistrar(orden) : orden;
+    // Una lectura inválida (o una orden sin nada que registrar) se rechaza
+    // antes de escribir nada.
+    if (
+      registrar &&
+      !(await this.resolverLecturaCierre(
+        this.prisma,
+        aRegistrar,
+        opciones.lecturaMantencion,
+      ))
+    ) {
+      throw new BadRequestException(
+        'Esta operación no es una mantención de la pauta ni un servicio de liviano: no hay nada que registrar como hecho.',
+      );
+    }
+    const intervenciones = await this.prisma.intervencion.findMany({
+      where: { ordenId: id },
+      select: { fotoKey: true },
+    });
+    const fotos = [
+      ...orden.tareas.map((t) => t.fotoKey),
+      ...intervenciones.map((i) => i.fotoKey),
+    ].filter((key): key is string => !!key);
+
+    await this.prisma.$transaction(async (tx) => {
+      if (registrar) {
+        await this.aplicarLecturaCierre(
+          tx,
+          aRegistrar,
+          opciones.lecturaMantencion,
+          editor,
+        );
+      }
+      if (orden.hallazgoId) {
+        await tx.hallazgo.updateMany({
+          where: { id: orden.hallazgoId, estado: 'EN_PROCESO' },
+          data: { estado: 'ABIERTO' },
+        });
+      }
+      await tx.ordenTrabajo.delete({ where: { id } });
+    });
+
+    for (const key of fotos) await this.storage.deleteBestEffort(key);
+    this.logger.log(
+      `Orden de trabajo eliminada: ${id} (${orden.titulo}) por ${editor.name ?? editor.id}${registrar ? ', registrada como hecha' : ''}`,
+    );
+    return { registradaComoHecha: registrar };
+  }
+
+  /**
+   * La orden con la que se escribe el registro de «ya se hizo». Una orden de
+   * pauta creada antes de `pautaCycle`/`pautaMilestone` solo tiene el hito en
+   * `origenDetalle` («Pauta: 1.250 h · ciclo 2») y tareas sin `planItemId`:
+   * se completa con el hito y la vuelta del texto y con las operaciones de la
+   * pauta del equipo que tocan en ese hito — lo mismo que cuenta la revisión
+   * automática para no volver a crearla.
+   */
+  private async ordenParaRegistrar(
+    orden: SelectedOrden,
+  ): Promise<SelectedOrden> {
+    if (orden.pautaCycle != null && orden.pautaMilestone != null) return orden;
+    const m = /^Pauta: ([\d.]+) (?:h|km) · ciclo (\d+)/.exec(
+      orden.origenDetalle ?? '',
+    );
+    if (!m) return orden;
+    const milestone = Number(m[1].replace(/\./g, ''));
+    const cycle = Number(m[2]);
+    const equipmentId = await this.resolveEquipmentId(orden.equipoId);
+    if (!equipmentId || !Number.isFinite(milestone)) return orden;
+    const items = await this.prisma.maintenancePlanItem.findMany({
+      where: { plan: { equipmentId }, milestones: { has: milestone } },
+      select: { id: true },
+    });
+    return {
+      ...orden,
+      pautaCycle: cycle,
+      pautaMilestone: milestone,
+      tareas: items.map((item, posicion) => ({
+        id: item.id,
+        texto: '',
+        hecha: false,
+        posicion,
+        planItemId: item.id,
+        notas: null,
+        fotoKey: null,
+        hechaPorNombre: null,
+        hechaAt: null,
+      })),
+    };
   }
 
   /**
@@ -831,7 +966,13 @@ export class OrdenesService {
           if (nuevoEstado && nuevoEstado !== ordenAnterior.estado) {
             actualizada = await tx.ordenTrabajo.update({
               where: { id: ordenId },
-              data: { estado: nuevoEstado },
+              data: {
+                estado: nuevoEstado,
+                // Sin nadie asignado, el responsable es quien trabajó la orden.
+                ...(ordenAnterior.asignadoAId == null
+                  ? { asignadoAId: editor.id }
+                  : {}),
+              },
               select: ORDEN_SELECT,
             });
             if (nuevoEstado === EstadoOT.COMPLETADA) {
@@ -843,6 +984,18 @@ export class OrdenesService {
               );
             }
           }
+        }
+        // Sin cambio de estado igual queda responsable quien marcó la tarea.
+        if (
+          dto.hecha &&
+          actualizada.asignadoAId == null &&
+          ordenAnterior.asignadoAId == null
+        ) {
+          actualizada = await tx.ordenTrabajo.update({
+            where: { id: ordenId },
+            data: { asignadoAId: editor.id },
+            select: ORDEN_SELECT,
+          });
         }
         return { updated: tareaActualizada, orden: actualizada };
       }));
