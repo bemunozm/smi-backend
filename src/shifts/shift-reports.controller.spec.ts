@@ -113,6 +113,27 @@ describe('ShiftReportsController', () => {
       .expect(404);
   });
 
+  it('GET /:id/file-url devuelve la URL firmada en JSON', async () => {
+    getSignedFileUrl.mockResolvedValue('https://minio.local/signed/r1.pdf');
+
+    const response = await request(app.getHttpServer())
+      .get('/shift-reports/r1/file-url')
+      .expect(200);
+
+    const body = response.body as { data: { url: string } };
+    expect(body.data.url).toBe('https://minio.local/signed/r1.pdf');
+  });
+
+  it('GET /:id/file-url de un reporte borrado -> 404 (el front avisa en la app)', async () => {
+    getSignedFileUrl.mockRejectedValue(
+      new NotFoundException('Reporte no encontrado'),
+    );
+
+    await request(app.getHttpServer())
+      .get('/shift-reports/no-existe/file-url')
+      .expect(404);
+  });
+
   it('GET /:id/cards devuelve las tarjetas del turno del reporte', async () => {
     shiftIdOf.mockResolvedValue('shift_1');
     cardsOfShift.mockResolvedValue([{ id: 'c1' }, { id: 'c2' }]);

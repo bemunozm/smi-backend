@@ -93,6 +93,22 @@ export class ShiftReportsController {
     return { data: null, message: 'Reporte eliminado' };
   }
 
+  /**
+   * La misma URL firmada que `GET :id/file`, pero en JSON: el front la pide
+   * ANTES de abrir el PDF y, si el reporte ya no existe (se borró por
+   * duplicado), muestra un aviso en la app en vez de abrir una pestaña con el
+   * 404 crudo del servidor.
+   */
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
+  @Get(':id/file-url')
+  async getFileUrl(@Param('id') id: string, @Session() session: UserSession) {
+    assertNonEmptyId(id);
+    return {
+      data: { url: await this.service.getSignedFileUrl(id, session) },
+      message: 'ok',
+    };
+  }
+
   @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   @Get(':id/file')
   @Redirect()

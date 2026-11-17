@@ -84,6 +84,7 @@ describe('ShiftReportsService', () => {
     registroHorometro: { findMany: jest.fn() },
     // `shift.supervisorId` es soft ref a `user.id`: el nombre se resuelve en lote.
     user: { findMany: jest.fn() },
+    notification: { deleteMany: jest.fn() },
   };
   const storage = {
     putServerFile: jest.fn(),
@@ -639,6 +640,13 @@ describe('ShiftReportsService', () => {
       expect(storage.deleteBestEffort).toHaveBeenCalledWith(
         'reports/shift-exit/2026/09/r1.pdf',
       );
+      // Su notificación abriría un PDF que ya no existe: se va con el reporte.
+      expect(prisma.notification.deleteMany).toHaveBeenCalledWith({
+        where: {
+          tipo: 'shift.exit-report',
+          data: { path: ['reportId'], equals: 'r1' },
+        },
+      });
     });
 
     it('reporte inexistente -> 404 sin tocar nada', async () => {
@@ -649,6 +657,7 @@ describe('ShiftReportsService', () => {
       );
       expect(changeLog.record).not.toHaveBeenCalled();
       expect(prisma.shiftExitReport.delete).not.toHaveBeenCalled();
+      expect(prisma.notification.deleteMany).not.toHaveBeenCalled();
       expect(storage.deleteBestEffort).not.toHaveBeenCalled();
     });
   });

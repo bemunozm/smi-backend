@@ -419,6 +419,15 @@ export class ShiftReportsService {
         'DELETE',
       );
       await tx.shiftExitReport.delete({ where: { id } });
+      // La notificación «reporte de salida» abre ESTE PDF: si se queda, al
+      // tocarla el administrador cae en un 404 crudo («Reporte no
+      // encontrado»). Se borra con el reporte.
+      await tx.notification.deleteMany({
+        where: {
+          tipo: DOMAIN_EVENTS.SHIFT_EXIT_REPORT_SENT,
+          data: { path: ['reportId'], equals: id },
+        },
+      });
     });
     await this.storage.deleteBestEffort(report.fileKey);
   }
