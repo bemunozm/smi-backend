@@ -12,7 +12,7 @@ import {
   TipoOT,
   type MaintenancePlan,
   type MaintenancePlanItem,
-  type Prisma,
+  Prisma,
 } from '@prisma/client';
 
 import {
@@ -179,6 +179,12 @@ function filas(plan: PlanConFilas | null): PlanItemForStatus[] {
 }
 
 const fmt = (n: number) => n.toLocaleString('es-CL');
+
+/** Corregir el hito del último cambio no puede pisar otra mantención. */
+const hitoOcupado = (h: { cycle: number; milestone: number }) =>
+  new BadRequestException(
+    `Ya hay una mantención registrada en el hito de ${fmt(h.milestone)} del ciclo ${h.cycle}.`,
+  );
 
 /** Cómo se lee el tipo de una orden en el registro de cambios. */
 const TIPO_LABEL: Record<TipoOT, string> = {
@@ -659,6 +665,14 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         'Solo una mantención preventiva cuenta para la pauta.',
       );
     }
+    // La orden del taller lleva su hito y vuelta (`pautaMilestone`/
+    // `pautaCycle`): con otro hito en los registros, la reparación de
+    // `checkAlert` volvería a escribir los del hito de la orden.
+    if (cambiaHito && orden && !historica) {
+      throw new BadRequestException(
+        'El hito de una mantención hecha por el taller no se puede cambiar.',
+      );
+    }
     let nuevoHito: {
       cycle: number;
       milestone: number;
@@ -684,20 +698,6 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
         milestone,
         items,
       };
-      // Reemplazar no puede pisar otra mantención ya registrada.
-      const ocupado = await this.prisma.maintenanceRecord.count({
-        where: {
-          equipmentId,
-          planItemId: { not: null },
-          cycle: nuevoHito.cycle,
-          milestone,
-        },
-      });
-      if (ocupado > 0) {
-        throw new BadRequestException(
-          `Ya hay una mantención registrada en el hito de ${fmt(milestone)} del ciclo ${nuevoHito.cycle}.`,
-        );
-      }
     }
 
     // La anterior es la del mismo tipo de ancla, sin el propio cambio: si no,
@@ -805,99 +805,123 @@ export class MaintenancePlansService implements OnModuleInit, OnModuleDestroy {
       return fila;
     }
 
-    // Quién figura en los registros del otro hito: el del cambio que
-    // reemplazan (o quien la realizó, si se corrige).
-    const autor = nuevoHito
-      ? await this.prisma.maintenanceRecord.findFirst({
-          where: grupo,
-          select: { doneById: true, doneByName: true },
-        })
-      : null;
+    // Quién figura en los registros: quien la realizó si se corrige; vacío,
+    // quien corrige (como el alta de la mantención anterior sin nombre).
     const nombreRealizada =
-      historica && cambiaRealizadaPor && realizadaPor ? realizadaPor : null;
+      historica && cambiaRealizadaPor ? (realizadaPor ?? editor.name) : null;
 
-    await this.prisma.$transaction(async (tx) => {
-      if (quitaAncla) {
-        // Una correctiva no es un cambio real: el equipo queda con el ancla
-        // anterior (o sin ella).
-        await tx.maintenanceRecord.deleteMany({ where: grupo });
-      } else if (nuevoHito) {
-        const { cycle, milestone, items } = nuevoHito;
-        await tx.maintenanceRecord.deleteMany({ where: grupo });
-        await tx.maintenanceRecord.createMany({
-          data: items.map((item) => ({
-            equipmentId,
-            planItemId: item.id,
-            cycle,
-            milestone,
-            description: item.description,
-            kind: item.kind,
-            counterAt: dto.counterAt,
-            doneAt,
-            doneById: autor?.doneById ?? editor.id,
-            doneByName: nombreRealizada ?? autor?.doneByName ?? editor.name,
-            ordenId: orden?.id ?? null,
-          })),
-        });
-      } else if (cambiaFecha || cambiaLectura || nombreRealizada) {
-        await tx.maintenanceRecord.updateMany({
-          where: grupo,
-          data: {
-            counterAt: dto.counterAt,
-            doneAt,
-            // Como en la mantención anterior: el registro lleva quién la hizo.
-            ...(nombreRealizada ? { doneByName: nombreRealizada } : {}),
-          },
-        });
-      }
-
-      if (orden) {
-        const datosOrden: Prisma.OrdenTrabajoUpdateInput = {
-          ...(titulo ? { titulo } : {}),
-          ...(tipo ? { tipo } : {}),
-          ...(cambianObservaciones
-            ? { origenDetalle: origenDetalleHistorica(observaciones) }
-            : {}),
-        };
-        if (Object.keys(datosOrden).length > 0) {
-          await tx.ordenTrabajo.update({
-            where: { id: orden.id },
-            data: datosOrden,
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        // Dentro de la transacción: otra escritura no puede ocupar el hito
+        // entre la revisión y el reemplazo (y si lo hace, el índice único lo
+        // frena: ver el catch).
+        if (nuevoHito) {
+          const ocupado = await tx.maintenanceRecord.count({
+            where: {
+              equipmentId,
+              planItemId: { not: null },
+              cycle: nuevoHito.cycle,
+              milestone: nuevoHito.milestone,
+            },
+          });
+          if (ocupado > 0) throw hitoOcupado(nuevoHito);
+        }
+        if (quitaAncla) {
+          // Una correctiva no es un cambio real: el equipo queda con el ancla
+          // anterior (o sin ella).
+          await tx.maintenanceRecord.deleteMany({ where: grupo });
+        } else if (nuevoHito) {
+          const { cycle, milestone, items } = nuevoHito;
+          // Los registros del otro hito llevan el autor del cambio que reemplazan.
+          const autor = await tx.maintenanceRecord.findFirst({
+            where: grupo,
+            select: { doneById: true, doneByName: true },
+          });
+          await tx.maintenanceRecord.deleteMany({ where: grupo });
+          await tx.maintenanceRecord.createMany({
+            data: items.map((item) => ({
+              equipmentId,
+              planItemId: item.id,
+              cycle,
+              milestone,
+              description: item.description,
+              kind: item.kind,
+              counterAt: dto.counterAt,
+              doneAt,
+              doneById: autor?.doneById ?? editor.id,
+              doneByName: nombreRealizada ?? autor?.doneByName ?? editor.name,
+              ordenId: orden?.id ?? null,
+            })),
+          });
+        } else if (cambiaFecha || cambiaLectura || nombreRealizada) {
+          await tx.maintenanceRecord.updateMany({
+            where: grupo,
+            data: {
+              counterAt: dto.counterAt,
+              doneAt,
+              // Como en la mantención anterior: el registro lleva quién la hizo.
+              ...(nombreRealizada ? { doneByName: nombreRealizada } : {}),
+            },
           });
         }
-        // La tarea de la mantención anterior cuenta lo mismo que el cambio:
-        // su fecha, la nota de la lectura, quién y qué (ver `createHistorica`).
-        if (historica) {
-          const datosTarea: Prisma.TareaOTUpdateManyMutationInput = {
-            ...(cambiaFecha ? { hechaAt: doneAt } : {}),
-            ...(cambiaLectura
-              ? {
-                  notas: notaLecturaHistorica(
-                    dto.counterAt,
-                    equipo.controlUnit,
-                  ),
-                }
+
+        if (orden) {
+          const datosOrden: Prisma.OrdenTrabajoUpdateInput = {
+            ...(titulo ? { titulo } : {}),
+            ...(tipo ? { tipo } : {}),
+            ...(cambianObservaciones
+              ? { origenDetalle: origenDetalleHistorica(observaciones) }
               : {}),
-            ...(cambiaRealizadaPor ? { hechaPorNombre: realizadaPor } : {}),
-            ...(titulo ? { texto: titulo } : {}),
           };
-          if (Object.keys(datosTarea).length > 0) {
-            await tx.tareaOT.updateMany({
-              where: { ordenId: orden.id },
-              data: datosTarea,
+          if (Object.keys(datosOrden).length > 0) {
+            await tx.ordenTrabajo.update({
+              where: { id: orden.id },
+              data: datosOrden,
             });
           }
+          // La tarea de la mantención anterior cuenta lo mismo que el cambio:
+          // su fecha, la nota de la lectura, quién y qué (ver `createHistorica`).
+          if (historica) {
+            const datosTarea: Prisma.TareaOTUpdateManyMutationInput = {
+              ...(cambiaFecha ? { hechaAt: doneAt } : {}),
+              ...(cambiaLectura
+                ? {
+                    notas: notaLecturaHistorica(
+                      dto.counterAt,
+                      equipo.controlUnit,
+                    ),
+                  }
+                : {}),
+              ...(cambiaRealizadaPor ? { hechaPorNombre: realizadaPor } : {}),
+              ...(titulo ? { texto: titulo } : {}),
+            };
+            if (Object.keys(datosTarea).length > 0) {
+              await tx.tareaOT.updateMany({
+                where: { ordenId: orden.id },
+                data: datosTarea,
+              });
+            }
+          }
         }
-      }
 
-      await this.changeLog.record(
-        tx,
-        'maintenance_plan',
-        equipmentId,
-        editor,
-        cambios,
-      );
-    });
+        await this.changeLog.record(
+          tx,
+          'maintenance_plan',
+          equipmentId,
+          editor,
+          cambios,
+        );
+      });
+    } catch (error) {
+      if (
+        nuevoHito &&
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw hitoOcupado(nuevoHito);
+      }
+      throw error;
+    }
     // Con el ancla corregida la próxima mantención puede quedar dentro del
     // margen de aviso. El de un liviano sin pauta lo crea la revisión
     // periódica de `VencimientosService` (que ya depende de este servicio:

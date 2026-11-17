@@ -1,4 +1,5 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import { Test } from '@nestjs/testing';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -1224,12 +1225,20 @@ describe('MaintenancePlansService', () => {
       it('otro hito reemplaza los registros del cambio por los de ese hito', async () => {
         prisma.maintenanceRecord.findMany
           .mockResolvedValueOnce([
-            registro('e1', 500, 2, 2_050, undefined, 'ot_taller'),
+            registro('e1', 500, 2, 2_050, undefined, 'ot_hist'),
           ])
           .mockResolvedValueOnce([
             registro('e1', 250, 2, 1_800, new Date('2026-10-01T15:00:00.000Z')),
           ]);
-        prisma.ordenTrabajo.findUnique.mockResolvedValue(ORDEN_TALLER);
+        prisma.ordenTrabajo.findUnique.mockResolvedValue(ORDEN_HISTORICA);
+        // Con aviso, la revisión de después corre entera: no puede reparar
+        // (volver a escribir) el hito de antes desde la mantención anterior.
+        prisma.maintenancePlan.findUnique.mockResolvedValue({
+          ...guardada(pauta),
+          alertBefore: 5_000,
+        });
+        prisma.ordenTrabajo.findMany.mockResolvedValue([]);
+        prisma.ordenTrabajo.create.mockResolvedValue({ id: 'ot_nueva' });
 
         await service.correctLastChange(
           'e1',
@@ -1261,17 +1270,26 @@ describe('MaintenancePlansService', () => {
               doneAt,
               doneById: 'u9',
               doneByName: 'Pedro',
-              ordenId: 'ot_taller',
+              ordenId: 'ot_hist',
             },
             expect.objectContaining({
               planItemId: 'i1',
               cycle: 2,
               milestone: 1000,
-              ordenId: 'ot_taller',
+              ordenId: 'ot_hist',
             }),
           ],
         });
         expect(prisma.maintenanceRecord.updateMany).not.toHaveBeenCalled();
+        // La reparación de `checkAlert` solo mira órdenes del aviso
+        // (PREVENTIVO): la mantención anterior (MANUAL) no vuelve el hito atrás.
+        expect(prisma.ordenTrabajo.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ origen: 'PREVENTIVO' }) as unknown,
+          }),
+        );
+        expect(prisma.maintenanceRecord.createMany).toHaveBeenCalledTimes(1);
+        expect(prisma.maintenanceRecord.deleteMany).toHaveBeenCalledTimes(1);
         expect((changeLog.record.mock.calls[0] as unknown[])[4]).toEqual([
           {
             field: 'lastChange.milestone',
@@ -1280,6 +1298,40 @@ describe('MaintenancePlansService', () => {
             after: '1.000 h',
           },
         ]);
+      });
+
+      it('rechaza otro hito si el cambio es de una orden del taller', async () => {
+        conOrden('ot_taller');
+        prisma.ordenTrabajo.findUnique.mockResolvedValue(ORDEN_TALLER);
+
+        await expect(
+          service.correctLastChange(
+            'e1',
+            { doneAt: '2026-11-10', counterAt: 2_050, milestone: 1000 },
+            editor,
+          ),
+        ).rejects.toThrow(
+          'El hito de una mantención hecha por el taller no se puede cambiar.',
+        );
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('si otro registro ocupa el hito en medio, responde 400 y no 500', async () => {
+        conAnclas();
+        prisma.maintenanceRecord.createMany.mockRejectedValueOnce(
+          new Prisma.PrismaClientKnownRequestError('unique', {
+            code: 'P2002',
+            clientVersion: 'test',
+          }),
+        );
+
+        await expect(
+          service.correctLastChange(
+            'e1',
+            { doneAt: '2026-11-10', counterAt: 2_050, milestone: 1000 },
+            editor,
+          ),
+        ).rejects.toThrow('Ya hay una mantención registrada');
       });
 
       it('rechaza un hito que no es de la pauta', async () => {
@@ -1427,6 +1479,29 @@ describe('MaintenancePlansService', () => {
           'lastChange.realizadaPor',
           'lastChange.observaciones',
         ]);
+      });
+
+      it('vaciar quién la realizó deja en los registros a quien corrige', async () => {
+        conOrden('ot_hist');
+        prisma.ordenTrabajo.findUnique.mockResolvedValue(ORDEN_HISTORICA);
+
+        await service.correctLastChange(
+          'e1',
+          { doneAt: '2026-11-10', counterAt: 2_050, realizadaPor: '' },
+          editor,
+        );
+
+        expect(prisma.maintenanceRecord.updateMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({
+              doneByName: editor.name,
+            }) as unknown,
+          }),
+        );
+        expect(prisma.tareaOT.updateMany).toHaveBeenCalledWith({
+          where: { ordenId: 'ot_hist' },
+          data: { hechaPorNombre: null },
+        });
       });
 
       it('lo que llega igual a lo guardado no escribe nada', async () => {

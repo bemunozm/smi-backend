@@ -1,4 +1,5 @@
 import { TipoOT } from '@prisma/client';
+import { Transform } from 'class-transformer';
 import {
   IsEnum,
   IsInt,
@@ -12,6 +13,11 @@ import {
 } from 'class-validator';
 
 import { IsDateOnly } from '../../../shifts/date-only';
+
+/** Recorta el texto antes de validar: un título en blanco no pasa
+ * `@IsNotEmpty`. Lo que no es texto llega tal cual a `@IsString`. */
+const recortar = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() : value;
 
 /**
  * `PATCH /maintenance-plans/:equipmentId/last-change` — el administrador
@@ -45,6 +51,7 @@ export class CorrectLastChangeDto {
   tipo?: TipoOT;
 
   @IsOptional()
+  @Transform(recortar)
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)
@@ -52,12 +59,14 @@ export class CorrectLastChangeDto {
 
   /** Quién la hizo (solo una mantención anterior). Vacío la deja sin nombre. */
   @IsOptional()
+  @Transform(recortar)
   @IsString()
   @MaxLength(120)
   realizadaPor?: string;
 
   /** Solo una mantención anterior. Vacío las borra. */
   @IsOptional()
+  @Transform(recortar)
   @IsString()
   @MaxLength(1000)
   observaciones?: string;
