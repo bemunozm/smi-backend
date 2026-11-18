@@ -699,12 +699,28 @@ model RegistroCombustible {
   /// combustible sin duplicar la foto. `SetNull` y no `Cascade`: borrar la
   /// tarjeta (excepcional) no debe arrastrarse la carga ya registrada.
   registroHorometroId String?            @unique @map("registro_horometro_id")
-  registroHorometro   RegistroHorometro? @relation(fields: [registroHorometroId], references: [id], onDelete: SetNull)
+  registroHorometro   RegistroHorometro? @relation("CargaDeCierre", fields: [registroHorometroId], references: [id], onDelete: SetNull)
+
+  /// Tarjeta de liviano ABIERTA en la que se registró esta carga SIN cerrarla
+  /// (`POST /api/shift-cards/:id/fuel-loads`; pedido del cliente: a veces se
+  /// carga combustible y la camioneta se sigue usando). 1:N, a diferencia de
+  /// `registroHorometroId` (1:1 con la carga del CIERRE, que no cambia): una
+  /// tarjeta puede acumular varias cargas intermedias. Para el resto del
+  /// sistema es una carga con lectura propia (`lectura` = km al cargar,
+  /// `adBlueLitros` propio, quién cargó = `createdById`), así que el listado,
+  /// la corrección/eliminación desde el panel y los KPIs la tratan como a una
+  /// manual. `SetNull`: el FK nunca debe impedir borrar la tarjeta; el
+  /// borrado de tarjeta (`ShiftsService.removeCard`) arrastra estas cargas a
+  /// propósito, igual que la del cierre.
+  tarjetaEnCursoId String?            @map("tarjeta_en_curso_id")
+  tarjetaEnCurso   RegistroHorometro? @relation("CargasEnCurso", fields: [tarjetaEnCursoId], references: [id], onDelete: SetNull)
 
   /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
   /// cliente decide si un reintento es del mismo usuario (replay) o ajeno
   /// (`ID_CONFLICT`). Nulo en filas anteriores. Nunca sale en las respuestas.
   createdById String? @map("created_by_id")
+
+  @@index([tarjetaEnCursoId])
 }
 
 /// Tarjeta de turno de Supervisión en Terreno (endpoints `POST
@@ -816,7 +832,11 @@ model RegistroHorometro {
 
   /// Carga de combustible 1:1 creada al cierre cuando `fuelLiters > 0` (ver
   /// comentario de `RegistroCombustible.registroHorometroId`).
-  combustible RegistroCombustible?
+  combustible RegistroCombustible? @relation("CargaDeCierre")
+
+  /// Cargas registradas con la tarjeta ABIERTA, sin cerrarla (solo
+  /// livianos; ver `RegistroCombustible.tarjetaEnCursoId`).
+  cargasEnCurso RegistroCombustible[] @relation("CargasEnCurso")
 
   @@index([shiftId])
   @@index([supervisorId])

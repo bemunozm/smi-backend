@@ -624,6 +624,9 @@ export class DashboardService {
             tipo: true,
             adBlueLitros: true,
             registroHorometroId: true,
+            // Carga con la tarjeta abierta (liviano): va al turno de su
+            // tarjeta igual que la del cierre.
+            tarjetaEnCursoId: true,
             fecha: true,
             // Quién hizo la carga MANUAL (para el detalle de AdBlue); las de
             // tarjeta lo resuelven por su tarjeta. El `select` explícito gana
@@ -719,9 +722,8 @@ export class DashboardService {
       diesel.total += c.litros;
       o.total.litros += c.litros;
       // Sin vínculo (o tarjeta fuera de hoy): solo suma al total.
-      const turno = c.registroHorometroId
-        ? turnoDeTarjeta.get(c.registroHorometroId)
-        : undefined;
+      const tarjetaId = c.registroHorometroId ?? c.tarjetaEnCursoId;
+      const turno = tarjetaId ? turnoDeTarjeta.get(tarjetaId) : undefined;
       if (turno) {
         const lado = turno === 'NOCTURNO' ? 'noche' : 'dia';
         diesel[lado] += c.litros;

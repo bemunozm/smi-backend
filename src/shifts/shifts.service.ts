@@ -32,14 +32,19 @@ import {
 } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
-import { ROLES, sessionHasRole } from '../auth/roles';
+import { ROLES, sessionHasRole, type Role } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ERROR_CODES } from '../common/errors/error-codes';
 import { assertExpectedLocked } from '../common/concurrency/assert-expected-locked';
 import { type ExpectedValues } from '../common/concurrency/expected-fields';
 import { resolveCloseRace } from '../common/idempotency/resolve-close-race';
+import { createOrReturn } from '../common/idempotency/create-or-return';
+import { lockRow } from '../common/concurrency/lock-row';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
-import type { RecordEditedEvent } from '../common/events/domain-events';
+import type {
+  FuelLoadedEvent,
+  RecordEditedEvent,
+} from '../common/events/domain-events';
 import {
   ChangeLogService,
   diffFields,
@@ -80,6 +85,7 @@ import {
 import { adBlueError } from './adblue';
 import { AdminCloseShiftCardDto } from './dto/admin-close-shift-card.dto';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
+import { CreateShiftCardFuelLoadDto } from './dto/create-shift-card-fuel-load.dto';
 import { RegisterClosedShiftCardDto } from './dto/register-closed-shift-card.dto';
 import { UpdateShiftCardDto } from './dto/update-shift-card.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
@@ -107,6 +113,20 @@ class ShiftCardCloseRaceError extends Error {}
  * de la tx abortada (409 `EQUIPMENT_BUSY`). */
 class ShiftCardMoveRaceError extends Error {}
 
+/** Lo que se lee de cada carga registrada con la tarjeta abierta (respuesta
+ * de la tarjeta y borrado de la tarjeta). */
+const CARGA_EN_CURSO_SELECT = {
+  id: true,
+  litros: true,
+  lectura: true,
+  adBlueLitros: true,
+  fotoKey: true,
+  fecha: true,
+  createdAt: true,
+  // El `select` explícito gana al omit global del campo.
+  createdById: true,
+} satisfies Prisma.RegistroCombustibleSelect;
+
 const SHIFT_CARD_INCLUDE = {
   equipo: {
     select: {
@@ -128,6 +148,12 @@ const SHIFT_CARD_INCLUDE = {
       },
     },
   },
+  // Cargas registradas con la tarjeta ABIERTA, sin cerrarla (solo livianos),
+  // en el orden en que se cargaron.
+  cargasEnCurso: {
+    select: CARGA_EN_CURSO_SELECT,
+    orderBy: [{ fecha: 'asc' }, { createdAt: 'asc' }],
+  },
 } satisfies Prisma.RegistroHorometroInclude;
 
 type ShiftCardRecord = Prisma.RegistroHorometroGetPayload<{
@@ -139,6 +165,28 @@ export interface ShiftCardExitReportResponse {
   requestedAt: Date;
   cardCount: number;
   emailStatus: ShiftExitReportEmailStatus;
+}
+
+/**
+ * Una carga de combustible registrada con la tarjeta ABIERTA, sin cerrarla
+ * (`POST /api/shift-cards/:id/fuel-loads`, solo livianos). NUNCA expone la
+ * key de la foto ni el `createdById`.
+ */
+export interface ShiftCardFuelLoadResponse {
+  id: string;
+  liters: number;
+  /** Km del liviano al cargar. */
+  reading: number;
+  adBlueLiters: number | null;
+  /** URL FIRMADA de la foto del surtidor (`StorageService.sign`). */
+  pumpPhotoUrl: string | null;
+  /** Día de negocio al que quedó fechada la carga (regla del turno de quien
+   * carga, igual que el cierre). */
+  fecha: Date;
+  /** Cuándo se registró (hora del servidor). */
+  createdAt: Date;
+  /** Quién la registró; `null` si la cuenta ya no existe. */
+  createdByName: string | null;
 }
 
 /**
@@ -194,6 +242,10 @@ export interface ShiftCardResponse {
   closedByName: string | null;
   /** El turno en que se cerró: ahí entra en el reporte de salida. */
   closedShift: { id: string; date: string; type: string } | null;
+  /** Cargas registradas con la tarjeta abierta, sin cerrarla (solo
+   * livianos), de la más vieja a la más nueva. Vacío si no hay. No incluye
+   * la carga del cierre, que sigue en `fuelLiters`/`pumpPhotoUrl`. */
+  fuelLoads: ShiftCardFuelLoadResponse[];
 }
 
 export interface ShiftCardSummaryResponse {
@@ -230,6 +282,19 @@ export interface ShiftWithCardsResponse {
     cardCount: number;
     emailStatus: string;
   }[];
+}
+
+/** El primer rol reconocible de la sesión, que puede venir como lista o
+ * como «A,B» (mismo formato que admite `sessionHasRole`); `null` si ninguno
+ * lo es. Solo para textos (el aviso `fuel.loaded`). */
+export function primerRolConocido(
+  role: string | string[] | null | undefined,
+): Role | null {
+  if (!role) return null;
+  const roles = Array.isArray(role) ? role : role.split(',');
+  const conocidos = Object.values(ROLES) as string[];
+  const primero = roles.map((r) => r.trim()).find((r) => conocidos.includes(r));
+  return (primero as Role | undefined) ?? null;
 }
 
 function round2(value: number): number {
@@ -625,9 +690,13 @@ export class ShiftsService {
       });
     }
 
+    // Sin `fuelLiters` = 0 L; que pueda omitirse (solo el liviano con cargas
+    // en curso) se valida en la tx, con la tarjeta tomada.
+    const fuelLiters = dto.fuelLiters ?? 0;
+
     // La foto del surtidor respalda la CARGA: sin combustible (corte de luz,
     // no hubo carga) se cierra sin ella; con litros sigue siendo obligatoria.
-    if (dto.fuelLiters > 0 && !dto.tmpPhotoKey) {
+    if (fuelLiters > 0 && !dto.tmpPhotoKey) {
       throw new BadRequestException({
         message:
           'Falta la foto del surtidor: es obligatoria cuando se carga combustible.',
@@ -706,6 +775,9 @@ export class ShiftsService {
     // igual descartaba el objeto ya persistido en la fila — un objeto vivo,
     // referenciado en la base, borrado por un fallo post-commit ajeno a él.
     let closed: ShiftCardRecord | null;
+    // La carga nacida del cierre (si hubo litros): la avisa `fuel.loaded`.
+    // (`as`: se asigna dentro del callback de la tx; sin él TS la deja en `null`.)
+    let cargaCierreId = null as string | null;
     const stockEvents: PendingStockEvents = [];
     try {
       closed = await this.prisma.$transaction(async (tx) => {
@@ -722,10 +794,10 @@ export class ShiftsService {
             closedById: session.user.id,
             closedByName: session.user.name?.trim() || session.user.email,
             closedShiftId,
-            fuelLiters: dto.fuelLiters,
+            fuelLiters,
             pumpPhotoKey,
             observaciones: dto.observaciones ?? null,
-            noFuelReason: dto.fuelLiters > 0 ? null : dto.noFuelReason || null,
+            noFuelReason: fuelLiters > 0 ? null : dto.noFuelReason || null,
             adBlue: dto.adBlue ?? false,
             adBlueLiters: dto.adBlue ? (dto.adBlueLiters ?? null) : null,
             // Hora del dispositivo descartada por desfase: se audita sin pisar
@@ -738,6 +810,30 @@ export class ShiftsService {
 
         if (result.count !== 1) {
           throw new ShiftCardCloseRaceError();
+        }
+        // Dentro de la tx, después del `updateMany` (que ya tiene la fila
+        // tomada): una carga en curso concurrente o quedó confirmada antes y
+        // se ve acá, o espera y encuentra la tarjeta cerrada.
+        await this.assertFinalCoversFuelLoads(tx, id, dto.valorFinal);
+        // El liviano que ya cargó con la tarjeta abierta cierra solo con km
+        // final y observaciones: litros, foto, AdBlue y motivo sin carga son
+        // opcionales. Sin cargas en curso (y siempre en un pesado, que no
+        // puede tenerlas) los litros siguen siendo obligatorios.
+        const cargasPrevias = await tx.registroCombustible.count({
+          where: { tarjetaEnCursoId: id },
+        });
+        if (dto.fuelLiters === undefined && cargasPrevias === 0) {
+          throw new BadRequestException({
+            message: 'Indica los litros cargados al cerrar (0 si no cargó).',
+            code: ERROR_CODES.FUEL_LITERS_REQUIRED,
+          });
+        }
+        if (cargasPrevias > 0 && fuelLiters === 0 && dto.noFuelReason) {
+          // Con cargas en curso no hubo «cierre sin carga»: no se guarda.
+          await tx.registroHorometro.update({
+            where: { id },
+            data: { noFuelReason: null },
+          });
         }
 
         // Reconciliación en modo `'warn'` (NUNCA `'reject'` acá): el
@@ -780,11 +876,12 @@ export class ShiftsService {
 
         // NO se reusa `CombustibleService.create` (tiene su propio claim y
         // rechaza 0 L) — acá 0 L es válido y la key ya está reclamada.
-        if (dto.fuelLiters > 0) {
-          await tx.registroCombustible.create({
+        if (fuelLiters > 0) {
+          const creada = await tx.registroCombustible.create({
+            select: { id: true },
             data: {
               equipoId: card.equipoId,
-              litros: dto.fuelLiters,
+              litros: fuelLiters,
               tipo: DEFAULT_SHIFT_CLOSE_FUEL_TYPE,
               // Comparte la MISMA key que la tarjeta — así la carga aparece
               // sola en la ficha y en el historial de combustible sin
@@ -802,6 +899,7 @@ export class ShiftsService {
               registroHorometroId: id,
             },
           });
+          cargaCierreId = creada.id;
         }
 
         // El AdBlue declarado descuenta el ítem AdBlue de Inventario en la
@@ -849,7 +947,230 @@ export class ShiftsService {
     // un saldo que nunca existió: se emite recién confirmada.
     this.adBlueStock.emitPending(stockEvents);
 
+    // Carga de combustible de una camioneta al cerrar → aviso al admin (los
+    // pesados no avisan). Recién confirmada, y nunca en el replay (que vuelve
+    // antes, sin crear carga).
+    if (esLiviano && cargaCierreId && closed) {
+      this.emitFuelLoaded({
+        cargaId: cargaCierreId,
+        cardId: id,
+        equipmentId: card.equipoId,
+        equipmentCode: closed.equipo.internalCode,
+        liters: fuelLiters,
+        reading: dto.valorFinal,
+        unit: closed.equipo.controlUnit === ControlUnit.HOURS ? 'h' : 'km',
+        origin: 'CIERRE',
+        session,
+      });
+    }
+
     return this.shapeCard(closed!);
+  }
+
+  /**
+   * `POST /api/shift-cards/:id/fuel-loads` — carga de combustible en una
+   * tarjeta de liviano ABIERTA, SIN cerrarla (pedido del cliente: a veces se
+   * carga y la camioneta se sigue usando). Se puede repetir; la tarjeta se
+   * cierra después con el cierre normal. Los pesados no cambian: cargar
+   * sigue siendo cerrar (400 `FUEL_LOAD_LIGHT_ONLY`).
+   *
+   * La carga es una fila de `RegistroCombustible` con `tarjetaEnCursoId`
+   * (1:N) — NUNCA `registroHorometroId`, que sigue siendo la 1:1 del cierre
+   * que sincronizan `syncFuelRecord`/la edición. Lleva su propia `lectura`
+   * (km al cargar), su AdBlue y su `createdById`: para el resto del sistema
+   * es una carga con lectura propia, como la manual del panel.
+   *
+   * Idempotente por `dto.id` (PK de la carga, generado por el cliente): el
+   * reintento propio devuelve la tarjeta sin repetir efectos (claim de la
+   * foto, contador, descuento de AdBlue); un id de otro usuario es 409
+   * `ID_CONFLICT`. Devuelve la tarjeta completa (con `fuelLoads`).
+   */
+  async addFuelLoad(
+    id: string,
+    dto: CreateShiftCardFuelLoadDto,
+    session: UserSession,
+  ): Promise<ShiftCardResponse> {
+    return createOrReturn({
+      id: dto.id,
+      userId: session.user.id,
+      conflictMessage: 'Ya existe una carga con ese id de otro usuario',
+      findExisting: async (loadId) => {
+        const existing = await this.prisma.registroCombustible.findUnique({
+          where: { id: loadId },
+          select: { createdById: true, tarjetaEnCursoId: true },
+        });
+        if (!existing) return null;
+        return {
+          // Un id que ya usó OTRA fila (otra tarjeta, o una carga que no es
+          // de tarjeta en curso) es un choque aunque sea del mismo usuario:
+          // devolver esta tarjeta haría creer que la carga quedó acá.
+          ownerId:
+            existing.tarjetaEnCursoId === id ? existing.createdById : null,
+          result: async () => this.shapeCard(await this.reloadCard(id)),
+        };
+      },
+      create: () => this.createFuelLoad(id, dto, session),
+    });
+  }
+
+  private async createFuelLoad(
+    id: string,
+    dto: CreateShiftCardFuelLoadDto,
+    session: UserSession,
+  ): Promise<ShiftCardResponse> {
+    const now = new Date();
+    const card = await this.prisma.registroHorometro.findUnique({
+      where: { id },
+      select: {
+        equipoId: true,
+        valorInicial: true,
+        valorFinal: true,
+        closedAt: true,
+        equipo: {
+          select: {
+            internalCode: true,
+            equipmentClass: true,
+            controlUnit: true,
+            currentHourmeter: true,
+            currentMileage: true,
+          },
+        },
+      },
+    });
+    if (!card) throw this.cardNotFound();
+
+    // Sin chequeo de dueño: un liviano lo puede cerrar cualquier supervisor
+    // (ver `closeCard`), y cargarle combustible es parte de ese mismo flujo.
+    if (card.equipo.equipmentClass !== EquipmentClass.LIGHT) {
+      throw new BadRequestException({
+        message:
+          'Solo los vehículos livianos registran cargas sin cerrar la tarjeta: en un equipo pesado la carga se informa al cerrarla.',
+        code: ERROR_CODES.FUEL_LOAD_LIGHT_ONLY,
+      });
+    }
+    if (card.valorFinal != null) {
+      throw new ConflictException({
+        message: this.buildAlreadyClosedMessage(card.closedAt),
+        code: ERROR_CODES.ALREADY_CLOSED,
+      });
+    }
+    if (dto.reading < card.valorInicial) {
+      throw new BadRequestException({
+        message: `La lectura al cargar (${formatNumber(dto.reading)}) no puede ser menor que la inicial de la tarjeta (${formatNumber(card.valorInicial)})`,
+        code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
+      });
+    }
+    if (dto.shiftDate) assertShiftDateWithinWindow(dto.shiftDate, now);
+
+    // Hora del dispositivo: fuera de rango cae a la del servidor (nunca
+    // rechaza, ver `capture-time.ts`); la EXIF de la foto, inválida, se
+    // ignora — mismo trato que el cierre.
+    const { at: capturedAt } = resolveCapturedAt(dto.capturedAt, now);
+    const photoCapturedAt = resolveCapturedAtWithFallback(
+      dto.photoCapturedAt,
+      capturedAt,
+      now,
+    );
+    // Misma regla de fechado que el cierre del liviano: la carga va al día
+    // del turno de quien la registra. Sin turno informado manda el reloj
+    // (`shiftDayOf`): solo la madrugada cae en otro día de calendario, y esa
+    // hora siempre es del NOCTURNO.
+    const fecha =
+      dto.shiftDate && dto.shiftType
+        ? fuelDateForShiftDay(photoCapturedAt, dto.shiftDate, dto.shiftType)
+        : fuelDateForShiftDay(
+            photoCapturedAt,
+            shiftDayOf(photoCapturedAt),
+            'NOCTURNO',
+          );
+
+    // Reclama la foto ANTES de la transacción (mismo patrón que el cierre):
+    // si falla, todavía no hay nada que descartar.
+    const fotoKey = await this.storage.claimTmp(
+      dto.tmpPhotoKey,
+      session.user.id,
+      'fuel-photo',
+    );
+
+    const stockEvents: PendingStockEvents = [];
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        // Bloquea la tarjeta: un cierre concurrente espera a que esta carga
+        // se confirme (queda ANTES del cierre) o, si ganó él, acá se ve ya
+        // cerrada y la carga se rechaza.
+        await lockRow(tx, 'registroHorometro', id);
+        const vigente = await tx.registroHorometro.findUnique({
+          where: { id },
+          select: { valorFinal: true, closedAt: true },
+        });
+        if (!vigente) throw this.cardNotFound();
+        if (vigente.valorFinal != null) {
+          throw new ConflictException({
+            message: this.buildAlreadyClosedMessage(vigente.closedAt),
+            code: ERROR_CODES.ALREADY_CLOSED,
+          });
+        }
+
+        await tx.registroCombustible.create({
+          data: {
+            id: dto.id,
+            createdById: session.user.id,
+            equipoId: card.equipoId,
+            litros: dto.liters,
+            tipo: DEFAULT_SHIFT_CLOSE_FUEL_TYPE,
+            fotoKey,
+            fecha,
+            lectura: dto.reading,
+            adBlueLitros: dto.adBlueLiters ?? null,
+            tarjetaEnCursoId: id,
+          },
+        });
+
+        // Modo 'warn', igual que el alta manual con lectura: adelanta el km
+        // del equipo, nunca lo retrocede ni rechaza la carga.
+        await reconcileEquipmentCounter(
+          tx,
+          card.equipoId,
+          card.equipo,
+          dto.reading,
+          'warn',
+        );
+
+        // El AdBlue de la carga descuenta Inventario en la misma transacción
+        // (el reintento idempotente nunca llega acá).
+        if ((dto.adBlueLiters ?? 0) > 0) {
+          await this.adBlueStock.discountLoad(
+            { tx, events: stockEvents },
+            {
+              liters: dto.adBlueLiters as number,
+              equipmentId: card.equipoId,
+              performedById: session.user.id,
+              reference: dto.id,
+            },
+          );
+        }
+      });
+    } catch (error) {
+      // Nunca dejar la copia reclamada huérfana en el bucket. Se descarta
+      // ANTES de que `createOrReturn` relea una posible carrera por el id.
+      await this.storage.discard(fotoKey);
+      throw error;
+    }
+    this.adBlueStock.emitPending(stockEvents);
+    // Recién confirmada; el reintento idempotente nunca pasa por acá.
+    this.emitFuelLoaded({
+      cargaId: dto.id,
+      cardId: id,
+      equipmentId: card.equipoId,
+      equipmentCode: card.equipo.internalCode,
+      liters: dto.liters,
+      reading: dto.reading,
+      unit: card.equipo.controlUnit === ControlUnit.HOURS ? 'h' : 'km',
+      origin: 'TARJETA_ABIERTA',
+      session,
+    });
+
+    return this.shapeCard(await this.reloadCard(id));
   }
 
   /**
@@ -957,6 +1278,9 @@ export class ShiftsService {
     );
 
     let created: ShiftCardRecord | null;
+    // La carga nacida del registro (si hubo litros): la avisa `fuel.loaded`.
+    // (`as`: se asigna dentro del callback de la tx; sin él TS la deja en `null`.)
+    let cargaRegistradaId = null as string | null;
     const stockEvents: PendingStockEvents = [];
     try {
       created = await this.prisma.$transaction(async (tx) => {
@@ -1031,7 +1355,8 @@ export class ShiftsService {
           if (dto.fuelLiters > 0) {
             // Mismo criterio que el cierre: `lectura` queda null porque su
             // lectura ES el `valorFinal` de la tarjeta vinculada.
-            await tx.registroCombustible.create({
+            const creada = await tx.registroCombustible.create({
+              select: { id: true },
               data: {
                 equipoId: dto.equipoId,
                 litros: dto.fuelLiters,
@@ -1041,6 +1366,7 @@ export class ShiftsService {
                 registroHorometroId: dto.id,
               },
             });
+            cargaRegistradaId = creada.id;
           }
 
           // Igual que el cierre vivo: el AdBlue del turno histórico también
@@ -1100,6 +1426,26 @@ export class ShiftsService {
       throw error;
     }
     this.adBlueStock.emitPending(stockEvents);
+
+    // Mismo aviso que el cierre vivo: camioneta con litros → admin. El replay
+    // por `dto.id` vuelve antes y nunca llega acá.
+    if (
+      cargaRegistradaId &&
+      created &&
+      created.equipo.equipmentClass === EquipmentClass.LIGHT
+    ) {
+      this.emitFuelLoaded({
+        cargaId: cargaRegistradaId,
+        cardId: dto.id,
+        equipmentId: dto.equipoId,
+        equipmentCode: created.equipo.internalCode,
+        liters: dto.fuelLiters,
+        reading: dto.valorFinal,
+        unit: created.equipo.controlUnit === ControlUnit.HOURS ? 'h' : 'km',
+        origin: 'CIERRE',
+        session,
+      });
+    }
 
     return this.shapeCard(created);
   }
@@ -1206,13 +1552,23 @@ export class ShiftsService {
    * falla, la foto sigue donde debe): la comparten solo la tarjeta y su
    * carga vinculada, y acá se van las dos.
    *
+   * Las cargas registradas con la tarjeta ABIERTA (`cargasEnCurso`, solo
+   * livianos) se van con ella, igual que la del cierre: cada una deja su
+   * `DELETE` en el historial, devuelve su AdBlue a Inventario (lo había
+   * descontado ella, no la tarjeta), suelta su lectura del contador y su
+   * foto (propia, no compartida) best-effort después del borrado.
+   *
    * Los contadores del equipo no se tocan: nunca retroceden (misma política
    * que la edición de lecturas).
    */
   async removeCard(id: string, session: UserSession): Promise<void> {
+    // Sin `cargasEnCurso`: se releen bajo el bloqueo, dentro de la tx.
     const card = await this.prisma.registroHorometro.findUnique({
       where: { id },
-      include: SHIFT_CARD_INCLUDE,
+      include: {
+        equipo: SHIFT_CARD_INCLUDE.equipo,
+        shift: SHIFT_CARD_INCLUDE.shift,
+      },
     });
     if (!card) throw this.cardNotFound();
     const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
@@ -1260,9 +1616,21 @@ export class ShiftsService {
       where: { registroHorometroId: id },
       select: { id: true, litros: true, fecha: true },
     });
+    // Se releen DENTRO de la transacción, con la tarjeta bloqueada: una
+    // carga en curso concurrente (`addFuelLoad` también bloquea la tarjeta)
+    // o quedó confirmada antes y se borra acá, o espera y ve la tarjeta ya
+    // borrada (404). Afuera solo se usan para soltar sus fotos.
+    let cargasEnCurso: ShiftCardRecord['cargasEnCurso'] = [];
 
     const stockEvents: PendingStockEvents = [];
     await this.prisma.$transaction(async (tx) => {
+      if (!(await lockRow(tx, 'registroHorometro', id))) {
+        throw this.cardNotFound();
+      }
+      cargasEnCurso = await tx.registroCombustible.findMany({
+        where: { tarjetaEnCursoId: id },
+        select: CARGA_EN_CURSO_SELECT,
+      });
       await this.changeLog.record(
         tx,
         'shift_card',
@@ -1287,6 +1655,53 @@ export class ShiftsService {
         );
         await tx.registroCombustible.delete({ where: { id: vinculada.id } });
       }
+      for (const carga of cargasEnCurso) {
+        await this.changeLog.record(
+          tx,
+          'combustible',
+          carga.id,
+          editor,
+          [
+            borrado('equipo', 'Equipo', card.equipo.internalCode),
+            borrado('litros', 'Litros', formatNumber(carga.litros)),
+            borrado('fecha', 'Fecha', formatBusinessDateTime(carga.fecha)),
+            borrado(
+              'lectura',
+              'Lectura',
+              carga.lectura != null ? formatNumber(carga.lectura) : '—',
+            ),
+            borrado('origen', 'Origen', 'Carga con tarjeta en curso'),
+          ],
+          'DELETE',
+        );
+        if ((carga.adBlueLitros ?? 0) > 0) {
+          await this.adBlueStock.restoreLoad(
+            { tx, events: stockEvents },
+            {
+              liters: carga.adBlueLitros as number,
+              equipmentId: card.equipoId,
+              performedById: editor.id,
+              reference: carga.id,
+              notes: `Devolución por tarjeta eliminada: AdBlue ${formatNumber(carga.adBlueLitros as number)} L`,
+            },
+          );
+        }
+      }
+      if (cargasEnCurso.length > 0) {
+        const { count } = await tx.registroCombustible.deleteMany({
+          where: { id: { in: cargasEnCurso.map((carga) => carga.id) } },
+        });
+        // Con la tarjeta bloqueada no debería faltar ninguna; si faltara
+        // (otra vía de borrado), su AdBlue ya se habría devuelto dos veces:
+        // se revierte todo y se pide reintentar.
+        if (count !== cargasEnCurso.length) {
+          throw new ConflictException({
+            message:
+              'Las cargas de la tarjeta cambiaron mientras se eliminaba. Vuelve a intentarlo.',
+            code: ERROR_CODES.STALE_UPDATE,
+          });
+        }
+      }
       // El AdBlue que la tarjeta había descontado vuelve al saldo: borrar el
       // registro deja el inventario como si la carga no se hubiera declarado.
       if (card.adBlue && (card.adBlueLiters ?? 0) > 0) {
@@ -1307,7 +1722,11 @@ export class ShiftsService {
       await releaseRemovedReading(
         tx,
         card.equipoId,
-        Math.max(card.valorInicial, card.valorFinal ?? card.valorInicial),
+        Math.max(
+          card.valorInicial,
+          card.valorFinal ?? card.valorInicial,
+          ...cargasEnCurso.map((carga) => carga.lectura ?? 0),
+        ),
       );
       if (abierta) {
         // El uso en curso desaparece con la fila: se suelta también la
@@ -1341,6 +1760,9 @@ export class ShiftsService {
 
     if (card.pumpPhotoKey) {
       await this.storage.deleteBestEffort(card.pumpPhotoKey);
+    }
+    for (const carga of cargasEnCurso) {
+      if (carga.fotoKey) await this.storage.deleteBestEffort(carga.fotoKey);
     }
   }
 
@@ -1463,6 +1885,35 @@ export class ShiftsService {
         message: `La lectura final (${formatNumber(despues.valorFinal)}) no puede ser menor que la inicial (${formatNumber(despues.valorInicial)})`,
         code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
       });
+    }
+    // Las cargas registradas con la tarjeta abierta fijan km intermedios: la
+    // corrección no puede dejar la inicial por encima de ninguna ni la final
+    // por debajo (la fila ya está bloqueada, así que no entra otra carga).
+    const lecturasCargas = actual.cargasEnCurso
+      .map((carga) => carga.lectura)
+      .filter((lectura): lectura is number => lectura != null);
+    // Solo si la edición toca las lecturas: corregir observaciones, operador
+    // o turno no debe fallar por datos viejos.
+    if (lecturasCargas.length > 0) {
+      const minima = Math.min(...lecturasCargas);
+      if (
+        despues.valorInicial !== antes.valorInicial &&
+        despues.valorInicial > minima
+      ) {
+        throw new BadRequestException({
+          message: `La lectura inicial (${formatNumber(despues.valorInicial)}) no puede ser mayor que la de una carga de combustible registrada en la tarjeta (${formatNumber(minima)})`,
+          code: ERROR_CODES.INITIAL_ABOVE_FUEL_LOAD,
+        });
+      }
+      if (
+        despues.valorFinal != null &&
+        despues.valorFinal !== antes.valorFinal
+      ) {
+        this.assertReadingCoversFuelLoads(
+          despues.valorFinal,
+          Math.max(...lecturasCargas),
+        );
+      }
     }
     const adBlueProblema = adBlueError(despues.adBlue, despues.adBlueLiters);
     if (adBlueProblema) throw new BadRequestException(adBlueProblema);
@@ -1659,6 +2110,29 @@ export class ShiftsService {
         }
       }
     }
+    // Las cargas registradas con la tarjeta abierta (livianos) también
+    // siguen a la tarjeta si cambia de máquina: su km es del equipo al que
+    // queda. Su fecha NO se mueve con el turno: quedó fechada en el turno de
+    // quien cargó, igual que el liviano cerrado por otro supervisor.
+    if (cambioEquipo && actual.cargasEnCurso.length > 0) {
+      await tx.registroCombustible.updateMany({
+        where: { tarjetaEnCursoId: id },
+        data: { equipoId: despues.equipoId },
+      });
+      const lecturaCargas = Math.max(
+        ...actual.cargasEnCurso.map((carga) => carga.lectura ?? 0),
+      );
+      await releaseRemovedReading(tx, antes.equipoId, lecturaCargas);
+      if (equipoNuevo) {
+        await reconcileEquipmentCounter(
+          tx,
+          despues.equipoId,
+          equipoNuevo,
+          lecturaCargas,
+          'warn',
+        );
+      }
+    }
     await this.changeLog.record(tx, 'shift_card', id, editor, cambios);
 
     const card = await tx.registroHorometro.findUnique({
@@ -1788,6 +2262,50 @@ export class ShiftsService {
         .join(', ')} se informan al cerrarla`,
       code: ERROR_CODES.CARD_NOT_CLOSED,
     });
+  }
+
+  /** Avisa al administrador la carga de combustible de una camioneta
+   * (`fuel.loaded`). Solo después de confirmar la transacción. */
+  private emitFuelLoaded(
+    input: Omit<FuelLoadedEvent, 'actorId' | 'actorName' | 'actorRole'> & {
+      session: UserSession;
+    },
+  ): void {
+    const { session, ...datos } = input;
+    const event: FuelLoadedEvent = {
+      ...datos,
+      actorId: session.user.id,
+      actorName: session.user.name?.trim() || session.user.email,
+      actorRole: primerRolConocido(session.user.role),
+    };
+    this.eventEmitter.emit(DOMAIN_EVENTS.FUEL_LOADED, event);
+  }
+
+  /** 400 `READING_BELOW_FUEL_LOAD` si la lectura final queda por debajo del
+   * km de una carga registrada con la tarjeta abierta. */
+  private assertReadingCoversFuelLoads(
+    valorFinal: number,
+    maxLecturaCargas: number | null,
+  ): void {
+    if (maxLecturaCargas == null || valorFinal >= maxLecturaCargas) return;
+    throw new BadRequestException({
+      message: `La lectura final (${formatNumber(valorFinal)}) no puede ser menor que la de una carga de combustible registrada en la tarjeta (${formatNumber(maxLecturaCargas)})`,
+      code: ERROR_CODES.READING_BELOW_FUEL_LOAD,
+    });
+  }
+
+  /** Igual que `assertReadingCoversFuelLoads`, leyendo las cargas de la
+   * tarjeta en la transacción del cierre. */
+  private async assertFinalCoversFuelLoads(
+    tx: Prisma.TransactionClient,
+    cardId: string,
+    valorFinal: number,
+  ): Promise<void> {
+    const { _max } = await tx.registroCombustible.aggregate({
+      where: { tarjetaEnCursoId: cardId },
+      _max: { lectura: true },
+    });
+    this.assertReadingCoversFuelLoads(valorFinal, _max.lectura);
   }
 
   private cardNotFound(): NotFoundException {
@@ -2073,6 +2591,9 @@ export class ShiftsService {
           code: ERROR_CODES.ALREADY_CLOSED,
         });
       }
+      // Mismo resguardo que el cierre normal: el km final no puede quedar
+      // por debajo de una carga ya registrada con la tarjeta abierta.
+      await this.assertFinalCoversFuelLoads(tx, id, dto.valorFinal);
 
       const equipo = await tx.equipment.findUnique({
         where: { id: card.equipoId },
@@ -2152,10 +2673,14 @@ export class ShiftsService {
   private async shapeCards(
     cards: readonly ShiftCardRecord[],
   ): Promise<ShiftCardResponse[]> {
+    // Supervisores y quienes registraron cargas en curso, en UNA consulta.
     const supervisorIds = Array.from(
       new Set(
         cards
-          .map((card) => card.supervisorId)
+          .flatMap((card) => [
+            card.supervisorId,
+            ...card.cargasEnCurso.map((carga) => carga.createdById),
+          ])
           .filter((id): id is string => id != null),
       ),
     );
@@ -2221,8 +2746,12 @@ export class ShiftsService {
           : null,
         observaciones: card.observaciones,
         // Solo vale mientras la tarjeta no tenga litros (una corrección
-        // posterior que agrega la carga lo deja sin sentido).
-        noFuelReason: card.fuelLiters ? null : card.noFuelReason,
+        // posterior que agrega la carga lo deja sin sentido), ni al cierre ni
+        // en cargas hechas con la tarjeta abierta.
+        noFuelReason:
+          card.fuelLiters || card.cargasEnCurso.length > 0
+            ? null
+            : card.noFuelReason,
         adBlue: card.adBlue,
         adBlueLiters: card.adBlueLiters,
         belowPreviousReading: card.belowPreviousReading,
@@ -2240,6 +2769,23 @@ export class ShiftsService {
             ? { id: s.id, date: formatDateOnly(s.date), type: s.type }
             : null;
         })(),
+        fuelLoads: await Promise.all(
+          card.cargasEnCurso.map(async (carga) => ({
+            id: carga.id,
+            liters: carga.litros,
+            // Siempre la trae (la exige el alta); `?? 0` solo por el tipo.
+            reading: carga.lectura ?? 0,
+            adBlueLiters: carga.adBlueLitros,
+            pumpPhotoUrl: carga.fotoKey
+              ? await this.storage.sign(carga.fotoKey)
+              : null,
+            fecha: carga.fecha,
+            createdAt: carga.createdAt ?? carga.fecha,
+            createdByName: carga.createdById
+              ? (supervisorsById.get(carga.createdById) ?? null)
+              : null,
+          })),
+        ),
       })),
     );
   }

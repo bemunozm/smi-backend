@@ -21,6 +21,14 @@ const LIST_TAKE = 50;
 // rol mal usado a futuro que termine incluyendo a toda la dotación.
 const MAX_FANOUT_RECIPIENTS = 200;
 
+/** Ajustes del fan-out por rol. */
+export interface CreateForRolesOptions {
+  /** Usuarios que no reciben el aviso (p. ej. quien hizo la acción). */
+  excludeUserIds?: readonly string[];
+  /** `false`: solo in-app + Web Push, sin correo (avisos frecuentes). */
+  email?: boolean;
+}
+
 export interface CreateNotificationInput {
   tipo: string;
   titulo: string;
@@ -111,6 +119,7 @@ export class NotificationsService {
   async createForRoles(
     roles: readonly Role[],
     input: CreateNotificationInput,
+    options: CreateForRolesOptions = {},
   ): Promise<Notification[]> {
     const usersByRole = await Promise.all(
       roles.map((role) => this.users.findByRole(role)),
@@ -126,6 +135,10 @@ export class NotificationsService {
       }
     }
 
+    for (const excluido of options.excludeUserIds ?? []) {
+      uniqueRecipients.delete(excluido);
+    }
+
     let recipients = Array.from(uniqueRecipients.values());
     if (recipients.length > MAX_FANOUT_RECIPIENTS) {
       this.logger.warn(
@@ -135,7 +148,9 @@ export class NotificationsService {
     }
 
     return Promise.all(
-      recipients.map((recipient) => this.notifyRecipient(recipient, input)),
+      recipients.map((recipient) =>
+        this.notifyRecipient(recipient, input, options.email ?? true),
+      ),
     );
   }
 
@@ -204,8 +219,10 @@ export class NotificationsService {
   private async notifyRecipient(
     recipient: UserResponseDto,
     input: CreateNotificationInput,
+    email = true,
   ): Promise<Notification> {
     const notification = await this.createNotificationRow(recipient.id, input);
+    if (!email) return notification;
 
     await this.mail.sendMail({
       to: recipient.email,

@@ -94,6 +94,31 @@ describe('NotificationsService', () => {
   });
 
   describe('createForRoles', () => {
+    it('excludeUserIds deja fuera a quien hizo la acción, y email: false no manda correo (solo in-app + push)', async () => {
+      findByRole.mockResolvedValue([
+        { id: 'u1', email: 'admin1@smi.local', name: 'Admin 1' },
+        { id: 'u2', email: 'admin2@smi.local', name: 'Admin 2' },
+      ]);
+      create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: `n-${data.userId as string}`, ...data }),
+      );
+
+      const result = await service.createForRoles(
+        [ROLES.ADMIN],
+        { tipo: 'fuel.loaded', titulo: 'Carga', cuerpo: '40 L' },
+        { excludeUserIds: ['u1'], email: false },
+      );
+
+      expect(result).toHaveLength(1);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ userId: 'u2' }) as unknown,
+        }),
+      );
+      expect(sendMail).not.toHaveBeenCalled();
+    });
+
     it('crea una fila y envía un correo por cada usuario de los roles destino', async () => {
       findByRole.mockImplementation((role: string) => {
         if (role === ROLES.ADMIN) {

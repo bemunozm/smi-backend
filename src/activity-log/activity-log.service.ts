@@ -162,6 +162,7 @@ export class ActivityLogService {
           createdAt: true,
           createdById: true,
           registroHorometroId: true,
+          tarjetaEnCursoId: true,
           equipo: { select: { internalCode: true } },
           registroHorometro: {
             select: {
@@ -326,7 +327,13 @@ export class ActivityLogService {
           : nombre(c.createdById),
         summary: `${c.equipo.internalCode} · ${formatNumber(c.litros)} L ${
           TIPO_COMBUSTIBLE[c.tipo] ?? c.tipo
-        } · ${deTarjeta ? 'cierre de tarjeta' : 'manual'}`,
+        } · ${
+          deTarjeta
+            ? 'cierre de tarjeta'
+            : c.tarjetaEnCursoId
+              ? 'tarjeta en curso'
+              : 'manual'
+        }`,
         changes: null,
       });
     }

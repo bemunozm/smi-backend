@@ -24,6 +24,7 @@ export const DOMAIN_EVENTS = {
   LIGHT_SERVICE_DUE: 'light-service.due',
   PREVENTIVE_SERVICE_DUE: 'preventive-service.due',
   SHIFT_ENDED_WITH_OPEN_CARDS: 'shift.open-cards',
+  FUEL_LOADED: 'fuel.loaded',
 } as const;
 
 export type DomainEventName =
@@ -199,6 +200,42 @@ export interface PreventiveServiceDueEvent {
   unit: 'h' | 'km';
   /** Lo que le falta al contador para el hito; 0 si ya toca (o se pasó). */
   remaining: number;
+}
+
+/**
+ * Se cargó combustible a una camioneta (equipo LIVIANO) desde Terreno. Le
+ * llega al administrador (menos a quien la registró). Lo emite
+ * `ShiftsService` DESPUÉS de confirmar la transacción, en exactamente tres
+ * casos:
+ * - `POST /shift-cards/:id/fuel-loads` (carga con la tarjeta abierta) →
+ *   `origin: 'TARJETA_ABIERTA'`;
+ * - `POST /shift-cards/:id/close` de un liviano con `fuelLiters > 0` →
+ *   `origin: 'CIERRE'`;
+ * - `POST /shift-cards/closed` (registro de un turno pasado) de un liviano
+ *   con `fuelLiters > 0` → `origin: 'CIERRE'`.
+ * Nunca en un reintento idempotente ni si la transacción falla; tampoco en
+ * pesados, en el cierre de liviano solo con km, en el cierre del
+ * administrador (`admin-close`, sin combustible) ni en el alta/corrección
+ * manual del panel (`/combustible`).
+ */
+export interface FuelLoadedEvent {
+  /** `RegistroCombustible.id` de la carga. */
+  cargaId: string;
+  /** La tarjeta de turno en que se registró. */
+  cardId: string;
+  equipmentId: string;
+  equipmentCode: string;
+  liters: number;
+  /** Lectura del contador al cargar (km en un liviano). */
+  reading: number;
+  unit: 'h' | 'km';
+  /** `TARJETA_ABIERTA`: carga sin cerrar la tarjeta; `CIERRE`: al cerrarla. */
+  origin: 'TARJETA_ABIERTA' | 'CIERRE';
+  /** Quién la registró (`user.id`): no se le avisa a sí mismo. */
+  actorId: string;
+  actorName: string;
+  /** Rol de quien la registró (`ADMIN`, `SUPERVISOR`…). */
+  actorRole: string | null;
 }
 
 /**

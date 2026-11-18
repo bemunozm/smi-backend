@@ -45,6 +45,18 @@ export const ERROR_CODES = {
   /** `PATCH /combustible/:id` sobre una carga nacida de un cierre de
    * tarjeta — se corrige editando esa tarjeta, que sincroniza la carga. */
   FUEL_LOAD_FROM_CARD: 'FUEL_LOAD_FROM_CARD',
+  /** `POST /shift-cards/:id/fuel-loads` sobre la tarjeta de un equipo
+   * pesado: solo los livianos cargan combustible sin cerrar la tarjeta. */
+  FUEL_LOAD_LIGHT_ONLY: 'FUEL_LOAD_LIGHT_ONLY',
+  /** Lectura FINAL de una tarjeta (cierre, cierre admin o edición) menor
+   * que el km de una carga registrada con la tarjeta abierta. */
+  READING_BELOW_FUEL_LOAD: 'READING_BELOW_FUEL_LOAD',
+  /** Lectura INICIAL editada por encima del km de una carga registrada con
+   * la tarjeta abierta. */
+  INITIAL_ABOVE_FUEL_LOAD: 'INITIAL_ABOVE_FUEL_LOAD',
+  /** Cierre sin `fuelLiters` de una tarjeta SIN cargas registradas con ella
+   * abierta: solo el liviano que ya cargó puede omitir los litros. */
+  FUEL_LITERS_REQUIRED: 'FUEL_LITERS_REQUIRED',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
