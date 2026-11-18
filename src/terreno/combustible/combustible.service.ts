@@ -17,6 +17,7 @@ import { formatBusinessDateTime } from '../../common/dates/business-time';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import { formatNumber } from '../../common/format/number';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
+import { lockRow } from '../../common/concurrency/lock-row';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   reconcileEquipmentCounter,
@@ -501,6 +502,18 @@ export class CombustibleService {
 
     const stockEvents: PendingStockEvents = [];
     await this.prisma.$transaction(async (tx) => {
+      if (registro.tarjetaEnCursoId) {
+        // Carga hecha con la tarjeta abierta: se toma el MISMO bloqueo que
+        // el borrado de la tarjeta (`ShiftsService.removeCard`), y se relee
+        // la carga. Si la tarjeta la arrastró antes, ya no está: 404, sin
+        // devolver su AdBlue por segunda vez.
+        await lockRow(tx, 'registroHorometro', registro.tarjetaEnCursoId);
+        const sigue = await tx.registroCombustible.findUnique({
+          where: { id },
+          select: { id: true },
+        });
+        if (!sigue) throw new NotFoundException('Registro no encontrado');
+      }
       await this.changeLog.record(
         tx,
         'combustible',

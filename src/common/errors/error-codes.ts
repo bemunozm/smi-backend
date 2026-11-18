@@ -48,6 +48,12 @@ export const ERROR_CODES = {
   /** `POST /shift-cards/:id/fuel-loads` sobre la tarjeta de un equipo
    * pesado: solo los livianos cargan combustible sin cerrar la tarjeta. */
   FUEL_LOAD_LIGHT_ONLY: 'FUEL_LOAD_LIGHT_ONLY',
+  /** Lectura FINAL de una tarjeta (cierre, cierre admin o edición) menor
+   * que el km de una carga registrada con la tarjeta abierta. */
+  READING_BELOW_FUEL_LOAD: 'READING_BELOW_FUEL_LOAD',
+  /** Lectura INICIAL editada por encima del km de una carga registrada con
+   * la tarjeta abierta. */
+  INITIAL_ABOVE_FUEL_LOAD: 'INITIAL_ABOVE_FUEL_LOAD',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

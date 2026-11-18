@@ -123,6 +123,18 @@ function buildCardRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** Una carga registrada con la tarjeta abierta, como la lee el include. */
+const CARGA_EN_CURSO = {
+  id: 'carga_1',
+  litros: 40,
+  lectura: 1250,
+  adBlueLitros: null,
+  fotoKey: 'fuel-photos/c1.jpg',
+  fecha: new Date('2026-09-28T15:00:00.000Z'),
+  createdAt: new Date('2026-09-28T15:00:00.000Z'),
+  createdById: 'sup_2',
+};
+
 describe('ShiftsService', () => {
   let service: ShiftsService;
 
@@ -154,6 +166,7 @@ describe('ShiftsService', () => {
       delete: jest.fn(),
       deleteMany: jest.fn(),
       updateMany: jest.fn(),
+      findMany: jest.fn(),
       aggregate: jest.fn(),
     },
     user: { findUnique: jest.fn() },
@@ -2055,6 +2068,120 @@ describe('ShiftsService', () => {
     });
   });
 
+  describe('lecturas vs. cargas registradas con la tarjeta abierta', () => {
+    const session = buildSession('sup_1');
+
+    it('cierre: km final menor que una carga en curso → 400 READING_BELOW_FUEL_LOAD y descarta la foto', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        id: 'card_1',
+        equipoId: 'e1',
+        valorInicial: 1200,
+        valorFinal: null,
+        supervisorId: 'sup_1',
+        closeClientId: null,
+        closedAt: null,
+        shift: null,
+        fecha: new Date(),
+        turno: 'DIURNO',
+      });
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        equipmentClass: 'LIGHT',
+      });
+      claimTmp.mockResolvedValue('fuel-photos/final.jpg');
+      tx.registroCombustible.aggregate.mockResolvedValue({
+        _max: { lectura: 1300 },
+      });
+
+      await expect(
+        service.closeCard(
+          'card_1',
+          {
+            closeClientId: 'close_1',
+            valorFinal: 1290,
+            fuelLiters: 20,
+            tmpPhotoKey: 'tmp/sup_1/11111111-1111-4111-8111-111111111111.jpg',
+            capturedAt: iso(),
+            shiftDate: todayShiftDate(),
+            shiftType: 'DIURNO',
+          },
+          session,
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'READING_BELOW_FUEL_LOAD' },
+      });
+      expect(tx.registroCombustible.aggregate).toHaveBeenCalledWith({
+        where: { tarjetaEnCursoId: 'card_1' },
+        _max: { lectura: true },
+      });
+      expect(tx.registroCombustible.create).not.toHaveBeenCalled();
+      expect(discard).toHaveBeenCalledWith('fuel-photos/final.jpg');
+    });
+
+    it('cierre: km final igual a la última carga en curso pasa', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        id: 'card_1',
+        equipoId: 'e1',
+        valorInicial: 1200,
+        valorFinal: null,
+        supervisorId: 'sup_1',
+        closeClientId: null,
+        closedAt: null,
+        shift: null,
+        fecha: new Date(),
+        turno: 'DIURNO',
+      });
+      prisma.equipment.findUnique.mockResolvedValueOnce({
+        equipmentClass: 'LIGHT',
+      });
+      tx.equipment.findUnique.mockResolvedValue(null);
+      tx.registroCombustible.aggregate.mockResolvedValue({
+        _max: { lectura: 1300 },
+      });
+      tx.registroHorometro.findUnique.mockResolvedValue(
+        buildCardRecord({ valorInicial: 1200, valorFinal: 1300 }),
+      );
+
+      await expect(
+        service.closeCard(
+          'card_1',
+          {
+            closeClientId: 'close_1',
+            valorFinal: 1300,
+            fuelLiters: 0,
+            capturedAt: iso(),
+            shiftDate: todayShiftDate(),
+            shiftType: 'DIURNO',
+          },
+          session,
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('cierre admin: km final menor que una carga en curso → 400 READING_BELOW_FUEL_LOAD', async () => {
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        equipoId: 'e1',
+        valorInicial: 1200,
+        valorFinal: null,
+        closedAt: null,
+        observaciones: null,
+        belowPreviousReading: false,
+      });
+      tx.registroCombustible.aggregate.mockResolvedValue({
+        _max: { lectura: 1300 },
+      });
+
+      await expect(
+        service.adminCloseCard(
+          'card_1',
+          { valorFinal: 1250 },
+          buildSession('adm_1', 'ADMIN', 'Admin'),
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'READING_BELOW_FUEL_LOAD' },
+      });
+    });
+  });
+
   describe('update (PATCH)', () => {
     const owner = buildSession('sup_1', 'SUPERVISOR', 'Ana Soto');
 
@@ -2718,6 +2845,115 @@ describe('ShiftsService', () => {
         );
       });
 
+      describe('con cargas registradas con la tarjeta abierta (liviano)', () => {
+        const cargas = [
+          { ...CARGA_EN_CURSO, id: 'carga_1', lectura: 1250 },
+          { ...CARGA_EN_CURSO, id: 'carga_2', lectura: 1300 },
+        ];
+        const EQUIPO_LIVIANO_INCLUDE = {
+          ...EQUIPO_INCLUDE,
+          controlUnit: 'KM',
+          equipmentClass: 'LIGHT',
+        };
+
+        it('la inicial no puede quedar por encima de una carga: 400 INITIAL_ABOVE_FUEL_LOAD', async () => {
+          givenCard(
+            closedCard({
+              valorInicial: 1200,
+              valorFinal: 1400,
+              equipo: EQUIPO_LIVIANO_INCLUDE,
+              cargasEnCurso: cargas,
+            }),
+          );
+
+          expect(
+            await errorOf(
+              service.update('card_1', { valorInicial: 1260 }, owner),
+            ),
+          ).toMatchObject({ code: 'INITIAL_ABOVE_FUEL_LOAD' });
+          expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+        });
+
+        it('la final no puede quedar por debajo de una carga: 400 READING_BELOW_FUEL_LOAD', async () => {
+          givenCard(
+            closedCard({
+              valorInicial: 1200,
+              valorFinal: 1400,
+              equipo: EQUIPO_LIVIANO_INCLUDE,
+              cargasEnCurso: cargas,
+            }),
+          );
+
+          expect(
+            await errorOf(
+              service.update('card_1', { valorFinal: 1290 }, owner),
+            ),
+          ).toMatchObject({ code: 'READING_BELOW_FUEL_LOAD' });
+          expect(tx.registroHorometro.update).not.toHaveBeenCalled();
+        });
+
+        it('mover la tarjeta a otro liviano mueve sus cargas, libera su km en el original y lo reconcilia en el destino', async () => {
+          givenCard(
+            closedCard({
+              valorInicial: 1200,
+              valorFinal: null,
+              closedAt: null,
+              fechaSalida: null,
+              equipo: EQUIPO_LIVIANO_INCLUDE,
+              cargasEnCurso: cargas,
+            }),
+          );
+          tx.equipment.findUnique.mockImplementation(
+            ({ where }: { where: { id: string } }) =>
+              Promise.resolve(
+                where.id === 'e2'
+                  ? {
+                      internalCode: 'CM-002',
+                      equipmentClass: 'LIGHT',
+                      controlUnit: 'KM',
+                      currentHourmeter: null,
+                      currentMileage: 1000,
+                    }
+                  : // El km del original lo había fijado la última carga.
+                    {
+                      controlUnit: 'KM',
+                      currentHourmeter: null,
+                      currentMileage: 1300,
+                    },
+              ),
+          );
+          tx.registroHorometro.findFirst.mockResolvedValue(null);
+          tx.registroHorometro.aggregate.mockResolvedValue({
+            _max: { valorInicial: 1200, valorFinal: null },
+          });
+          tx.registroCombustible.updateMany.mockResolvedValue({ count: 2 });
+
+          await service.update('card_1', { equipoId: 'e2' }, owner);
+
+          expect(tx.registroCombustible.updateMany).toHaveBeenCalledWith({
+            where: { tarjetaEnCursoId: 'card_1' },
+            data: { equipoId: 'e2' },
+          });
+          // Original: el km vuelve a la lectura más alta que le queda.
+          expect(tx.equipment.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+              where: expect.objectContaining({
+                id: 'e1',
+                currentMileage: 1300,
+              }) as unknown,
+              data: { currentMileage: 1200 },
+            }),
+          );
+          // Destino: sube hasta la carga más alta.
+          expect(tx.equipment.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+              where: expect.objectContaining({ id: 'e2' }) as unknown,
+              data: { currentMileage: 1300 },
+            }),
+          );
+        });
+      });
+
       it('mover el turno upsertea el Shift de destino (mismo día y supervisor) y mueve shiftId y closedShiftId', async () => {
         givenCard(closedCard({ closedShiftId: 'shift_1' }));
         prisma.shift.upsert.mockResolvedValue({
@@ -2997,6 +3233,9 @@ describe('ShiftsService', () => {
     beforeEach(() => {
       prisma.registroHorometro.findUnique.mockResolvedValue(deletableCard());
       prisma.registroCombustible.findUnique.mockResolvedValue(null);
+      // La tarjeta se bloquea y sus cargas en curso se releen en la tx.
+      tx.$queryRaw.mockResolvedValue([{ id: 'card_1' }]);
+      tx.registroCombustible.findMany.mockResolvedValue([]);
       tx.registroHorometro.delete.mockResolvedValue({});
       tx.registroCombustible.delete.mockResolvedValue({});
       changeLog.record.mockResolvedValue({});
@@ -3029,39 +3268,41 @@ describe('ShiftsService', () => {
       });
     });
 
-    it('arrastra las cargas hechas con la tarjeta abierta: historial, AdBlue de vuelta, borrado y su foto', async () => {
+    it('arrastra las cargas hechas con la tarjeta abierta: bloquea la tarjeta, las relee en la tx, historial, AdBlue de vuelta, borrado y su foto', async () => {
       prisma.registroHorometro.findUnique.mockResolvedValue(
-        deletableCard({
-          fuelLiters: null,
-          pumpPhotoKey: null,
-          cargasEnCurso: [
-            {
-              id: 'carga_1',
-              litros: 40,
-              lectura: 1250,
-              adBlueLitros: 5,
-              fotoKey: 'fuel-photos/c1.jpg',
-              fecha: new Date('2026-09-28T15:00:00.000Z'),
-              createdAt: new Date('2026-09-28T15:00:00.000Z'),
-              createdById: 'sup_2',
-            },
-            {
-              id: 'carga_2',
-              litros: 30,
-              lectura: 1300,
-              adBlueLitros: null,
-              fotoKey: 'fuel-photos/c2.jpg',
-              fecha: new Date('2026-09-28T18:00:00.000Z'),
-              createdAt: new Date('2026-09-28T18:00:00.000Z'),
-              createdById: 'sup_2',
-            },
-          ],
-        }),
+        deletableCard({ fuelLiters: null, pumpPhotoKey: null }),
       );
+      // Afuera no habría cargas (lectura vieja): manda la de la tx.
+      tx.registroCombustible.findMany.mockResolvedValue([
+        {
+          id: 'carga_1',
+          litros: 40,
+          lectura: 1250,
+          adBlueLitros: 5,
+          fotoKey: 'fuel-photos/c1.jpg',
+          fecha: new Date('2026-09-28T15:00:00.000Z'),
+          createdAt: new Date('2026-09-28T15:00:00.000Z'),
+          createdById: 'sup_2',
+        },
+        {
+          id: 'carga_2',
+          litros: 30,
+          lectura: 1300,
+          adBlueLitros: null,
+          fotoKey: 'fuel-photos/c2.jpg',
+          fecha: new Date('2026-09-28T18:00:00.000Z'),
+          createdAt: new Date('2026-09-28T18:00:00.000Z'),
+          createdById: 'sup_2',
+        },
+      ]);
       tx.registroCombustible.deleteMany.mockResolvedValue({ count: 2 });
 
       await service.removeCard('card_1', owner);
 
+      expect(tx.$queryRaw).toHaveBeenCalled();
+      expect(tx.registroCombustible.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tarjetaEnCursoId: 'card_1' } }),
+      );
       expect(tx.registroCombustible.deleteMany).toHaveBeenCalledWith({
         where: { id: { in: ['carga_1', 'carga_2'] } },
       });
@@ -3084,6 +3325,48 @@ describe('ShiftsService', () => {
       );
       expect(deleteBestEffort).toHaveBeenCalledWith('fuel-photos/c1.jpg');
       expect(deleteBestEffort).toHaveBeenCalledWith('fuel-photos/c2.jpg');
+    });
+
+    it('si una carga en curso ya no está al borrar (borrado concurrente), revierte con STALE_UPDATE y no suelta fotos', async () => {
+      tx.registroCombustible.findMany.mockResolvedValue([
+        {
+          id: 'carga_1',
+          litros: 40,
+          lectura: 1250,
+          adBlueLitros: 5,
+          fotoKey: 'fuel-photos/c1.jpg',
+          fecha: new Date('2026-09-28T15:00:00.000Z'),
+          createdAt: new Date('2026-09-28T15:00:00.000Z'),
+          createdById: 'sup_2',
+        },
+        {
+          id: 'carga_2',
+          litros: 30,
+          lectura: 1300,
+          adBlueLitros: null,
+          fotoKey: 'fuel-photos/c2.jpg',
+          fecha: new Date('2026-09-28T18:00:00.000Z'),
+          createdAt: new Date('2026-09-28T18:00:00.000Z'),
+          createdById: 'sup_2',
+        },
+      ]);
+      tx.registroCombustible.deleteMany.mockResolvedValue({ count: 1 });
+
+      await expect(service.removeCard('card_1', owner)).rejects.toMatchObject({
+        response: { code: 'STALE_UPDATE' },
+      });
+      expect(tx.registroHorometro.delete).not.toHaveBeenCalled();
+      expect(deleteBestEffort).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('si la tarjeta desapareció al bloquearla, 404 sin borrar nada', async () => {
+      tx.$queryRaw.mockResolvedValue([]);
+
+      await expect(service.removeCard('card_1', owner)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(tx.registroHorometro.delete).not.toHaveBeenCalled();
     });
 
     it('eliminar la tarjeta cuya lectura había fijado el contador lo devuelve a la más alta que queda', async () => {

@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 
@@ -39,6 +39,8 @@ describe('CombustibleService', () => {
   let service: CombustibleService;
   const prisma = {
     $transaction: jest.fn(),
+    // Bloqueo de la tarjeta al borrar una carga hecha con ella abierta.
+    $queryRaw: jest.fn(),
     equipment: { findUnique: jest.fn(), updateMany: jest.fn() },
     user: { findMany: jest.fn() },
     registroCombustible: {
@@ -749,8 +751,12 @@ describe('CombustibleService', () => {
         ...filaManual,
         tarjetaEnCursoId: 'h1',
       });
+      prisma.$queryRaw.mockResolvedValue([{ id: 'h1' }]);
 
       await service.remove('c1', EDITOR);
+
+      // Toma el mismo bloqueo que el borrado de la tarjeta.
+      expect(prisma.$queryRaw).toHaveBeenCalled();
 
       expect(prisma.registroCombustible.delete).toHaveBeenCalledWith({
         where: { id: 'c1' },
@@ -773,6 +779,25 @@ describe('CombustibleService', () => {
       // La tarjeta no se toca: su `fuelLiters` es solo el del cierre.
       expect(prisma.registroHorometro.update).not.toHaveBeenCalled();
       expect(deleteBestEffort).toHaveBeenCalledWith('fuel-photos/c1.jpg');
+    });
+
+    it('una carga en curso que la tarjeta ya arrastró (borrado concurrente) → 404 sin devolver AdBlue', async () => {
+      prisma.registroCombustible.findUnique
+        .mockResolvedValueOnce({
+          ...filaManual,
+          adBlueLitros: 5,
+          tarjetaEnCursoId: 'h1',
+        })
+        // Relectura bajo el bloqueo: ya no está.
+        .mockResolvedValueOnce(null);
+      prisma.$queryRaw.mockResolvedValue([]);
+
+      await expect(service.remove('c1', EDITOR)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.registroCombustible.delete).not.toHaveBeenCalled();
+      expect(adBlueStock.restoreLoad).not.toHaveBeenCalled();
+      expect(deleteBestEffort).not.toHaveBeenCalled();
     });
 
     it('una carga de TARJETA: la tarjeta queda sin litros (con su propia traza) y la foto compartida NO se toca', async () => {

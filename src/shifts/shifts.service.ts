@@ -110,6 +110,20 @@ class ShiftCardCloseRaceError extends Error {}
  * de la tx abortada (409 `EQUIPMENT_BUSY`). */
 class ShiftCardMoveRaceError extends Error {}
 
+/** Lo que se lee de cada carga registrada con la tarjeta abierta (respuesta
+ * de la tarjeta y borrado de la tarjeta). */
+const CARGA_EN_CURSO_SELECT = {
+  id: true,
+  litros: true,
+  lectura: true,
+  adBlueLitros: true,
+  fotoKey: true,
+  fecha: true,
+  createdAt: true,
+  // El `select` explícito gana al omit global del campo.
+  createdById: true,
+} satisfies Prisma.RegistroCombustibleSelect;
+
 const SHIFT_CARD_INCLUDE = {
   equipo: {
     select: {
@@ -134,17 +148,7 @@ const SHIFT_CARD_INCLUDE = {
   // Cargas registradas con la tarjeta ABIERTA, sin cerrarla (solo livianos),
   // en el orden en que se cargaron.
   cargasEnCurso: {
-    select: {
-      id: true,
-      litros: true,
-      lectura: true,
-      adBlueLitros: true,
-      fotoKey: true,
-      fecha: true,
-      createdAt: true,
-      // El `select` explícito gana al omit global del campo.
-      createdById: true,
-    },
+    select: CARGA_EN_CURSO_SELECT,
     orderBy: [{ fecha: 'asc' }, { createdAt: 'asc' }],
   },
 } satisfies Prisma.RegistroHorometroInclude;
@@ -784,6 +788,10 @@ export class ShiftsService {
         if (result.count !== 1) {
           throw new ShiftCardCloseRaceError();
         }
+        // Dentro de la tx, después del `updateMany` (que ya tiene la fila
+        // tomada): una carga en curso concurrente o quedó confirmada antes y
+        // se ve acá, o espera y encuentra la tarjeta cerrada.
+        await this.assertFinalCoversFuelLoads(tx, id, dto.valorFinal);
 
         // Reconciliación en modo `'warn'` (NUNCA `'reject'` acá): el
         // contador VIGENTE del equipo puede ser mayor que `valorInicial`
@@ -1504,10 +1512,21 @@ export class ShiftsService {
       where: { registroHorometroId: id },
       select: { id: true, litros: true, fecha: true },
     });
-    const cargasEnCurso = card.cargasEnCurso;
+    // Se releen DENTRO de la transacción, con la tarjeta bloqueada: una
+    // carga en curso concurrente (`addFuelLoad` también bloquea la tarjeta)
+    // o quedó confirmada antes y se borra acá, o espera y ve la tarjeta ya
+    // borrada (404). Afuera solo se usan para soltar sus fotos.
+    let cargasEnCurso: ShiftCardRecord['cargasEnCurso'] = [];
 
     const stockEvents: PendingStockEvents = [];
     await this.prisma.$transaction(async (tx) => {
+      if (!(await lockRow(tx, 'registroHorometro', id))) {
+        throw this.cardNotFound();
+      }
+      cargasEnCurso = await tx.registroCombustible.findMany({
+        where: { tarjetaEnCursoId: id },
+        select: CARGA_EN_CURSO_SELECT,
+      });
       await this.changeLog.record(
         tx,
         'shift_card',
@@ -1565,9 +1584,19 @@ export class ShiftsService {
         }
       }
       if (cargasEnCurso.length > 0) {
-        await tx.registroCombustible.deleteMany({
+        const { count } = await tx.registroCombustible.deleteMany({
           where: { id: { in: cargasEnCurso.map((carga) => carga.id) } },
         });
+        // Con la tarjeta bloqueada no debería faltar ninguna; si faltara
+        // (otra vía de borrado), su AdBlue ya se habría devuelto dos veces:
+        // se revierte todo y se pide reintentar.
+        if (count !== cargasEnCurso.length) {
+          throw new ConflictException({
+            message:
+              'Las cargas de la tarjeta cambiaron mientras se eliminaba. Vuelve a intentarlo.',
+            code: ERROR_CODES.STALE_UPDATE,
+          });
+        }
       }
       // El AdBlue que la tarjeta había descontado vuelve al saldo: borrar el
       // registro deja el inventario como si la carga no se hubiera declarado.
@@ -1752,6 +1781,27 @@ export class ShiftsService {
         message: `La lectura final (${formatNumber(despues.valorFinal)}) no puede ser menor que la inicial (${formatNumber(despues.valorInicial)})`,
         code: ERROR_CODES.HOURMETER_BELOW_INITIAL,
       });
+    }
+    // Las cargas registradas con la tarjeta abierta fijan km intermedios: la
+    // corrección no puede dejar la inicial por encima de ninguna ni la final
+    // por debajo (la fila ya está bloqueada, así que no entra otra carga).
+    const lecturasCargas = actual.cargasEnCurso
+      .map((carga) => carga.lectura)
+      .filter((lectura): lectura is number => lectura != null);
+    if (lecturasCargas.length > 0) {
+      const minima = Math.min(...lecturasCargas);
+      if (despues.valorInicial > minima) {
+        throw new BadRequestException({
+          message: `La lectura inicial (${formatNumber(despues.valorInicial)}) no puede ser mayor que la de una carga de combustible registrada en la tarjeta (${formatNumber(minima)})`,
+          code: ERROR_CODES.INITIAL_ABOVE_FUEL_LOAD,
+        });
+      }
+      if (despues.valorFinal != null) {
+        this.assertReadingCoversFuelLoads(
+          despues.valorFinal,
+          Math.max(...lecturasCargas),
+        );
+      }
     }
     const adBlueProblema = adBlueError(despues.adBlue, despues.adBlueLiters);
     if (adBlueProblema) throw new BadRequestException(adBlueProblema);
@@ -2102,6 +2152,33 @@ export class ShiftsService {
     });
   }
 
+  /** 400 `READING_BELOW_FUEL_LOAD` si la lectura final queda por debajo del
+   * km de una carga registrada con la tarjeta abierta. */
+  private assertReadingCoversFuelLoads(
+    valorFinal: number,
+    maxLecturaCargas: number | null,
+  ): void {
+    if (maxLecturaCargas == null || valorFinal >= maxLecturaCargas) return;
+    throw new BadRequestException({
+      message: `La lectura final (${formatNumber(valorFinal)}) no puede ser menor que la de una carga de combustible registrada en la tarjeta (${formatNumber(maxLecturaCargas)})`,
+      code: ERROR_CODES.READING_BELOW_FUEL_LOAD,
+    });
+  }
+
+  /** Igual que `assertReadingCoversFuelLoads`, leyendo las cargas de la
+   * tarjeta en la transacción del cierre. */
+  private async assertFinalCoversFuelLoads(
+    tx: Prisma.TransactionClient,
+    cardId: string,
+    valorFinal: number,
+  ): Promise<void> {
+    const { _max } = await tx.registroCombustible.aggregate({
+      where: { tarjetaEnCursoId: cardId },
+      _max: { lectura: true },
+    });
+    this.assertReadingCoversFuelLoads(valorFinal, _max.lectura);
+  }
+
   private cardNotFound(): NotFoundException {
     return new NotFoundException({
       message: 'Tarjeta no encontrada',
@@ -2385,6 +2462,9 @@ export class ShiftsService {
           code: ERROR_CODES.ALREADY_CLOSED,
         });
       }
+      // Mismo resguardo que el cierre normal: el km final no puede quedar
+      // por debajo de una carga ya registrada con la tarjeta abierta.
+      await this.assertFinalCoversFuelLoads(tx, id, dto.valorFinal);
 
       const equipo = await tx.equipment.findUnique({
         where: { id: card.equipoId },
