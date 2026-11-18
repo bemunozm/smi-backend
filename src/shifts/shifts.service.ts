@@ -32,7 +32,7 @@ import {
 } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
-import { ROLES, sessionHasRole } from '../auth/roles';
+import { ROLES, sessionHasRole, type Role } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ERROR_CODES } from '../common/errors/error-codes';
 import { assertExpectedLocked } from '../common/concurrency/assert-expected-locked';
@@ -282,6 +282,19 @@ export interface ShiftWithCardsResponse {
     cardCount: number;
     emailStatus: string;
   }[];
+}
+
+/** El primer rol reconocible de la sesión, que puede venir como lista o
+ * como «A,B» (mismo formato que admite `sessionHasRole`); `null` si ninguno
+ * lo es. Solo para textos (el aviso `fuel.loaded`). */
+export function primerRolConocido(
+  role: string | string[] | null | undefined,
+): Role | null {
+  if (!role) return null;
+  const roles = Array.isArray(role) ? role : role.split(',');
+  const conocidos = Object.values(ROLES) as string[];
+  const primero = roles.map((r) => r.trim()).find((r) => conocidos.includes(r));
+  return (primero as Role | undefined) ?? null;
 }
 
 function round2(value: number): number {
@@ -1265,6 +1278,9 @@ export class ShiftsService {
     );
 
     let created: ShiftCardRecord | null;
+    // La carga nacida del registro (si hubo litros): la avisa `fuel.loaded`.
+    // (`as`: se asigna dentro del callback de la tx; sin él TS la deja en `null`.)
+    let cargaRegistradaId = null as string | null;
     const stockEvents: PendingStockEvents = [];
     try {
       created = await this.prisma.$transaction(async (tx) => {
@@ -1339,7 +1355,8 @@ export class ShiftsService {
           if (dto.fuelLiters > 0) {
             // Mismo criterio que el cierre: `lectura` queda null porque su
             // lectura ES el `valorFinal` de la tarjeta vinculada.
-            await tx.registroCombustible.create({
+            const creada = await tx.registroCombustible.create({
+              select: { id: true },
               data: {
                 equipoId: dto.equipoId,
                 litros: dto.fuelLiters,
@@ -1349,6 +1366,7 @@ export class ShiftsService {
                 registroHorometroId: dto.id,
               },
             });
+            cargaRegistradaId = creada.id;
           }
 
           // Igual que el cierre vivo: el AdBlue del turno histórico también
@@ -1408,6 +1426,26 @@ export class ShiftsService {
       throw error;
     }
     this.adBlueStock.emitPending(stockEvents);
+
+    // Mismo aviso que el cierre vivo: camioneta con litros → admin. El replay
+    // por `dto.id` vuelve antes y nunca llega acá.
+    if (
+      cargaRegistradaId &&
+      created &&
+      created.equipo.equipmentClass === EquipmentClass.LIGHT
+    ) {
+      this.emitFuelLoaded({
+        cargaId: cargaRegistradaId,
+        cardId: dto.id,
+        equipmentId: dto.equipoId,
+        equipmentCode: created.equipo.internalCode,
+        liters: dto.fuelLiters,
+        reading: dto.valorFinal,
+        unit: created.equipo.controlUnit === ControlUnit.HOURS ? 'h' : 'km',
+        origin: 'CIERRE',
+        session,
+      });
+    }
 
     return this.shapeCard(created);
   }
@@ -2238,7 +2276,7 @@ export class ShiftsService {
       ...datos,
       actorId: session.user.id,
       actorName: session.user.name?.trim() || session.user.email,
-      actorRole: (session.user.role as string | null | undefined) ?? null,
+      actorRole: primerRolConocido(session.user.role),
     };
     this.eventEmitter.emit(DOMAIN_EVENTS.FUEL_LOADED, event);
   }

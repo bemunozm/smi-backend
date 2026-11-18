@@ -16,7 +16,7 @@ import { StorageService } from '../storage/storage.service';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
 import { CreateShiftCardFuelLoadDto } from './dto/create-shift-card-fuel-load.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
-import { ShiftsService } from './shifts.service';
+import { ShiftsService, primerRolConocido } from './shifts.service';
 import {
   businessDayKey,
   businessHour,
@@ -2525,6 +2525,131 @@ describe('ShiftsService', () => {
         await service.closeCard('card_1', conLitros, session);
 
         expect(avisos()).toEqual([]);
+      });
+    });
+
+    describe('registro de un turno pasado (POST /shift-cards/closed)', () => {
+      const pasado = {
+        id: '55555555-5555-4555-8555-555555555555',
+        equipoId: 'e9',
+        valorInicial: 22000,
+        valorFinal: 22100,
+        shiftDate: todayShiftDate(-3),
+        shiftType: 'DIURNO' as const,
+        capturedAt: iso(),
+        closeClientId: '66666666-6666-4666-8666-666666666666',
+        fuelLiters: 30,
+        tmpPhotoKey: 'tmp/sup_1/11111111-1111-4111-8111-111111111111.jpg',
+      };
+      const EQUIPO_LIVIANO = {
+        internalCode: 'MB-008',
+        type: 'Camioneta',
+        controlUnit: 'KM',
+        equipmentClass: 'LIGHT',
+      };
+
+      beforeEach(() => {
+        prisma.equipment.findUnique.mockResolvedValue({
+          equipmentClass: 'LIGHT',
+        });
+        prisma.registroHorometro.findUnique.mockResolvedValue(null);
+        claimTmp.mockResolvedValue('fuel-photos/pasado.jpg');
+        tx.equipment.findUnique.mockResolvedValue({
+          equipmentClass: 'LIGHT',
+          controlUnit: 'KM',
+          currentHourmeter: null,
+          currentMileage: 22000,
+        });
+        tx.registroHorometro.create.mockImplementation(
+          ({ data }: { data: Record<string, unknown> }) =>
+            buildCardRecord({ ...data, equipo: EQUIPO_LIVIANO }),
+        );
+        tx.registroCombustible.create.mockResolvedValue({ id: 'carga_p' });
+        // El liviano queda en el turno de quien lo registra (`closedShiftId`).
+        prisma.shift.findMany.mockResolvedValue([]);
+      });
+
+      it('liviano con litros: avisa la carga (origin CIERRE)', async () => {
+        await service.registerClosedCard(pasado, session);
+
+        expect(avisos()).toEqual([
+          expect.objectContaining({
+            cargaId: 'carga_p',
+            cardId: pasado.id,
+            equipmentId: 'e9',
+            equipmentCode: 'MB-008',
+            liters: 30,
+            reading: 22100,
+            unit: 'km',
+            origin: 'CIERRE',
+            actorId: 'sup_1',
+            actorRole: 'SUPERVISOR',
+          }),
+        ]);
+      });
+
+      it('liviano sin litros: no hay carga, no avisa', async () => {
+        await service.registerClosedCard({ ...pasado, fuelLiters: 0 }, session);
+
+        expect(tx.registroCombustible.create).not.toHaveBeenCalled();
+        expect(avisos()).toEqual([]);
+      });
+
+      it('pesado con litros: NO avisa', async () => {
+        prisma.equipment.findUnique.mockResolvedValue({
+          equipmentClass: 'HEAVY',
+        });
+        tx.equipment.findUnique.mockResolvedValue({
+          equipmentClass: 'HEAVY',
+          controlUnit: 'HOURS',
+          currentHourmeter: 100,
+          currentMileage: null,
+        });
+        tx.registroHorometro.create.mockImplementation(
+          ({ data }: { data: Record<string, unknown> }) =>
+            buildCardRecord({ ...data }),
+        );
+
+        await service.registerClosedCard(
+          { ...pasado, operatorId: 'op_1', valorInicial: 100, valorFinal: 108 },
+          session,
+        );
+
+        expect(tx.registroCombustible.create).toHaveBeenCalled();
+        expect(avisos()).toEqual([]);
+      });
+
+      it('replay por dto.id: devuelve la existente y NO avisa', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue(
+          buildCardRecord({
+            id: pasado.id,
+            equipoId: 'e9',
+            supervisorId: 'sup_1',
+            equipo: EQUIPO_LIVIANO,
+          }),
+        );
+
+        await service.registerClosedCard(pasado, session);
+
+        expect(claimTmp).not.toHaveBeenCalled();
+        expect(avisos()).toEqual([]);
+      });
+    });
+
+    describe('rol de quien registra, para el texto', () => {
+      it('toma el primer rol reconocible de una lista o de «A,B»', () => {
+        expect(primerRolConocido('SUPERVISOR,ADMIN')).toBe('SUPERVISOR');
+        expect(primerRolConocido(' OTRO , ADMIN')).toBe('ADMIN');
+        expect(primerRolConocido(['X', 'PREVENCIONISTA'])).toBe(
+          'PREVENCIONISTA',
+        );
+        expect(primerRolConocido('ADMIN')).toBe('ADMIN');
+      });
+
+      it('null si no hay rol o ninguno es conocido', () => {
+        expect(primerRolConocido(undefined)).toBeNull();
+        expect(primerRolConocido('')).toBeNull();
+        expect(primerRolConocido('OTRO')).toBeNull();
       });
     });
   });

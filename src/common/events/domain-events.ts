@@ -203,11 +203,20 @@ export interface PreventiveServiceDueEvent {
 }
 
 /**
- * Se cargó combustible a una camioneta (equipo LIVIANO) desde Terreno: con la
- * tarjeta abierta (`POST /shift-cards/:id/fuel-loads`) o al cerrarla con
- * litros. Le llega al administrador. Lo emite `ShiftsService` DESPUÉS de
- * confirmar la transacción, nunca en un reintento idempotente; no lo emiten
- * los pesados ni el alta/corrección manual del panel.
+ * Se cargó combustible a una camioneta (equipo LIVIANO) desde Terreno. Le
+ * llega al administrador (menos a quien la registró). Lo emite
+ * `ShiftsService` DESPUÉS de confirmar la transacción, en exactamente tres
+ * casos:
+ * - `POST /shift-cards/:id/fuel-loads` (carga con la tarjeta abierta) →
+ *   `origin: 'TARJETA_ABIERTA'`;
+ * - `POST /shift-cards/:id/close` de un liviano con `fuelLiters > 0` →
+ *   `origin: 'CIERRE'`;
+ * - `POST /shift-cards/closed` (registro de un turno pasado) de un liviano
+ *   con `fuelLiters > 0` → `origin: 'CIERRE'`.
+ * Nunca en un reintento idempotente ni si la transacción falla; tampoco en
+ * pesados, en el cierre de liviano solo con km, en el cierre del
+ * administrador (`admin-close`, sin combustible) ni en el alta/corrección
+ * manual del panel (`/combustible`).
  */
 export interface FuelLoadedEvent {
   /** `RegistroCombustible.id` de la carga. */
