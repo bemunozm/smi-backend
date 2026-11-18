@@ -34,14 +34,18 @@ export class CloseShiftCardDto {
   @Max(1_000_000, { message: 'La lectura no puede superar 1.000.000.' })
   valorFinal!: number;
 
-  /** Litros cargados al cierre — obligatorio (la spec lo pide así), 0
-   * permitido (equipo que no cargó combustible en este turno). Tope
-   * `FUEL_LITERS_MAX`: una carga real puede pasar de 10 000 L, pero un valor
-   * mayor suele ser un kilometraje u horómetro tipeado en el campo equivocado. */
+  /** Litros cargados al cierre — 0 permitido (equipo que no cargó
+   * combustible en este turno). Tope `FUEL_LITERS_MAX`: una carga real puede
+   * pasar de 10 000 L, pero un valor mayor suele ser un kilometraje u
+   * horómetro tipeado en el campo equivocado. Opcional en el DTO SOLO para
+   * el liviano que ya registró cargas con la tarjeta abierta (su cierre pide
+   * solo km final y observaciones); en cualquier otra tarjeta el servicio lo
+   * exige (400 `FUEL_LITERS_REQUIRED`), igual que antes. */
+  @IsOptional()
   @IsNumber()
   @Min(0, { message: 'Los litros no pueden ser negativos.' })
   @Max(FUEL_LITERS_MAX, { message: FUEL_LITERS_MAX_MESSAGE })
-  fuelLiters!: number;
+  fuelLiters?: number;
 
   /** AdBlue cargado en el turno (el cliente exige registrarlo al cerrar). Opcional: un cierre
    * encolado antes de que existiera el campo sigue siendo válido y se lee como

@@ -59,6 +59,14 @@ describe('CloseShiftCardDto', () => {
   });
 
   describe('fuelLiters — límite', () => {
+    it('puede faltar (el servicio lo exige salvo en el liviano con cargas en curso)', async () => {
+      const dto = plainToInstance(
+        CloseShiftCardDto,
+        base({ fuelLiters: undefined, tmpPhotoKey: undefined }),
+      );
+      expect(await validate(dto)).toHaveLength(0);
+    });
+
     it('acepta 0', async () => {
       const dto = plainToInstance(CloseShiftCardDto, base({ fuelLiters: 0 }));
       expect(await validate(dto)).toHaveLength(0);

@@ -674,9 +674,13 @@ export class ShiftsService {
       });
     }
 
+    // Sin `fuelLiters` = 0 L; que pueda omitirse (solo el liviano con cargas
+    // en curso) se valida en la tx, con la tarjeta tomada.
+    const fuelLiters = dto.fuelLiters ?? 0;
+
     // La foto del surtidor respalda la CARGA: sin combustible (corte de luz,
     // no hubo carga) se cierra sin ella; con litros sigue siendo obligatoria.
-    if (dto.fuelLiters > 0 && !dto.tmpPhotoKey) {
+    if (fuelLiters > 0 && !dto.tmpPhotoKey) {
       throw new BadRequestException({
         message:
           'Falta la foto del surtidor: es obligatoria cuando se carga combustible.',
@@ -771,10 +775,10 @@ export class ShiftsService {
             closedById: session.user.id,
             closedByName: session.user.name?.trim() || session.user.email,
             closedShiftId,
-            fuelLiters: dto.fuelLiters,
+            fuelLiters,
             pumpPhotoKey,
             observaciones: dto.observaciones ?? null,
-            noFuelReason: dto.fuelLiters > 0 ? null : dto.noFuelReason || null,
+            noFuelReason: fuelLiters > 0 ? null : dto.noFuelReason || null,
             adBlue: dto.adBlue ?? false,
             adBlueLiters: dto.adBlue ? (dto.adBlueLiters ?? null) : null,
             // Hora del dispositivo descartada por desfase: se audita sin pisar
@@ -792,6 +796,26 @@ export class ShiftsService {
         // tomada): una carga en curso concurrente o quedó confirmada antes y
         // se ve acá, o espera y encuentra la tarjeta cerrada.
         await this.assertFinalCoversFuelLoads(tx, id, dto.valorFinal);
+        // El liviano que ya cargó con la tarjeta abierta cierra solo con km
+        // final y observaciones: litros, foto, AdBlue y motivo sin carga son
+        // opcionales. Sin cargas en curso (y siempre en un pesado, que no
+        // puede tenerlas) los litros siguen siendo obligatorios.
+        const cargasPrevias = await tx.registroCombustible.count({
+          where: { tarjetaEnCursoId: id },
+        });
+        if (dto.fuelLiters === undefined && cargasPrevias === 0) {
+          throw new BadRequestException({
+            message: 'Indica los litros cargados al cerrar (0 si no cargó).',
+            code: ERROR_CODES.FUEL_LITERS_REQUIRED,
+          });
+        }
+        if (cargasPrevias > 0 && fuelLiters === 0 && dto.noFuelReason) {
+          // Con cargas en curso no hubo «cierre sin carga»: no se guarda.
+          await tx.registroHorometro.update({
+            where: { id },
+            data: { noFuelReason: null },
+          });
+        }
 
         // Reconciliación en modo `'warn'` (NUNCA `'reject'` acá): el
         // contador VIGENTE del equipo puede ser mayor que `valorInicial`
@@ -833,11 +857,11 @@ export class ShiftsService {
 
         // NO se reusa `CombustibleService.create` (tiene su propio claim y
         // rechaza 0 L) — acá 0 L es válido y la key ya está reclamada.
-        if (dto.fuelLiters > 0) {
+        if (fuelLiters > 0) {
           await tx.registroCombustible.create({
             data: {
               equipoId: card.equipoId,
-              litros: dto.fuelLiters,
+              litros: fuelLiters,
               tipo: DEFAULT_SHIFT_CLOSE_FUEL_TYPE,
               // Comparte la MISMA key que la tarjeta — así la carga aparece
               // sola en la ficha y en el historial de combustible sin

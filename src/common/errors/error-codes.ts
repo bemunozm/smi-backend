@@ -54,6 +54,9 @@ export const ERROR_CODES = {
   /** Lectura INICIAL editada por encima del km de una carga registrada con
    * la tarjeta abierta. */
   INITIAL_ABOVE_FUEL_LOAD: 'INITIAL_ABOVE_FUEL_LOAD',
+  /** Cierre sin `fuelLiters` de una tarjeta SIN cargas registradas con ella
+   * abierta: solo el liviano que ya cargó puede omitir los litros. */
+  FUEL_LITERS_REQUIRED: 'FUEL_LITERS_REQUIRED',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
