@@ -50,7 +50,7 @@ describe('CombustibleService', () => {
       findMany: jest.fn(),
       delete: jest.fn(),
     },
-    registroHorometro: { update: jest.fn() },
+    registroHorometro: { update: jest.fn(), findUnique: jest.fn() },
   };
   const claimTmp = jest.fn();
   const discard = jest.fn();
@@ -500,15 +500,79 @@ describe('CombustibleService', () => {
       expect(changeLog.record).not.toHaveBeenCalled();
     });
 
-    it('una carga hecha con la tarjeta ABIERTA se corrige como manual (sus datos son propios)', async () => {
-      prisma.registroCombustible.findUnique.mockResolvedValue({
-        ...filaManual,
-        tarjetaEnCursoId: 'h1',
+    describe('carga hecha con la tarjeta ABIERTA', () => {
+      beforeEach(() => {
+        prisma.registroCombustible.findUnique.mockResolvedValue({
+          ...filaManual,
+          tarjetaEnCursoId: 'h1',
+        });
+        prisma.$queryRaw.mockResolvedValue([{ id: 'h1' }]);
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          valorInicial: 900,
+          valorFinal: 1100,
+        });
       });
 
-      await service.update('c1', { litros: 100.4 }, editor);
+      it('se corrige como manual (sus datos son propios), bloqueando antes su tarjeta', async () => {
+        await service.update('c1', { litros: 100.4 }, editor);
 
-      expect(prisma.registroCombustible.update).toHaveBeenCalledTimes(1);
+        expect(prisma.$queryRaw).toHaveBeenCalled();
+        expect(prisma.registroCombustible.update).toHaveBeenCalledTimes(1);
+        // Sin lectura en el body no hace falta leer la tarjeta.
+        expect(prisma.registroHorometro.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('una lectura dentro de la tarjeta se acepta', async () => {
+        await service.update('c1', { lectura: 1050 }, editor);
+
+        expect(prisma.registroCombustible.update).toHaveBeenCalledTimes(1);
+      });
+
+      it('una lectura menor que la inicial de la tarjeta → 400 INITIAL_ABOVE_FUEL_LOAD', async () => {
+        await expect(
+          service.update('c1', { lectura: 899 }, editor),
+        ).rejects.toMatchObject({
+          response: { code: 'INITIAL_ABOVE_FUEL_LOAD' },
+        });
+        expect(prisma.registroCombustible.update).not.toHaveBeenCalled();
+      });
+
+      it('una lectura mayor que la final de la tarjeta cerrada → 400 READING_BELOW_FUEL_LOAD', async () => {
+        await expect(
+          service.update('c1', { lectura: 1101 }, editor),
+        ).rejects.toMatchObject({
+          response: { code: 'READING_BELOW_FUEL_LOAD' },
+        });
+        expect(prisma.registroCombustible.update).not.toHaveBeenCalled();
+      });
+
+      it('con la tarjeta abierta no hay tope superior', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          valorInicial: 900,
+          valorFinal: null,
+        });
+
+        await service.update('c1', { lectura: 5000 }, editor);
+
+        expect(prisma.registroCombustible.update).toHaveBeenCalledTimes(1);
+      });
+
+      it('si la tarjeta la arrastró antes (borrado concurrente) → 404 sin tocar nada', async () => {
+        prisma.registroCombustible.findUnique
+          .mockResolvedValueOnce({
+            ...filaManual,
+            adBlueLitros: 5,
+            tarjetaEnCursoId: 'h1',
+          })
+          .mockResolvedValueOnce(null);
+
+        await expect(
+          service.update('c1', { adBlueLitros: null }, editor),
+        ).rejects.toBeInstanceOf(NotFoundException);
+        expect(prisma.registroCombustible.update).not.toHaveBeenCalled();
+        expect(adBlueStock.restoreLoad).not.toHaveBeenCalled();
+        expect(changeLog.record).not.toHaveBeenCalled();
+      });
     });
 
     it('una carga MANUAL corrige litros/tipo/fecha/lectura y la fecha viaja como Date', async () => {

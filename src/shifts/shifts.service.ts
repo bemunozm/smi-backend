@@ -1462,9 +1462,13 @@ export class ShiftsService {
    * que la edición de lecturas).
    */
   async removeCard(id: string, session: UserSession): Promise<void> {
+    // Sin `cargasEnCurso`: se releen bajo el bloqueo, dentro de la tx.
     const card = await this.prisma.registroHorometro.findUnique({
       where: { id },
-      include: SHIFT_CARD_INCLUDE,
+      include: {
+        equipo: SHIFT_CARD_INCLUDE.equipo,
+        shift: SHIFT_CARD_INCLUDE.shift,
+      },
     });
     if (!card) throw this.cardNotFound();
     const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
@@ -1788,15 +1792,23 @@ export class ShiftsService {
     const lecturasCargas = actual.cargasEnCurso
       .map((carga) => carga.lectura)
       .filter((lectura): lectura is number => lectura != null);
+    // Solo si la edición toca las lecturas: corregir observaciones, operador
+    // o turno no debe fallar por datos viejos.
     if (lecturasCargas.length > 0) {
       const minima = Math.min(...lecturasCargas);
-      if (despues.valorInicial > minima) {
+      if (
+        despues.valorInicial !== antes.valorInicial &&
+        despues.valorInicial > minima
+      ) {
         throw new BadRequestException({
           message: `La lectura inicial (${formatNumber(despues.valorInicial)}) no puede ser mayor que la de una carga de combustible registrada en la tarjeta (${formatNumber(minima)})`,
           code: ERROR_CODES.INITIAL_ABOVE_FUEL_LOAD,
         });
       }
-      if (despues.valorFinal != null) {
+      if (
+        despues.valorFinal != null &&
+        despues.valorFinal !== antes.valorFinal
+      ) {
         this.assertReadingCoversFuelLoads(
           despues.valorFinal,
           Math.max(...lecturasCargas),

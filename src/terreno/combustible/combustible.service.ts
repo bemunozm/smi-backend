@@ -311,6 +311,7 @@ export class CombustibleService {
       select: {
         equipoId: true,
         registroHorometroId: true,
+        tarjetaEnCursoId: true,
         litros: true,
         tipo: true,
         fecha: true,
@@ -342,6 +343,14 @@ export class CombustibleService {
     // es justo lo que el historial debe impedir.
     const stockEvents: PendingStockEvents = [];
     const registro = await this.prisma.$transaction(async (tx) => {
+      if (previa.tarjetaEnCursoId) {
+        await this.lockCargaEnCurso(
+          tx,
+          id,
+          previa.tarjetaEnCursoId,
+          dto.lectura,
+        );
+      }
       const editado = await tx.registroCombustible.update({
         where: { id },
         data: {
@@ -503,16 +512,9 @@ export class CombustibleService {
     const stockEvents: PendingStockEvents = [];
     await this.prisma.$transaction(async (tx) => {
       if (registro.tarjetaEnCursoId) {
-        // Carga hecha con la tarjeta abierta: se toma el MISMO bloqueo que
-        // el borrado de la tarjeta (`ShiftsService.removeCard`), y se relee
-        // la carga. Si la tarjeta la arrastró antes, ya no está: 404, sin
-        // devolver su AdBlue por segunda vez.
-        await lockRow(tx, 'registroHorometro', registro.tarjetaEnCursoId);
-        const sigue = await tx.registroCombustible.findUnique({
-          where: { id },
-          select: { id: true },
-        });
-        if (!sigue) throw new NotFoundException('Registro no encontrado');
+        // Si la tarjeta la arrastró antes, ya no está: 404, sin devolver su
+        // AdBlue por segunda vez.
+        await this.lockCargaEnCurso(tx, id, registro.tarjetaEnCursoId);
       }
       await this.changeLog.record(
         tx,
@@ -565,6 +567,47 @@ export class CombustibleService {
 
     if (!deTarjeta && registro.fotoKey) {
       await this.storage.deleteBestEffort(registro.fotoKey);
+    }
+  }
+
+  /**
+   * Carga hecha con la tarjeta ABIERTA: toma el MISMO bloqueo que el borrado
+   * de la tarjeta (`ShiftsService.removeCard`) —siempre tarjeta primero,
+   * así los dos caminos nunca se cruzan en un deadlock— y relee la carga
+   * bajo ese bloqueo: si la tarjeta ya la arrastró, 404. Con `lectura`
+   * nueva, la valida contra la tarjeta: no puede quedar por debajo de su
+   * lectura inicial ni por encima de la final (si ya cerró).
+   */
+  private async lockCargaEnCurso(
+    tx: Prisma.TransactionClient,
+    id: string,
+    tarjetaId: string,
+    lectura?: number,
+  ): Promise<void> {
+    await lockRow(tx, 'registroHorometro', tarjetaId);
+    const sigue = await tx.registroCombustible.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!sigue) throw new NotFoundException('Registro no encontrado');
+    if (lectura === undefined) return;
+
+    const tarjeta = await tx.registroHorometro.findUnique({
+      where: { id: tarjetaId },
+      select: { valorInicial: true, valorFinal: true },
+    });
+    if (!tarjeta) return;
+    if (lectura < tarjeta.valorInicial) {
+      throw new BadRequestException({
+        message: `La lectura de la carga (${formatNumber(lectura)}) no puede ser menor que la inicial de su tarjeta (${formatNumber(tarjeta.valorInicial)})`,
+        code: ERROR_CODES.INITIAL_ABOVE_FUEL_LOAD,
+      });
+    }
+    if (tarjeta.valorFinal != null && lectura > tarjeta.valorFinal) {
+      throw new BadRequestException({
+        message: `La lectura de la carga (${formatNumber(lectura)}) no puede ser mayor que la final de su tarjeta (${formatNumber(tarjeta.valorFinal)})`,
+        code: ERROR_CODES.READING_BELOW_FUEL_LOAD,
+      });
     }
   }
 

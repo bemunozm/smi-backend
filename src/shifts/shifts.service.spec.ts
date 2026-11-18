@@ -2892,6 +2892,26 @@ describe('ShiftsService', () => {
           expect(tx.registroHorometro.update).not.toHaveBeenCalled();
         });
 
+        it('una edición que no toca las lecturas no se valida contra las cargas (datos viejos no la traban)', async () => {
+          // Dato viejo inconsistente: final por debajo de una carga.
+          givenCard(
+            closedCard({
+              valorInicial: 1200,
+              valorFinal: 1290,
+              equipo: EQUIPO_LIVIANO_INCLUDE,
+              cargasEnCurso: cargas,
+            }),
+          );
+
+          await service.update(
+            'card_1',
+            { observaciones: 'Corrijo la nota' },
+            owner,
+          );
+
+          expect(tx.registroHorometro.update).toHaveBeenCalledTimes(1);
+        });
+
         it('mover la tarjeta a otro liviano mueve sus cargas, libera su km en el original y lo reconcilia en el destino', async () => {
           givenCard(
             closedCard({
