@@ -73,6 +73,7 @@ describe('ShiftReportsService', () => {
   const prisma = {
     shiftExitReport: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       create: jest.fn(),
       count: jest.fn(),
@@ -109,6 +110,7 @@ describe('ShiftReportsService', () => {
     valorFinal: 108.5,
     fuelLiters: 40,
     observaciones: null,
+    fecha: new Date('2026-09-28T12:00:00.000Z'),
     equipo: { internalCode: 'EX-001', type: 'Excavadora' },
   };
 
@@ -132,6 +134,8 @@ describe('ShiftReportsService', () => {
     // Sin reportes recientes por defecto — los tests del rate limit lo
     // sobreescriben.
     prisma.shiftExitReport.count.mockResolvedValue(0);
+    // Sin reportes previos del turno por defecto (los de «repetido» lo pisan).
+    prisma.shiftExitReport.findFirst.mockResolvedValue(null);
     prisma.shift.findUnique.mockResolvedValue(SHIFT);
     prisma.registroHorometro.findMany.mockResolvedValue([CARD]);
     mockedRenderPdfBuffer.mockResolvedValue(Buffer.from('%PDF-1.4'));
@@ -390,6 +394,61 @@ describe('ShiftReportsService', () => {
         service.create(dto, buildSession('sup_1')),
       ).rejects.toMatchObject({ response: { code: 'INVALID_SHIFT_DATE' } });
       expect(prisma.shift.findUnique).not.toHaveBeenCalled();
+    });
+
+    describe('reporte repetido (los mismos equipos ya informados)', () => {
+      const ULTIMO = {
+        id: 'r_previo',
+        shiftId: 'shift_1',
+        fileKey: 'reports/shift-exit/2026/09/r_previo.pdf',
+        fileName: 'reporte-salida-2026-09-28-diurno.pdf',
+        cardCount: 1,
+        // Pedido DESPUÉS de abrir la tarjeta (12:00): ya la incluye.
+        requestedAt: new Date('2026-09-28T12:05:00.000Z'),
+        createdAt: new Date('2026-09-28T12:05:01.000Z'),
+        emailStatus: 'SENT',
+      };
+
+      it('devuelve el último reporte del turno: sin PDF, sin correo y sin fila nueva', async () => {
+        prisma.shiftExitReport.findFirst.mockResolvedValue(ULTIMO);
+
+        const res = await service.create(baseDto(), buildSession('sup_1'));
+
+        expect(res.id).toBe('r_previo');
+        expect(mockedRenderPdfBuffer).not.toHaveBeenCalled();
+        expect(eventEmitter.emit).not.toHaveBeenCalled();
+        expect(prisma.shiftExitReport.create).not.toHaveBeenCalled();
+        expect(prisma.shiftExitReport.findFirst).toHaveBeenCalledWith({
+          where: { shiftId: 'shift_1' },
+          orderBy: { requestedAt: 'desc' },
+        });
+      });
+
+      it('aunque el turno esté en el tope, un repetido no se rechaza', async () => {
+        prisma.shiftExitReport.findFirst.mockResolvedValue(ULTIMO);
+        prisma.shiftExitReport.count.mockResolvedValue(
+          REPORT_RATE_LIMIT_MAX_PER_WINDOW,
+        );
+
+        await expect(
+          service.create(baseDto(), buildSession('sup_1')),
+        ).resolves.toMatchObject({
+          id: 'r_previo',
+        });
+      });
+
+      it('con un equipo abierto DESPUÉS del último reporte, genera uno nuevo', async () => {
+        prisma.shiftExitReport.findFirst.mockResolvedValue({
+          ...ULTIMO,
+          requestedAt: new Date('2026-09-28T11:00:00.000Z'),
+        });
+
+        const res = await service.create(baseDto(), buildSession('sup_1'));
+
+        expect(res.id).toBe(baseDto().id);
+        expect(prisma.shiftExitReport.create).toHaveBeenCalledTimes(1);
+        expect(mockedRenderPdfBuffer).toHaveBeenCalledTimes(1);
+      });
     });
 
     describe('rate limit de reportes por turno', () => {
