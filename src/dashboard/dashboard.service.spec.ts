@@ -928,6 +928,24 @@ describe('DashboardService.resumenDia', () => {
     expect(res.diesel).toEqual({ total: 120, dia: 40, noche: 60, porHm: 15 });
   });
 
+  it('diésel: la carga hecha con la tarjeta abierta (liviano) va al turno de esa tarjeta y suma una sola vez con la del cierre', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      card('t9', 'e9', 'CM-NUV', 'NOCTURNO', 2788, 3694, 'KM'),
+    ]);
+    prisma.registroCombustible.findMany.mockResolvedValue([
+      // Intermedia: sin vínculo 1:1, con `tarjetaEnCursoId`.
+      {
+        ...carga('e9', 30, null),
+        tarjetaEnCursoId: 't9',
+        equipo: { internalCode: 'CM-NUV' },
+      },
+      // La del cierre de la misma tarjeta.
+      { ...carga('e9', 50, 't9'), equipo: { internalCode: 'CM-NUV' } },
+    ]);
+    const res = await service.resumenDia();
+    expect(res.diesel).toMatchObject({ total: 80, dia: 0, noche: 80 });
+  });
+
   it('descarta cargas fuera del día de negocio (ventana ampliada)', async () => {
     prisma.registroCombustible.findMany.mockResolvedValue([
       carga('e1', 10, null),

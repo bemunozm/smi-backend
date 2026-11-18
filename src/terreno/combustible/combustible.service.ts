@@ -282,7 +282,9 @@ export class CombustibleService {
 
   /**
    * Corrección de una carga MANUAL desde el panel (solo ADMIN en el
-   * controller). Una carga nacida de un cierre de tarjeta se corrige editando
+   * controller) — incluida la registrada con la tarjeta abierta
+   * (`tarjetaEnCursoId`): sus datos son propios, no los sincroniza la
+   * tarjeta, así que se corrige acá igual que una manual. Una carga nacida de un cierre de tarjeta se corrige editando
    * la TARJETA (`PATCH /shift-cards/:id` sincroniza `litros` vía
    * `syncFuelRecord` y deja historial) — editarla por acá las haría divergir,
    * por eso se rechaza. Una `lectura` nueva reconcilia el contador del equipo
@@ -419,6 +421,11 @@ export class CombustibleService {
    * resumen legible de lo borrado) en la MISMA transacción: un borrado sin
    * rastro es justo lo que el registro de actividad debe impedir.
    *
+   * Una carga registrada con la tarjeta ABIERTA (`tarjetaEnCursoId`, solo
+   * livianos) se trata como manual: tiene lectura, AdBlue y foto propios,
+   * así que se borra igual que una manual (devuelve su AdBlue, suelta su
+   * foto) y desaparece de los `fuelLoads` de su tarjeta.
+   *
    * Una carga nacida de un cierre de tarjeta existe si y solo si la tarjeta
    * declara litros (`syncFuelRecord`): borrarla deja la tarjeta con
    * `fuelLiters` en null — con su propio registro en el historial de la
@@ -439,6 +446,7 @@ export class CombustibleService {
         fotoKey: true,
         equipoId: true,
         registroHorometroId: true,
+        tarjetaEnCursoId: true,
         equipo: { select: { internalCode: true } },
         registroHorometro: {
           select: { valorFinal: true, adBlue: true, adBlueLiters: true },
@@ -480,7 +488,15 @@ export class CombustibleService {
         'AdBlue (L)',
         adBlue != null ? formatNumber(adBlue) : '—',
       ),
-      borrado('origen', 'Origen', deTarjeta ? 'Cierre de tarjeta' : 'Manual'),
+      borrado(
+        'origen',
+        'Origen',
+        deTarjeta
+          ? 'Cierre de tarjeta'
+          : registro.tarjetaEnCursoId
+            ? 'Carga con tarjeta en curso'
+            : 'Manual',
+      ),
     ];
 
     const stockEvents: PendingStockEvents = [];

@@ -45,6 +45,9 @@ export const ERROR_CODES = {
   /** `PATCH /combustible/:id` sobre una carga nacida de un cierre de
    * tarjeta — se corrige editando esa tarjeta, que sincroniza la carga. */
   FUEL_LOAD_FROM_CARD: 'FUEL_LOAD_FROM_CARD',
+  /** `POST /shift-cards/:id/fuel-loads` sobre la tarjeta de un equipo
+   * pesado: solo los livianos cargan combustible sin cerrar la tarjeta. */
+  FUEL_LOAD_LIGHT_ONLY: 'FUEL_LOAD_LIGHT_ONLY',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

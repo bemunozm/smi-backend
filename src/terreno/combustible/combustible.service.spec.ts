@@ -498,6 +498,17 @@ describe('CombustibleService', () => {
       expect(changeLog.record).not.toHaveBeenCalled();
     });
 
+    it('una carga hecha con la tarjeta ABIERTA se corrige como manual (sus datos son propios)', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...filaManual,
+        tarjetaEnCursoId: 'h1',
+      });
+
+      await service.update('c1', { litros: 100.4 }, editor);
+
+      expect(prisma.registroCombustible.update).toHaveBeenCalledTimes(1);
+    });
+
     it('una carga MANUAL corrige litros/tipo/fecha/lectura y la fecha viaja como Date', async () => {
       prisma.equipment.findUnique.mockResolvedValue({
         id: 'e1',
@@ -729,6 +740,37 @@ describe('CombustibleService', () => {
         ]),
         'DELETE',
       );
+      expect(prisma.registroHorometro.update).not.toHaveBeenCalled();
+      expect(deleteBestEffort).toHaveBeenCalledWith('fuel-photos/c1.jpg');
+    });
+
+    it('una carga hecha con la tarjeta ABIERTA se borra como manual: suelta SU foto y la traza dice su origen', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue({
+        ...filaManual,
+        tarjetaEnCursoId: 'h1',
+      });
+
+      await service.remove('c1', EDITOR);
+
+      expect(prisma.registroCombustible.delete).toHaveBeenCalledWith({
+        where: { id: 'c1' },
+      });
+      expect(changeLog.record).toHaveBeenCalledWith(
+        prisma,
+        'combustible',
+        'c1',
+        EDITOR,
+        expect.arrayContaining([
+          {
+            field: 'origen',
+            label: 'Origen',
+            before: 'Carga con tarjeta en curso',
+            after: '—',
+          },
+        ]),
+        'DELETE',
+      );
+      // La tarjeta no se toca: su `fuelLiters` es solo el del cierre.
       expect(prisma.registroHorometro.update).not.toHaveBeenCalled();
       expect(deleteBestEffort).toHaveBeenCalledWith('fuel-photos/c1.jpg');
     });

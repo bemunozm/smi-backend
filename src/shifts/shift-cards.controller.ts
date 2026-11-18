@@ -18,6 +18,7 @@ import { ExpectedFields } from '../common/concurrency/expected-fields.decorator'
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { AdminCloseShiftCardDto } from './dto/admin-close-shift-card.dto';
 import { CloseShiftCardDto } from './dto/close-shift-card.dto';
+import { CreateShiftCardFuelLoadDto } from './dto/create-shift-card-fuel-load.dto';
 import { OpenShiftCardDto } from './dto/open-shift-card.dto';
 import { RegisterClosedShiftCardDto } from './dto/register-closed-shift-card.dto';
 import { UpdateShiftCardDto } from './dto/update-shift-card.dto';
@@ -107,6 +108,31 @@ export class ShiftCardsController {
   }
 
   /**
+   * Carga de combustible en una tarjeta de liviano ABIERTA, sin cerrarla
+   * (se puede repetir; la tarjeta se cierra después con `:id/close`). Mismos
+   * roles que el cierre: un liviano lo puede cerrar —y cargar— cualquiera de
+   * ellos (el service rechaza los pesados). `201` también en el reintento
+   * idempotente, igual que `open`. Devuelve la tarjeta con sus `fuelLoads`.
+   */
+  @Post(':id/fuel-loads')
+  @Roles([
+    ROLES.SUPERVISOR,
+    ROLES.ADMIN,
+    ROLES.MANTENEDOR,
+    ROLES.PREVENCIONISTA,
+  ])
+  async addFuelLoad(
+    @Param('id') id: string,
+    @Body() dto: CreateShiftCardFuelLoadDto,
+    @Session() session: UserSession,
+  ) {
+    return {
+      data: await this.service.addFuelLoad(id, dto, session),
+      message: 'Carga de combustible registrada',
+    };
+  }
+
+  /**
    * El administrador cierra un uso que quedó colgado (equipo que pasó a
    * fuera de servicio, supervisor que no cerró): sin foto ni combustible,
    * solo la lectura final. Libera también la asignación del equipo.
@@ -146,8 +172,9 @@ export class ShiftCardsController {
   /**
    * Elimina una tarjeta, abierta o cerrada — dueño o ADMIN (lo verifica el
    * service). Arrastra la carga de combustible nacida de su cierre (si la
-   * hay), libera el equipo si seguía en uso, deja el rastro `DELETE` en el
-   * historial y avisa al administrador.
+   * hay) y las registradas con la tarjeta abierta, libera el equipo si
+   * seguía en uso, deja el rastro `DELETE` en el historial y avisa al
+   * administrador.
    */
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
