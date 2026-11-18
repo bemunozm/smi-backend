@@ -8,9 +8,9 @@ type Lector = Pick<Prisma.TransactionClient, 'dailyChecklist'>;
 
 /**
  * Módulo 3 · R25: «el equipo no se libera para el operador hasta que el
- * supervisor acepte». Si ese día se envió el checklist del equipo y sigue por
+ * supervisor acepte». Si ese día se envió el chequeo del equipo y sigue por
  * validar o quedó rechazado, no se abre turno con él. Un equipo sin checklist
- * ese día queda libre (decisión de Joaquín, 16/10): el checklist se hace en la
+ * ese día queda libre (decisión de Joaquín, 16/10): el chequeo se hace en la
  * colación y el bloqueo cubre el rato hasta que el supervisor lo acepta.
  *
  * Lo llaman los dos caminos que abren un turno: `ShiftsService.openCard`
@@ -30,8 +30,8 @@ export async function assertChecklistNotPending(
   throw new ConflictException({
     message:
       checklist.status === ChecklistStatus.REJECTED
-        ? 'El checklist de hoy de este equipo fue rechazado: el mantenedor tiene que corregirlo y el supervisor aceptarlo antes de abrir turno.'
-        : 'El checklist de hoy de este equipo está por validar: acéptalo en Terreno › Checklists antes de abrir turno.',
+        ? 'El chequeo de hoy de este equipo fue rechazado: el mantenedor tiene que corregirlo y el supervisor aceptarlo antes de abrir turno.'
+        : 'El chequeo de hoy de este equipo está por validar: acéptalo en Terreno › Chequeos antes de abrir turno.',
     code: ERROR_CODES.CHECKLIST_NOT_ACCEPTED,
   });
 }

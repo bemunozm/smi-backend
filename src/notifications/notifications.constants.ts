@@ -191,7 +191,7 @@ export function buildRecordEditedTemplate(
 }
 
 /**
- * `checklist.submitted` → SUPERVISOR: el mantenedor envió el checklist diario
+ * `checklist.submitted` → SUPERVISOR: el mantenedor envió el chequeo diario
  * de un equipo y queda por validar (Módulo 3). El equipo no se libera para el
  * operador hasta que el supervisor lo acepte.
  */
@@ -204,10 +204,10 @@ export function buildChecklistSubmittedTemplate(
     tipo: DOMAIN_EVENTS.CHECKLIST_SUBMITTED,
     titulo:
       event.submission > 1
-        ? `Checklist de ${event.equipmentCode} corregido, por validar`
-        : `Checklist de ${event.equipmentCode} por validar`,
+        ? `Chequeo de ${event.equipmentCode} corregido, por validar`
+        : `Chequeo de ${event.equipmentCode} por validar`,
     cuerpo:
-      `${event.mechanicName} envió el checklist diario del ${event.date}: ` +
+      `${event.mechanicName} envió el chequeo diario del ${event.date}: ` +
       `${event.declared} ítems revisados o con mantención, ` +
       `${event.maintained} con mantención y ${event.photos} ${event.photos === 1 ? 'foto' : 'fotos'}.`,
   };
@@ -227,15 +227,15 @@ export function buildChecklistReviewedTemplate(
   return {
     tipo: DOMAIN_EVENTS.CHECKLIST_REVIEWED,
     titulo: aceptado
-      ? `Checklist de ${event.equipmentCode} aceptado`
-      : `Checklist de ${event.equipmentCode} rechazado`,
+      ? `Chequeo de ${event.equipmentCode} aceptado`
+      : `Chequeo de ${event.equipmentCode} rechazado`,
     cuerpo: aceptado
-      ? `${event.reviewerName} aceptó el checklist del ${event.date} de ${event.mechanicName}: el equipo quedó liberado.` +
+      ? `${event.reviewerName} aceptó el chequeo del ${event.date} de ${event.mechanicName}: el equipo quedó liberado.` +
         (event.comment
           ? `
 ${event.comment}`
           : '')
-      : `${event.reviewerName} rechazó el checklist del ${event.date} de ${event.mechanicName}. Hay que corregirlo y reenviarlo:
+      : `${event.reviewerName} rechazó el chequeo del ${event.date} de ${event.mechanicName}. Hay que corregirlo y reenviarlo:
 ${event.comment ?? ''}`,
   };
 }

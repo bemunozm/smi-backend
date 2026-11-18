@@ -31,7 +31,7 @@ import type {
   SubmitDailyChecklistDto,
 } from './dto/submit-daily-checklist.dto';
 
-/** Hasta cuántos días atrás se acepta un checklist (envío retrasado sin señal). */
+/** Hasta cuántos días atrás se acepta un chequeo (envío retrasado sin señal). */
 const MAX_DIAS_ATRAS = 7;
 const MS_DIA = 24 * 60 * 60 * 1000;
 
@@ -55,7 +55,7 @@ export interface DailyChecklistSummary {
   equipment: { id: string; internalCode: string };
   /** `YYYY-MM-DD`. */
   date: string;
-  /** Horómetro u odómetro anotado en el checklist (no toca el del equipo). */
+  /** Horómetro u odómetro anotado en el chequeo (no toca el del equipo). */
   counter: number;
   status: ChecklistStatus;
   mechanicName: string;
@@ -66,7 +66,7 @@ export interface DailyChecklistSummary {
   declared: number;
   /** Ítems con «Se hizo mantención». */
   maintained: number;
-  /** Fotos adjuntas en todo el checklist. */
+  /** Fotos adjuntas en todo el chequeo. */
   photos: number;
   /** La última validación del supervisor, o `null` si nunca se revisó. */
   lastReview: ChecklistReviewView | null;
@@ -82,7 +82,7 @@ export interface DailyChecklistDetail extends DailyChecklistSummary {
     temperature: number | null;
     /**
      * Fotos con URL firmada. El `id` (nombre del archivo, nunca la ruta del
-     * bucket) sirve para conservarla al corregir un checklist rechazado.
+     * bucket) sirve para conservarla al corregir un chequeo rechazado.
      */
     photos: { id: string; url: string }[];
     supplies: InsumoUsado[];
@@ -115,7 +115,7 @@ function idDeFoto(key: string): string {
 }
 
 /**
- * Checklist diario del mantenedor (Módulo 2 · R23 + R24) y su validación por
+ * Chequeo diario del mantenedor (Módulo 2 · R23 + R24) y su validación por
  * el supervisor (Módulo 3 · R25). Por equipo y por día, cada ítem del
  * catálogo con «se hizo mantención», «se revisó» o «no se revisó», las fotos
  * y los insumos usados (que se descuentan del stock). El supervisor lo acepta
@@ -147,7 +147,7 @@ export class DailyChecklistsService {
   }
 
   /**
-   * Los checklists de un día, de un equipo o en ciertos estados (los
+   * Los chequeos de un día, de un equipo o en ciertos estados (los
    * pendientes del supervisor: `status=SUBMITTED`), del más reciente al más
    * viejo.
    */
@@ -175,7 +175,7 @@ export class DailyChecklistsService {
   }
 
   /**
-   * Recibe el checklist completo y lo deja enviado al supervisor. Idempotente
+   * Recibe el chequeo completo y lo deja enviado al supervisor. Idempotente
    * por el id del cliente: un reenvío sin señal devuelve el mismo checklist.
    */
   submit(
@@ -185,7 +185,7 @@ export class DailyChecklistsService {
     return createOrReturn({
       id: dto.id,
       userId: editor.id,
-      conflictMessage: 'Ya existe un checklist con ese id de otro usuario',
+      conflictMessage: 'Ya existe un chequeo con ese id de otro usuario',
       findExisting: async (id) => {
         const existente = await this.prisma.dailyChecklist.findUnique({
           where: { id },
@@ -202,7 +202,7 @@ export class DailyChecklistsService {
   }
 
   /**
-   * El mantenedor corrige un checklist rechazado y lo reenvía: se reemplaza
+   * El mantenedor corrige un chequeo rechazado y lo reenvía: se reemplaza
    * lo declarado, los insumos del envío anterior vuelven a la bodega y se
    * descuentan los nuevos, y queda otra vez por validar.
    */
@@ -224,13 +224,13 @@ export class DailyChecklistsService {
     if (actual.status !== ChecklistStatus.REJECTED) {
       throw new ConflictException(
         actual.status === ChecklistStatus.ACCEPTED
-          ? 'Este checklist ya fue aceptado: no se puede corregir.'
-          : 'Este checklist está por validar: solo se corrige si el supervisor lo rechaza.',
+          ? 'Este chequeo ya fue aceptado: no se puede corregir.'
+          : 'Este chequeo está por validar: solo se corrige si el supervisor lo rechaza.',
       );
     }
     if (actual.submissionCount !== dto.submission) {
       throw new ConflictException(
-        'El checklist cambió mientras lo corregías. Vuelve a abrirlo.',
+        'El chequeo cambió mientras lo corregías. Vuelve a abrirlo.',
       );
     }
 
@@ -281,7 +281,7 @@ export class DailyChecklistsService {
         });
         if (count === 0) {
           throw new ConflictException(
-            'El checklist cambió mientras lo corregías. Vuelve a abrirlo.',
+            'El chequeo cambió mientras lo corregías. Vuelve a abrirlo.',
           );
         }
 
@@ -359,7 +359,7 @@ export class DailyChecklistsService {
         return this.detalle(actual);
       }
       throw new ConflictException(
-        `Este checklist ya lo ${previa.decision === ChecklistStatus.ACCEPTED ? 'aceptó' : 'rechazó'} ${previa.reviewerName}.`,
+        `Este chequeo ya lo ${previa.decision === ChecklistStatus.ACCEPTED ? 'aceptó' : 'rechazó'} ${previa.reviewerName}.`,
       );
     }
     if (
@@ -367,7 +367,7 @@ export class DailyChecklistsService {
       actual.submissionCount !== dto.submission
     ) {
       throw new ConflictException(
-        'El checklist cambió mientras lo revisabas. Vuelve a abrirlo.',
+        'El chequeo cambió mientras lo revisabas. Vuelve a abrirlo.',
       );
     }
 
@@ -393,7 +393,7 @@ export class DailyChecklistsService {
       });
       if (count === 0) {
         throw new ConflictException(
-          'El checklist cambió mientras lo revisabas. Vuelve a abrirlo.',
+          'El chequeo cambió mientras lo revisabas. Vuelve a abrirlo.',
         );
       }
       await tx.dailyChecklistReview.create({
@@ -438,7 +438,7 @@ export class DailyChecklistsService {
     const dias = Math.round((fecha.getTime() - hoy.getTime()) / MS_DIA);
     if (dias > 1 || dias < -MAX_DIAS_ATRAS) {
       throw new BadRequestException(
-        `La fecha del checklist (${dto.date}) está fuera de rango: hasta ${MAX_DIAS_ATRAS} días atrás.`,
+        `La fecha del chequeo (${dto.date}) está fuera de rango: hasta ${MAX_DIAS_ATRAS} días atrás.`,
       );
     }
 
@@ -448,7 +448,7 @@ export class DailyChecklistsService {
     });
     if (yaEnviado) {
       throw new ConflictException(
-        `Ya se envió el checklist de ${equipo.internalCode} del ${dto.date}.`,
+        `Ya se envió el chequeo de ${equipo.internalCode} del ${dto.date}.`,
       );
     }
 
@@ -508,13 +508,13 @@ export class DailyChecklistsService {
       where: { id },
       include: CHECKLIST_INCLUDE,
     });
-    if (!fila) throw new NotFoundException('Checklist no encontrado');
+    if (!fila) throw new NotFoundException('Chequeo no encontrado');
     return fila;
   }
 
   /**
    * El equipo, y que el horómetro anotado no sea menor que su lectura.
-   * `yaEnviado`: el que traía el checklist que se corrige, que se acepta igual.
+   * `yaEnviado`: el que traía el chequeo que se corrige, que se acepta igual.
    */
   private async equipoConContador(
     equipmentId: string,
@@ -542,7 +542,7 @@ export class DailyChecklistsService {
     }
 
     // No puede ser menor que la lectura con que partió el equipo: un número
-    // más bajo es un error de tipeo. El checklist no actualiza esa lectura.
+    // más bajo es un error de tipeo. El chequeo no actualiza esa lectura.
     const km = equipo.controlUnit === 'KM';
     const lectura = km ? equipo.currentMileage : equipo.currentHourmeter;
     if (lectura != null && counter < lectura && counter !== yaEnviado) {
@@ -633,7 +633,7 @@ export class DailyChecklistsService {
           );
           if (!conservada) {
             throw new BadRequestException(
-              'Una de las fotos ya no está en el checklist. Vuelve a abrirlo.',
+              'Una de las fotos ya no está en el chequeo. Vuelve a abrirlo.',
             );
           }
           finales.push(conservada);

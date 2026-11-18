@@ -130,11 +130,11 @@ describe('DailyChecklistsService', () => {
     );
   });
 
-  it('guarda el checklist, descuenta los insumos y avisa al supervisor', async () => {
+  it('guarda el chequeo, descuenta los insumos y avisa al supervisor', async () => {
     const res = await service.submit(dto(), EDITOR);
 
     expect(storage.claimTmp).toHaveBeenCalledTimes(2);
-    // El horómetro queda en el checklist; la lectura del equipo no se toca.
+    // El horómetro queda en el chequeo; la lectura del equipo no se toca.
     const [{ data }] = txCreate.mock.calls[0] as [
       { data: { counter: number } },
     ];
