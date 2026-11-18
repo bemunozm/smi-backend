@@ -28,7 +28,7 @@ const CATALOGO = [
 const SUPERVISOR = { id: 'user_supervisor', name: 'Sergio Supervisor' };
 const MANTENEDOR = { id: 'user_mantenedor', name: 'Mario Mantenedor' };
 
-/** Un checklist guardado, como lo devuelve Prisma con sus entradas y revisiones. */
+/** Un chequeo guardado, como lo devuelve Prisma con sus entradas y revisiones. */
 function guardado(over: Record<string, unknown> = {}) {
   return {
     id: 'chk_1',
@@ -175,7 +175,7 @@ describe('DailyChecklistsService · validación del supervisor (Módulo 3)', () 
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
-    it('el reintento sin señal de la misma decisión devuelve el checklist', async () => {
+    it('el reintento sin señal de la misma decisión devuelve el chequeo', async () => {
       prisma.dailyChecklist.findUnique.mockResolvedValue(
         guardado({
           status: 'ACCEPTED',
@@ -278,7 +278,7 @@ describe('DailyChecklistsService · validación del supervisor (Módulo 3)', () 
       tx.dailyChecklist.findUniqueOrThrow.mockResolvedValue(
         guardado({ submissionCount: 2 }),
       );
-      // Al cerrar el turno la lectura subió a 2.300; el checklist traía 2.150.
+      // Al cerrar el turno la lectura subió a 2.300; el chequeo traía 2.150.
       prisma.equipment.findUnique.mockResolvedValue({
         id: 'eq_1',
         internalCode: 'CA-011',
@@ -294,7 +294,7 @@ describe('DailyChecklistsService · validación del supervisor (Módulo 3)', () 
       ).rejects.toThrow('es menor que la lectura');
     });
 
-    it('solo se corrige un checklist rechazado', async () => {
+    it('solo se corrige un chequeo rechazado', async () => {
       prisma.dailyChecklist.findUnique.mockResolvedValue(
         guardado({ status: 'ACCEPTED' }),
       );
@@ -316,7 +316,7 @@ describe('DailyChecklistsService · validación del supervisor (Módulo 3)', () 
       };
       await expect(
         service.resubmit('chk_1', ajena, MANTENEDOR),
-      ).rejects.toThrow('ya no está en el checklist');
+      ).rejects.toThrow('ya no está en el chequeo');
     });
   });
 });

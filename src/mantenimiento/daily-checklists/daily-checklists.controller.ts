@@ -30,7 +30,7 @@ function editorDe(session: UserSession) {
 const LECTORES = [ROLES.MANTENEDOR, ROLES.SUPERVISOR, ROLES.ADMIN];
 
 /**
- * Checklist diario del mantenedor (Módulo 2). `items` va declarado antes que
+ * Chequeo diario del mantenedor (Módulo 2). `items` va declarado antes que
  * `:id` para que Nest no lo tome como un id.
  */
 @Controller('daily-checklists')
@@ -45,7 +45,7 @@ export class DailyChecklistsController {
   }
 
   /**
-   * Los checklists de un día (`?date=YYYY-MM-DD`), de un equipo o en ciertos
+   * Los chequeos de un día (`?date=YYYY-MM-DD`), de un equipo o en ciertos
    * estados (`?status=SUBMITTED,REJECTED`: los pendientes del supervisor).
    */
   @Get()
@@ -82,7 +82,7 @@ export class DailyChecklistsController {
   }
 
   /**
-   * Envía el checklist de un equipo al supervisor. Solo el mantenedor, que es
+   * Envía el chequeo de un equipo al supervisor. Solo el mantenedor, que es
    * quien lo hace; quién lo envía sale de la sesión.
    */
   @Post()
@@ -93,11 +93,11 @@ export class DailyChecklistsController {
   ) {
     return {
       data: await this.service.submit(dto, editorDe(session)),
-      message: 'Checklist enviado al supervisor',
+      message: 'Chequeo enviado al supervisor',
     };
   }
 
-  /** El mantenedor corrige un checklist rechazado y lo vuelve a enviar. */
+  /** El mantenedor corrige un chequeo rechazado y lo vuelve a enviar. */
   @Put(':id')
   @Roles([ROLES.MANTENEDOR])
   async resubmit(
@@ -107,7 +107,7 @@ export class DailyChecklistsController {
   ) {
     return {
       data: await this.service.resubmit(id, dto, editorDe(session)),
-      message: 'Checklist corregido y enviado al supervisor',
+      message: 'Chequeo corregido y enviado al supervisor',
     };
   }
 
@@ -127,8 +127,8 @@ export class DailyChecklistsController {
       data: res,
       message:
         dto.decision === 'ACCEPTED'
-          ? 'Checklist aceptado: el equipo quedó liberado'
-          : 'Checklist rechazado: vuelve al mantenedor',
+          ? 'Chequeo aceptado: el equipo quedó liberado'
+          : 'Chequeo rechazado: vuelve al mantenedor',
     };
   }
 }
