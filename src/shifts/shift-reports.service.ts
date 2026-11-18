@@ -198,6 +198,35 @@ export class ShiftReportsService {
       });
     }
 
+    const cards = await this.prisma.registroHorometro.findMany({
+      where: reportCardsWhere(shift.id, dto.cardIds),
+      include: CARDS_INCLUDE,
+      orderBy: { equipo: { internalCode: 'asc' } },
+    });
+    if (cards.length === 0) {
+      throw new ConflictException({
+        message: 'Ninguna de las tarjetas indicadas pertenece a este turno',
+        code: ERROR_CODES.NO_CARDS,
+      });
+    }
+
+    const foundIds = new Set(cards.map((card) => card.id));
+    const missingCardIds = dto.cardIds.filter((id) => !foundIds.has(id));
+
+    // Reporte repetido: si el último reporte del turno ya incluye todos estos
+    // equipos (ninguno se abrió después de pedirlo), se devuelve ese en vez de
+    // generar otro PDF y otro correo. Pasaba cuando la app no alcanzaba a ver
+    // el reporte recién enviado y el supervisor volvía a enviarlo: la
+    // administración recibía duplicados y el 4.º chocaba con el tope de abajo.
+    // Va ANTES del tope para que un repetido nunca quede rechazado.
+    const latest = await this.prisma.shiftExitReport.findFirst({
+      where: { shiftId: shift.id },
+      orderBy: { requestedAt: 'desc' },
+    });
+    if (latest && cards.every((card) => card.fecha <= latest.requestedAt)) {
+      return this.shape(latest, missingCardIds);
+    }
+
     // Tope de reportes NUEVOS por turno en una ventana — DESPUÉS del replay
     // (un reintento del mismo id nunca cuenta ni se limita) y DESPUÉS de
     // resolver el turno (necesita
@@ -220,21 +249,6 @@ export class ShiftReportsService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-
-    const cards = await this.prisma.registroHorometro.findMany({
-      where: reportCardsWhere(shift.id, dto.cardIds),
-      include: CARDS_INCLUDE,
-      orderBy: { equipo: { internalCode: 'asc' } },
-    });
-    if (cards.length === 0) {
-      throw new ConflictException({
-        message: 'Ninguna de las tarjetas indicadas pertenece a este turno',
-        code: ERROR_CODES.NO_CARDS,
-      });
-    }
-
-    const foundIds = new Set(cards.map((card) => card.id));
-    const missingCardIds = dto.cardIds.filter((id) => !foundIds.has(id));
 
     // `session.user.name` viaja sin más límite que el de Better Auth hacia
     // el PDF y hacia el asunto/cuerpo del correo (vía el evento de abajo) —
