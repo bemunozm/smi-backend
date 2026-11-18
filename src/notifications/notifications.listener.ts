@@ -22,6 +22,7 @@ import {
   type RecordEditedEvent,
   type ShiftEndedWithOpenCardsEvent,
   type ShiftExitReportSentEvent,
+  type FuelLoadedEvent,
 } from '../common/events/domain-events';
 import { MailService } from '../mail/mail.service';
 import { ShiftReportsService } from '../shifts/shift-reports.service';
@@ -50,6 +51,8 @@ import {
   buildOrdenCompletedTemplate,
   buildShiftEndedWithOpenCardsTemplate,
   buildShiftExitReportSentTemplate,
+  FUEL_LOADED_ROLES,
+  buildFuelLoadedTemplate,
 } from './notifications.constants';
 
 @Injectable()
@@ -183,6 +186,24 @@ export class NotificationsListener {
         shiftType: event.shiftType,
       },
     });
+  }
+
+  /** Camioneta que cargó combustible → ADMIN, salvo quien la registró. */
+  @OnEvent(DOMAIN_EVENTS.FUEL_LOADED)
+  async onFuelLoaded(event: FuelLoadedEvent): Promise<void> {
+    await this.notifications.createForRoles(
+      FUEL_LOADED_ROLES,
+      {
+        ...buildFuelLoadedTemplate(event),
+        data: {
+          cargaId: event.cargaId,
+          cardId: event.cardId,
+          equipmentId: event.equipmentId,
+          origin: event.origin,
+        },
+      },
+      { excludeUserIds: [event.actorId], email: false },
+    );
   }
 
   @OnEvent(DOMAIN_EVENTS.RECORD_EDITED)

@@ -41,7 +41,10 @@ import { resolveCloseRace } from '../common/idempotency/resolve-close-race';
 import { createOrReturn } from '../common/idempotency/create-or-return';
 import { lockRow } from '../common/concurrency/lock-row';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
-import type { RecordEditedEvent } from '../common/events/domain-events';
+import type {
+  FuelLoadedEvent,
+  RecordEditedEvent,
+} from '../common/events/domain-events';
 import {
   ChangeLogService,
   diffFields,
@@ -759,6 +762,9 @@ export class ShiftsService {
     // igual descartaba el objeto ya persistido en la fila — un objeto vivo,
     // referenciado en la base, borrado por un fallo post-commit ajeno a él.
     let closed: ShiftCardRecord | null;
+    // La carga nacida del cierre (si hubo litros): la avisa `fuel.loaded`.
+    // (`as`: se asigna dentro del callback de la tx; sin él TS la deja en `null`.)
+    let cargaCierreId = null as string | null;
     const stockEvents: PendingStockEvents = [];
     try {
       closed = await this.prisma.$transaction(async (tx) => {
@@ -858,7 +864,8 @@ export class ShiftsService {
         // NO se reusa `CombustibleService.create` (tiene su propio claim y
         // rechaza 0 L) — acá 0 L es válido y la key ya está reclamada.
         if (fuelLiters > 0) {
-          await tx.registroCombustible.create({
+          const creada = await tx.registroCombustible.create({
+            select: { id: true },
             data: {
               equipoId: card.equipoId,
               litros: fuelLiters,
@@ -879,6 +886,7 @@ export class ShiftsService {
               registroHorometroId: id,
             },
           });
+          cargaCierreId = creada.id;
         }
 
         // El AdBlue declarado descuenta el ítem AdBlue de Inventario en la
@@ -925,6 +933,23 @@ export class ShiftsService {
     // Un aviso de stock bajo dentro de una transacción revertida alertaría de
     // un saldo que nunca existió: se emite recién confirmada.
     this.adBlueStock.emitPending(stockEvents);
+
+    // Carga de combustible de una camioneta al cerrar → aviso al admin (los
+    // pesados no avisan). Recién confirmada, y nunca en el replay (que vuelve
+    // antes, sin crear carga).
+    if (esLiviano && cargaCierreId && closed) {
+      this.emitFuelLoaded({
+        cargaId: cargaCierreId,
+        cardId: id,
+        equipmentId: card.equipoId,
+        equipmentCode: closed.equipo.internalCode,
+        liters: fuelLiters,
+        reading: dto.valorFinal,
+        unit: closed.equipo.controlUnit === ControlUnit.HOURS ? 'h' : 'km',
+        origin: 'CIERRE',
+        session,
+      });
+    }
 
     return this.shapeCard(closed!);
   }
@@ -990,6 +1015,7 @@ export class ShiftsService {
         closedAt: true,
         equipo: {
           select: {
+            internalCode: true,
             equipmentClass: true,
             controlUnit: true,
             currentHourmeter: true,
@@ -1118,6 +1144,18 @@ export class ShiftsService {
       throw error;
     }
     this.adBlueStock.emitPending(stockEvents);
+    // Recién confirmada; el reintento idempotente nunca pasa por acá.
+    this.emitFuelLoaded({
+      cargaId: dto.id,
+      cardId: id,
+      equipmentId: card.equipoId,
+      equipmentCode: card.equipo.internalCode,
+      liters: dto.liters,
+      reading: dto.reading,
+      unit: card.equipo.controlUnit === ControlUnit.HOURS ? 'h' : 'km',
+      origin: 'TARJETA_ABIERTA',
+      session,
+    });
 
     return this.shapeCard(await this.reloadCard(id));
   }
@@ -2186,6 +2224,23 @@ export class ShiftsService {
         .join(', ')} se informan al cerrarla`,
       code: ERROR_CODES.CARD_NOT_CLOSED,
     });
+  }
+
+  /** Avisa al administrador la carga de combustible de una camioneta
+   * (`fuel.loaded`). Solo después de confirmar la transacción. */
+  private emitFuelLoaded(
+    input: Omit<FuelLoadedEvent, 'actorId' | 'actorName' | 'actorRole'> & {
+      session: UserSession;
+    },
+  ): void {
+    const { session, ...datos } = input;
+    const event: FuelLoadedEvent = {
+      ...datos,
+      actorId: session.user.id,
+      actorName: session.user.name?.trim() || session.user.email,
+      actorRole: (session.user.role as string | null | undefined) ?? null,
+    };
+    this.eventEmitter.emit(DOMAIN_EVENTS.FUEL_LOADED, event);
   }
 
   /** 400 `READING_BELOW_FUEL_LOAD` si la lectura final queda por debajo del

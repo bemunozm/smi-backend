@@ -63,6 +63,62 @@ describe('NotificationsListener', () => {
     listener = module.get<NotificationsListener>(NotificationsListener);
   });
 
+  it('fuel.loaded avisa a ADMIN (sin quien la registró, sin correo) con la carga para abrirla', async () => {
+    await listener.onFuelLoaded({
+      cargaId: 'c1',
+      cardId: 'card_1',
+      equipmentId: 'e9',
+      equipmentCode: 'MB-008',
+      liters: 42.5,
+      reading: 22037,
+      unit: 'km',
+      origin: 'TARJETA_ABIERTA',
+      actorId: 'sup_1',
+      actorName: 'Jorge SMI',
+      actorRole: 'SUPERVISOR',
+    });
+
+    expect(createForRoles).toHaveBeenCalledWith(
+      [ROLES.ADMIN],
+      {
+        tipo: 'fuel.loaded',
+        titulo: 'Carga de combustible · MB-008',
+        cuerpo: '42,5 L a 22.037 km · Supervisor Jorge SMI · tarjeta abierta',
+        data: {
+          cargaId: 'c1',
+          cardId: 'card_1',
+          equipmentId: 'e9',
+          origin: 'TARJETA_ABIERTA',
+        },
+      },
+      { excludeUserIds: ['sup_1'], email: false },
+    );
+  });
+
+  it('fuel.loaded al cerrar la tarjeta lo dice en el cuerpo', async () => {
+    await listener.onFuelLoaded({
+      cargaId: 'c2',
+      cardId: 'card_1',
+      equipmentId: 'e9',
+      equipmentCode: 'MB-008',
+      liters: 30,
+      reading: 22100,
+      unit: 'km',
+      origin: 'CIERRE',
+      actorId: 'adm_1',
+      actorName: 'Ana Admin',
+      actorRole: 'ADMIN',
+    });
+
+    const [, input] = createForRoles.mock.calls[0] as [
+      unknown,
+      { cuerpo: string },
+    ];
+    expect(input.cuerpo).toBe(
+      '30 L a 22.100 km · Administrador Ana Admin · al cerrar la tarjeta',
+    );
+  });
+
   /** La alerta va a mantenedores y administrador. */
   it('hallazgo.created notifica a MANTENEDOR + ADMIN, no a SUPERVISOR', async () => {
     await listener.onHallazgoCreated({

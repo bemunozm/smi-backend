@@ -18,6 +18,7 @@ import type {
   RecordEditedEvent,
   ShiftEndedWithOpenCardsEvent,
   ShiftExitReportSentEvent,
+  FuelLoadedEvent,
 } from '../common/events/domain-events';
 import { formatNumber } from '../common/format/number';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
@@ -144,6 +145,36 @@ export function buildShiftEndedWithOpenCardsTemplate(
     cuerpo:
       `${cuantos} del turno ${turnoLegible} del ${dia}-${mes}-${anio}. ` +
       'Ciérralos con el horómetro final: mientras sigan abiertos, el turno siguiente no los puede registrar.',
+  };
+}
+
+/**
+ * `fuel.loaded` → ADMIN (menos quien la registró, si es administrador): cada
+ * carga de combustible de una camioneta, con la tarjeta abierta o al
+ * cerrarla. Solo in-app + Web Push, sin correo: es un aviso frecuente.
+ */
+export const FUEL_LOADED_ROLES: readonly Role[] = [ROLES.ADMIN];
+
+const ROL_LEGIBLE: Record<string, string> = {
+  ADMIN: 'Administrador',
+  SUPERVISOR: 'Supervisor',
+  MANTENEDOR: 'Mantenedor',
+  SECRETARIA: 'Secretaria',
+  PREVENCIONISTA: 'Prevencionista',
+};
+
+/** «Carga de combustible · MB-008» / «42,5 L a 22.037 km · Supervisor Jorge SMI · tarjeta abierta». */
+export function buildFuelLoadedTemplate(
+  event: FuelLoadedEvent,
+): NotificationTemplate {
+  const rol = event.actorRole ? ROL_LEGIBLE[event.actorRole] : undefined;
+  const quien = rol ? `${rol} ${event.actorName}` : event.actorName;
+  const momento =
+    event.origin === 'CIERRE' ? 'al cerrar la tarjeta' : 'tarjeta abierta';
+  return {
+    tipo: DOMAIN_EVENTS.FUEL_LOADED,
+    titulo: `Carga de combustible · ${event.equipmentCode}`,
+    cuerpo: `${formatNumber(event.liters)} L a ${formatNumber(event.reading)} ${event.unit} · ${quien} · ${momento}`,
   };
 }
 
