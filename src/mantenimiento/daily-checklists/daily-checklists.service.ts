@@ -57,6 +57,8 @@ export interface DailyChecklistSummary {
   date: string;
   /** Horómetro u odómetro anotado en el chequeo (no toca el del equipo). */
   counter: number;
+  /** En qué se mide `counter`: horas (horómetro) o kilómetros (odómetro). */
+  counterUnit: 'HOURS' | 'KM';
   status: ChecklistStatus;
   mechanicName: string;
   submittedAt: Date;
@@ -101,6 +103,13 @@ type ChecklistCompleto = Prisma.DailyChecklistGetPayload<{
 }>;
 
 type Equipo = { id: string; internalCode: string };
+
+/** Los equipos de un listado: código y unidad en que se anota su contador. */
+type EquiposPorId = Map<string, { internalCode: string; controlUnit: string }>;
+
+/** Tope de filas de un listado de un solo día / de un rango de fechas. */
+const TOPE_DIA = 200;
+const TOPE_RANGO = 1000;
 
 /** Lo validado de las entradas, listo para escribir. */
 interface EntradasPreparadas {
@@ -147,27 +156,38 @@ export class DailyChecklistsService {
   }
 
   /**
-   * Los chequeos de un día, de un equipo o en ciertos estados (los
-   * pendientes del supervisor: `status=SUBMITTED`), del más reciente al más
-   * viejo.
+   * Los chequeos de un día o de un rango de días (`from`–`to`, inclusive), de
+   * un equipo o en ciertos estados (los pendientes del supervisor:
+   * `status=SUBMITTED`), del más reciente al más viejo.
    */
   async list(filtro: {
     date?: string;
+    from?: string;
+    to?: string;
     equipmentId?: string;
     status?: ChecklistStatus[];
   }): Promise<DailyChecklistSummary[]> {
+    const rango = filtro.from && filtro.to;
     const filas = await this.prisma.dailyChecklist.findMany({
       where: {
         ...(filtro.date ? { date: parseDateOnlyUtc(filtro.date) } : {}),
+        ...(rango
+          ? {
+              date: {
+                gte: parseDateOnlyUtc(filtro.from as string),
+                lte: parseDateOnlyUtc(filtro.to as string),
+              },
+            }
+          : {}),
         ...(filtro.equipmentId ? { equipmentId: filtro.equipmentId } : {}),
         ...(filtro.status?.length ? { status: { in: filtro.status } } : {}),
       },
       include: CHECKLIST_INCLUDE,
       orderBy: [{ date: 'desc' }, { submittedAt: 'desc' }],
-      take: 200,
+      take: rango ? TOPE_RANGO : TOPE_DIA,
     });
-    const codigos = await this.codigos(filas.map((f) => f.equipmentId));
-    return filas.map((f) => this.resumen(f, codigos));
+    const equipos = await this.equiposPorId(filas.map((f) => f.equipmentId));
+    return filas.map((f) => this.resumen(f, equipos));
   }
 
   async findOne(id: string): Promise<DailyChecklistDetail> {
@@ -730,13 +750,23 @@ export class DailyChecklistsService {
     } satisfies ChecklistSubmittedEvent);
   }
 
-  private async codigos(ids: string[]): Promise<Map<string, string>> {
+  private async equiposPorId(ids: string[]): Promise<EquiposPorId> {
     if (ids.length === 0) return new Map();
     const equipos = await this.prisma.equipment.findMany({
       where: { id: { in: [...new Set(ids)] } },
-      select: { id: true, internalCode: true },
+      select: { id: true, internalCode: true, controlUnit: true },
     });
-    return new Map(equipos.map((e) => [e.id, e.internalCode]));
+    return new Map(
+      equipos.map((e) => [
+        e.id,
+        { internalCode: e.internalCode, controlUnit: e.controlUnit },
+      ]),
+    );
+  }
+
+  private async codigos(ids: string[]): Promise<Map<string, string>> {
+    const equipos = await this.equiposPorId(ids);
+    return new Map([...equipos].map(([id, e]) => [id, e.internalCode]));
   }
 
   private cuenta(c: ChecklistCompleto) {
@@ -765,7 +795,7 @@ export class DailyChecklistsService {
 
   private resumen(
     c: ChecklistCompleto,
-    codigos: Map<string, string>,
+    equipos: EquiposPorId,
   ): DailyChecklistSummary {
     const { declared, maintained, photos } = this.cuenta(c);
     const ultima = c.reviews.at(-1);
@@ -773,10 +803,12 @@ export class DailyChecklistsService {
       id: c.id,
       equipment: {
         id: c.equipmentId,
-        internalCode: codigos.get(c.equipmentId) ?? c.equipmentId,
+        internalCode: equipos.get(c.equipmentId)?.internalCode ?? c.equipmentId,
       },
       date: formatDateOnly(c.date),
       counter: c.counter,
+      counterUnit:
+        equipos.get(c.equipmentId)?.controlUnit === 'KM' ? 'KM' : 'HOURS',
       status: c.status,
       mechanicName: c.mechanicName,
       submittedAt: c.submittedAt,
@@ -789,9 +821,9 @@ export class DailyChecklistsService {
   }
 
   private async detalle(c: ChecklistCompleto): Promise<DailyChecklistDetail> {
-    const codigos = await this.codigos([c.equipmentId]);
+    const equipos = await this.equiposPorId([c.equipmentId]);
     return {
-      ...this.resumen(c, codigos),
+      ...this.resumen(c, equipos),
       entries: await Promise.all(
         c.entries.map(async (e) => ({
           itemId: e.itemId,
