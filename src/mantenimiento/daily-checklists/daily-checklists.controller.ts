@@ -13,7 +13,7 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
-import { isValidDateOnly } from '../../shifts/date-only';
+import { isValidDateOnly, parseDateOnlyUtc } from '../../shifts/date-only';
 import { DailyChecklistsService } from './daily-checklists.service';
 import { ResubmitDailyChecklistDto } from './dto/resubmit-daily-checklist.dto';
 import { ReviewDailyChecklistDto } from './dto/review-daily-checklist.dto';
@@ -26,8 +26,20 @@ function editorDe(session: UserSession) {
   };
 }
 
-/** Lo ven el mantenedor (lo llena), el supervisor (lo valida) y el administrador. */
-const LECTORES = [ROLES.MANTENEDOR, ROLES.SUPERVISOR, ROLES.ADMIN];
+/**
+ * Lo ven el mantenedor (lo llena), el supervisor (lo valida), el administrador
+ * y la secretaria (solo lectura: el listado de «Chequeos diarios» del panel).
+ */
+const LECTORES = [
+  ROLES.MANTENEDOR,
+  ROLES.SUPERVISOR,
+  ROLES.ADMIN,
+  ROLES.SECRETARIA,
+];
+
+/** Largo máximo (en días, ambos extremos incluidos) del rango `from`–`to`. */
+export const MAX_RANGE_DAYS = 92;
+const MS_DIA = 24 * 60 * 60 * 1000;
 
 /**
  * Chequeo diario del mantenedor (Módulo 2). `items` va declarado antes que
@@ -45,18 +57,52 @@ export class DailyChecklistsController {
   }
 
   /**
-   * Los chequeos de un día (`?date=YYYY-MM-DD`), de un equipo o en ciertos
-   * estados (`?status=SUBMITTED,REJECTED`: los pendientes del supervisor).
+   * Los chequeos de un día (`?date=YYYY-MM-DD`) o de un rango de días
+   * (`?from=YYYY-MM-DD&to=YYYY-MM-DD`, inclusive, hasta `MAX_RANGE_DAYS`), de un
+   * equipo o en ciertos estados (`?status=SUBMITTED,REJECTED`: los pendientes
+   * del supervisor). `date` y `from`/`to` no se combinan.
    */
   @Get()
   @Roles(LECTORES)
   async list(
     @Query('date') date?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Query('equipmentId') equipmentId?: string,
     @Query('status') status?: string,
   ) {
     if (date && !isValidDateOnly(date)) {
       throw new BadRequestException('La fecha tiene que ser YYYY-MM-DD.');
+    }
+    if (date && (from || to)) {
+      throw new BadRequestException(
+        'Usa una fecha (date) o un rango (from y to), no las dos.',
+      );
+    }
+    if (from || to) {
+      if (!from || !to) {
+        throw new BadRequestException('El rango necesita desde y hasta.');
+      }
+      if (!isValidDateOnly(from) || !isValidDateOnly(to)) {
+        throw new BadRequestException(
+          'Las fechas del rango tienen que ser YYYY-MM-DD.',
+        );
+      }
+      if (from > to) {
+        throw new BadRequestException(
+          'La fecha de inicio no puede ser posterior a la de término.',
+        );
+      }
+      const dias =
+        Math.round(
+          (parseDateOnlyUtc(to).getTime() - parseDateOnlyUtc(from).getTime()) /
+            MS_DIA,
+        ) + 1;
+      if (dias > MAX_RANGE_DAYS) {
+        throw new BadRequestException(
+          `El rango puede abarcar hasta ${MAX_RANGE_DAYS} días.`,
+        );
+      }
     }
     const estados = status ? status.split(',').map((e) => e.trim()) : [];
     const validos = Object.values(ChecklistStatus) as string[];
@@ -68,6 +114,8 @@ export class DailyChecklistsController {
     return {
       data: await this.service.list({
         date,
+        from,
+        to,
         equipmentId,
         status: estados as ChecklistStatus[],
       }),

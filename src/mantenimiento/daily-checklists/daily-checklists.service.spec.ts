@@ -227,4 +227,78 @@ describe('DailyChecklistsService', () => {
     expect(storage.discard).toHaveBeenCalledWith('checklist-photos/b.jpg');
     expect(events.emit).not.toHaveBeenCalled();
   });
+
+  describe('list', () => {
+    const FILA = {
+      id: 'chk_1',
+      equipmentId: 'eq_1',
+      date: new Date('2026-11-20T00:00:00.000Z'),
+      counter: 2150,
+      status: 'ACCEPTED',
+      mechanicName: 'Mario Mantenedor',
+      submittedAt: new Date('2026-11-20T16:00:00.000Z'),
+      submissionCount: 1,
+      entries: [
+        { id: 'e1', itemId: 'chk_ac', status: 'CHECKED', photoKeys: ['a'] },
+        { id: 'e2', itemId: 'chk_n', status: 'MAINTAINED', photoKeys: [] },
+      ],
+      reviews: [
+        {
+          decision: 'ACCEPTED',
+          comment: null,
+          reviewerName: 'Sofía Supervisora',
+          submission: 1,
+          createdAt: new Date('2026-11-20T18:00:00.000Z'),
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      prisma.dailyChecklist.findMany.mockResolvedValue([FILA]);
+      prisma.equipment.findMany.mockResolvedValue([
+        { id: 'eq_1', internalCode: 'CA-011', controlUnit: 'KM' },
+      ]);
+    });
+
+    it('un día filtra por esa fecha y trae lo que pide la tabla', async () => {
+      const [fila] = await service.list({ date: '2026-11-20' });
+
+      const [{ where, take }] = prisma.dailyChecklist.findMany.mock
+        .calls[0] as [{ where: { date: Date }; take: number }];
+      expect(where.date).toEqual(new Date('2026-11-20T00:00:00.000Z'));
+      expect(take).toBe(200);
+      expect(fila).toMatchObject({
+        equipment: { id: 'eq_1', internalCode: 'CA-011' },
+        counter: 2150,
+        counterUnit: 'KM',
+        mechanicName: 'Mario Mantenedor',
+        declared: 2,
+        maintained: 1,
+        photos: 1,
+        lastReview: { decision: 'ACCEPTED', reviewerName: 'Sofía Supervisora' },
+      });
+    });
+
+    it('un rango filtra con gte/lte (ambos días incluidos) y sube el tope', async () => {
+      await service.list({ from: '2026-11-01', to: '2026-11-20' });
+
+      const [{ where, take }] = prisma.dailyChecklist.findMany.mock
+        .calls[0] as [
+        { where: { date: { gte: Date; lte: Date } }; take: number },
+      ];
+      expect(where.date).toEqual({
+        gte: new Date('2026-11-01T00:00:00.000Z'),
+        lte: new Date('2026-11-20T00:00:00.000Z'),
+      });
+      expect(take).toBe(1000);
+    });
+
+    it('la unidad del contador es horas salvo que el equipo se controle por km', async () => {
+      prisma.equipment.findMany.mockResolvedValue([
+        { id: 'eq_1', internalCode: 'CA-011', controlUnit: 'HOURS' },
+      ]);
+      const [fila] = await service.list({ date: '2026-11-20' });
+      expect(fila?.counterUnit).toBe('HOURS');
+    });
+  });
 });
