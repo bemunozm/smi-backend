@@ -276,10 +276,13 @@ ${event.comment ?? ''}`,
  * MANTENEDOR + ADMIN (Módulo 4 · R21): para no operar con documentos vencidos
  * ni pasarse de la mantención. El administrador se entera de cada orden
  * preventiva que entra al tablero del mantenedor sin tener que mirarlo.
+ * SECRETARIA (pedido del cliente, 20/11/2026): carga los documentos y la
+ * pauta de los equipos, así que también se entera de lo que vence.
  */
 export const VENCIMIENTO_ROLES: readonly Role[] = [
   ROLES.MANTENEDOR,
   ROLES.ADMIN,
+  ROLES.SECRETARIA,
 ];
 
 function nombreEquipo(code: string, plate: string | null): string {

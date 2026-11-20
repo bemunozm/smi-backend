@@ -19,6 +19,7 @@ import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import { CreateItemDto } from './dto/create-item.dto';
 import { QueryItemsDto } from './dto/query-items.dto';
+import { SetItemActiveDto } from './dto/set-item-active.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 import { ItemsService } from './items.service';
 
@@ -55,7 +56,7 @@ export class ItemsController {
   }
 
   @Post()
-  @Roles([ROLES.ADMIN])
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
   async create(@Body() dto: CreateItemDto, @Session() session: UserSession) {
     return {
       data: await this.service.create(dto, session.user.id),
@@ -64,7 +65,7 @@ export class ItemsController {
   }
 
   @Patch(':id')
-  @Roles([ROLES.ADMIN])
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateItemDto,
@@ -74,6 +75,20 @@ export class ItemsController {
     return {
       data: await this.service.update(id, dto, expected),
       message: 'Ítem actualizado',
+    };
+  }
+
+  /**
+   * Baja lógica (o reactivación): ADMIN y SECRETARIA. Endpoint propio para
+   * no mezclarlo con la edición de la ficha (`PATCH :id`).
+   */
+  @Patch(':id/active')
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
+  async setActive(@Param('id') id: string, @Body() dto: SetItemActiveDto) {
+    assertNonEmptyId(id);
+    return {
+      data: await this.service.setActive(id, dto.isActive),
+      message: dto.isActive ? 'Ítem reactivado' : 'Ítem dado de baja',
     };
   }
 

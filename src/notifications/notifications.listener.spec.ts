@@ -262,7 +262,7 @@ describe('NotificationsListener', () => {
 
     expect(createForRoles).toHaveBeenCalledTimes(1);
     expect(createForRoles).toHaveBeenCalledWith(
-      [ROLES.MANTENEDOR, ROLES.ADMIN],
+      [ROLES.MANTENEDOR, ROLES.ADMIN, ROLES.SECRETARIA],
       expect.objectContaining({
         tipo: 'preventive-service.due',
         titulo: 'Mantención preventiva 250 h: BD-005',

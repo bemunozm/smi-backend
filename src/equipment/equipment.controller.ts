@@ -60,7 +60,7 @@ export class EquipmentController {
   }
 
   @Post()
-  @Roles([ROLES.ADMIN])
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
   async create(
     @Body() dto: CreateEquipmentDto,
     @Session() session: UserSession,
@@ -72,7 +72,7 @@ export class EquipmentController {
   }
 
   @Patch(':id')
-  @Roles([ROLES.ADMIN])
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentDto,
@@ -87,7 +87,7 @@ export class EquipmentController {
   }
 
   @Patch(':id/status')
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.SECRETARIA])
   async updateStatus(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentStatusDto,
@@ -107,7 +107,7 @@ export class EquipmentController {
    * cuadrilla desde terreno, no solo el estado de la máquina).
    */
   @Patch(':id/assignment')
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.SECRETARIA])
   async updateAssignment(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentAssignmentDto,
