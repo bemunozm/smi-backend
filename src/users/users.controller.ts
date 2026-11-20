@@ -70,6 +70,9 @@ export class UsersController {
    * método que `EquipmentController.updateStatus`). El resto de la gestión
    * de usuarios (crear/editar/banear) se mantiene ADMIN-only.
    *
+   * SECRETARIA (20/11/2026): con `?role=` como el supervisor, para asignar
+   * responsable al crear/editar equipos desde Flota.
+   *
    * MANTENEDOR (17/11/2026): solo `?role=MANTENEDOR`, para elegir el
    * responsable al editar una operación del taller. Cualquier otro rol se le
    * rechaza: no necesita ver a supervisores ni administradores.
@@ -80,7 +83,7 @@ export class UsersController {
    * silenciosamente al listado completo: de lo contrario podría enumerar
    * todo el directorio con la excusa de poblar un picker.
    */
-  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR])
+  @Roles([ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.MANTENEDOR, ROLES.SECRETARIA])
   @Get()
   async findAll(
     @Query() query: QueryUsersDto,

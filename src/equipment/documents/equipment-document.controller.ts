@@ -57,7 +57,7 @@ export class EquipmentDocumentController {
   }
 
   @Post(':equipmentId/documents')
-  @Roles([ROLES.ADMIN])
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
   async create(
     @Param('equipmentId') equipmentId: string,
     @Body() dto: CreateEquipmentDocumentDto,
@@ -71,7 +71,7 @@ export class EquipmentDocumentController {
   }
 
   @Patch('documents/:id')
-  @Roles([ROLES.ADMIN])
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateEquipmentDocumentDto,
@@ -86,7 +86,7 @@ export class EquipmentDocumentController {
   }
 
   @Delete('documents/:id')
-  @Roles([ROLES.ADMIN])
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
   async remove(@Param('id') id: string) {
     assertNonEmptyId(id);
     await this.service.remove(id);

@@ -22,7 +22,7 @@ export class HorometroController {
   }
 
   @Post()
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async create(
     @Body() dto: CreateHorometroDto,
     @Session() session: UserSession,
@@ -38,7 +38,7 @@ export class HorometroController {
   // con `valorFinal` sin pasar por `salida()`).
 
   @Patch(':id/salida')
-  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN])
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async salida(
     @Param('id') id: string,
     @Body() dto: SalidaHorometroDto,

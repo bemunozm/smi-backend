@@ -17,8 +17,13 @@ import { SaveMaintenancePlanDto } from './dto/save-maintenance-plan.dto';
 import { SetMaintenanceRecordDto } from './dto/set-maintenance-record.dto';
 import { MaintenancePlansService } from './maintenance-plans.service';
 
-/** Quién mira las pautas: también el supervisor, que ve los equipos en faena. */
-const LECTORES = [ROLES.ADMIN, ROLES.MANTENEDOR, ROLES.SUPERVISOR];
+/** Quién mira las pautas: también el supervisor, que ve los equipos en faena, y la secretaria, que las arma desde Flota (pedido del cliente 20/11/2026). */
+const LECTORES = [
+  ROLES.ADMIN,
+  ROLES.MANTENEDOR,
+  ROLES.SUPERVISOR,
+  ROLES.SECRETARIA,
+];
 
 /**
  * Pautas de mantención preventiva por equipo, una por equipo (`:equipmentId`).
@@ -36,7 +41,7 @@ export class MaintenancePlansController {
    * dashboard, que ella ve. Las pautas en sí siguen siendo de `LECTORES`.
    */
   @Get('status')
-  @Roles([...LECTORES, ROLES.SECRETARIA])
+  @Roles(LECTORES)
   async statusForAll() {
     return { data: await this.service.statusForAll(), message: 'ok' };
   }
@@ -46,7 +51,7 @@ export class MaintenancePlansController {
    * próximo. Mismos roles que `status`; va antes de `:equipmentId`.
    */
   @Get('board')
-  @Roles([...LECTORES, ROLES.SECRETARIA])
+  @Roles(LECTORES)
   async board() {
     return { data: await this.service.board(), message: 'ok' };
   }
@@ -142,7 +147,7 @@ export class MaintenancePlansController {
 
   /** La pauta se guarda entera, como se edita. Quién la cambia sale de la sesión. */
   @Put(':equipmentId')
-  @Roles([ROLES.ADMIN, ROLES.MANTENEDOR])
+  @Roles([ROLES.ADMIN, ROLES.MANTENEDOR, ROLES.SECRETARIA])
   async save(
     @Param('equipmentId') equipmentId: string,
     @Body() dto: SaveMaintenancePlanDto,

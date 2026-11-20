@@ -20,7 +20,7 @@ export class VencimientosController {
    * Con `?equipmentId=`, solo ese liviano: es la tarjeta de su ficha.
    */
   @Get('calendario')
-  @Roles([ROLES.MANTENEDOR, ROLES.ADMIN])
+  @Roles([ROLES.MANTENEDOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async calendar(
     @Query('desde') desde?: string,
     @Query('equipmentId') equipmentId?: string,
@@ -36,7 +36,7 @@ export class VencimientosController {
    * supervisor, igual que la pauta de los pesados (en solo lectura).
    */
   @Get('livianos/:equipmentId')
-  @Roles([ROLES.MANTENEDOR, ROLES.ADMIN, ROLES.SUPERVISOR])
+  @Roles([ROLES.MANTENEDOR, ROLES.ADMIN, ROLES.SUPERVISOR, ROLES.SECRETARIA])
   async lightConfig(@Param('equipmentId') equipmentId: string) {
     return {
       data: await this.service.lightConfig(equipmentId),
@@ -46,7 +46,7 @@ export class VencimientosController {
 
   /** Guarda la configuración (los mismos que pueden guardar la pauta). */
   @Put('livianos/:equipmentId')
-  @Roles([ROLES.MANTENEDOR, ROLES.ADMIN])
+  @Roles([ROLES.MANTENEDOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async saveLightConfig(
     @Param('equipmentId') equipmentId: string,
     @Body() dto: SaveLightConfigDto,
