@@ -470,6 +470,29 @@ describe('ItemsService', () => {
     });
   });
 
+  describe('setActive', () => {
+    it('da de baja sin tocar el kardex', async () => {
+      findUnique.mockResolvedValue({ id: 'i1', sku: 'FIL-001' });
+      update.mockResolvedValue({ id: 'i1', isActive: false });
+
+      await service.setActive('i1', false);
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'i1' },
+          data: { isActive: false },
+        }),
+      );
+    });
+
+    it('falla si el ítem no existe', async () => {
+      findUnique.mockResolvedValue(null);
+      await expect(service.setActive('nope', false)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
   describe('remove', () => {
     it('bloquea el borrado de un ítem con kardex y sugiere la baja lógica', async () => {
       // `onDelete: Cascade` en los movimientos: borrarlo se llevaría el
@@ -480,7 +503,7 @@ describe('ItemsService', () => {
         _count: { movements: 7 },
       });
 
-      await expect(service.remove('i1')).rejects.toThrow(/isActive=false/);
+      await expect(service.remove('i1')).rejects.toThrow(/Dalo de baja/);
       expect(deleteFn).not.toHaveBeenCalled();
     });
 

@@ -279,6 +279,16 @@ export class ItemsService {
     return `${prefijo}-${String(mayor + 1).padStart(4, '0')}`;
   }
 
+  /** Da de baja o reactiva un ítem: sale (o vuelve) a listados y selectores; el kardex no se toca. */
+  async setActive(id: string, isActive: boolean) {
+    await this.findOne(id);
+    return this.prisma.inventoryItem.update({
+      where: { id },
+      data: { isActive },
+      include: STOCK_INCLUDE,
+    });
+  }
+
   async update(id: string, dto: UpdateItemDto, expected?: ExpectedValues) {
     await this.findOne(id);
     const write = (db: Prisma.TransactionClient) =>
@@ -393,7 +403,7 @@ export class ItemsService {
     if (item._count.movements > 0) {
       throw new ConflictException(
         `El ítem ${item.sku} tiene ${item._count.movements} movimiento(s) registrados y no se puede eliminar sin perder su kardex. ` +
-          'Marcalo como inactivo (isActive=false) para retirarlo de los selectores conservando el historial.',
+          'Dalo de baja para retirarlo de los selectores conservando el historial.',
       );
     }
 

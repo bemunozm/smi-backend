@@ -86,9 +86,4 @@ export class UpdateItemDto {
     message: 'El contenido se mide en litros, kilos, metros o unidades.',
   })
   contentUnit?: UnitOfMeasure | null;
-
-  /** Baja lógica: lo saca de los selectores sin perder su kardex. */
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
 }
