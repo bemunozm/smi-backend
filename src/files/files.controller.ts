@@ -47,7 +47,15 @@ interface UploadFileResponse {
 // Solo SUPERVISOR/ADMIN suben archivos de Flota.
 // MANTENEDOR incluido: el taller sube la foto del cierre de una intervención.
 // PREVENCIONISTA: la foto del surtidor al cerrar una camioneta.
-@Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.MANTENEDOR, ROLES.PREVENCIONISTA])
+// SECRETARIA (23/11/2026): documentos y foto de los equipos, foto del Report y
+// de las cargas de combustible que registra por los supervisores.
+@Roles([
+  ROLES.SUPERVISOR,
+  ROLES.ADMIN,
+  ROLES.MANTENEDOR,
+  ROLES.PREVENCIONISTA,
+  ROLES.SECRETARIA,
+])
 @Controller('files')
 export class FilesController {
   constructor(private readonly storageService: StorageService) {}
