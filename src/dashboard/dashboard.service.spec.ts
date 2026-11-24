@@ -568,6 +568,37 @@ describe('DashboardService.supervisores', () => {
     });
   });
 
+  it('supervisores no lista al supervisor temporal pero suma sus horas al turno', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      {
+        equipoId: 'e1',
+        turno: 'DIURNO',
+        supervisorId: 'u1',
+        temporal: false,
+        valorInicial: 0,
+        valorFinal: 6,
+        fecha: new Date('2026-10-02T13:00:00.000Z'),
+      },
+      {
+        equipoId: 'e2',
+        turno: 'DIURNO',
+        supervisorId: 'ut',
+        temporal: true,
+        valorInicial: 0,
+        valorFinal: 4,
+        fecha: new Date('2026-10-02T13:00:00.000Z'),
+      },
+    ]);
+    prisma.shift.findMany.mockResolvedValue([]);
+    prisma.user.findMany.mockResolvedValue([{ id: 'u1', name: 'Limbert' }]);
+    const res = await service.supervisores({
+      desde: '2026-10-01',
+      hasta: '2026-10-05',
+    });
+    expect(res.porTurno.DIURNO).toEqual({ horas: 10, equipos: 2 });
+    expect(res.porSupervisor.map((s) => s.supervisorId)).toEqual(['u1']);
+  });
+
   it('rango sin tarjetas: ambas claves de porTurno existen en cero', async () => {
     prisma.registroHorometro.findMany.mockResolvedValue([]);
     prisma.shift.findMany.mockResolvedValue([]);

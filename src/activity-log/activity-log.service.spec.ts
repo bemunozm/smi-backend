@@ -308,6 +308,24 @@ describe('ActivityLogService', () => {
     });
   });
 
+  it('el historial del informe temporal sale con su etiqueta, no con el nombre crudo de la entidad', async () => {
+    prisma.changeLog.findMany.mockResolvedValue([
+      {
+        id: 'cl9',
+        entity: 'informe_temporal',
+        action: 'UPDATE',
+        userId: 'st1',
+        userName: 'Temporal',
+        changes: [{ field: 'a', label: 'A', before: '1', after: '2' }],
+        createdAt: d('2026-11-12T15:00:00.000Z'),
+      },
+    ]);
+    const res = await service.feed('2026-11-12', '2026-11-12');
+    expect(evento(res, 'log:cl9')).toMatchObject({
+      summary: 'Report supervisor temporal · 1 dato',
+    });
+  });
+
   it('lo actuado FUERA del rango se descarta aunque la ventana ancha lo traiga, y el feed sale del más reciente al más viejo', async () => {
     prisma.trabajoExtraordinario.findMany.mockResolvedValue([
       {

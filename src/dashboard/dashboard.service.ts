@@ -406,6 +406,7 @@ export class DashboardService {
               equipoId: true,
               turno: true,
               supervisorId: true,
+              temporal: true,
               valorInicial: true,
               valorFinal: true,
               fecha: true,
@@ -433,6 +434,9 @@ export class DashboardService {
       const clave = t.turno === 'NOCTURNO' ? 'NOCTURNO' : 'DIURNO';
       turnoAcc[clave].horas += delta;
       turnoAcc[clave].equipos.add(t.equipoId);
+      // Las horas del supervisor temporal cuentan en el turno, pero él no
+      // figura en el desglose por supervisor.
+      if (t.temporal) continue;
       const sid = t.supervisorId ?? '';
       const acc = supAcc.get(sid) ?? { horas: 0, equipos: new Set<string>() };
       acc.horas += delta;

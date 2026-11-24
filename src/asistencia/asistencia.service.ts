@@ -60,7 +60,7 @@ export class AsistenciaService {
     const margenDesde = new Date(desde.getTime() - MARGEN_MS);
     const margenHasta = new Date(hasta.getTime() + DIA_MS + MARGEN_MS);
 
-    const [tarjetas, reports] = await Promise.all([
+    const [tarjetas, reports, informesTemporales] = await Promise.all([
       this.prisma.registroHorometro.findMany({
         where: {
           OR: [
@@ -78,6 +78,10 @@ export class AsistenciaService {
       this.prisma.trabajoExtraordinario.findMany({
         where: { fecha: { gte: margenDesde, lte: margenHasta } },
         select: { operatorId: true, fecha: true },
+      }),
+      this.prisma.informeTemporal.findMany({
+        where: { fecha: { gte: desde, lte: hasta } },
+        select: { fecha: true, personal: true },
       }),
     ]);
 
@@ -107,6 +111,15 @@ export class AsistenciaService {
     }
     for (const r of reports) {
       marcar(diasOperador, r.operatorId, businessDayKey(r.fecha));
+    }
+    // Personal del informe del supervisor temporal: X en la `fecha` del informe
+    // (`@db.Date`), solo para quienes están ligados a un operador del catálogo.
+    for (const inf of informesTemporales) {
+      const ymd = formatDateOnly(inf.fecha);
+      const personal = (inf.personal ?? []) as unknown as Array<{
+        operatorId: string | null;
+      }>;
+      for (const p of personal) marcar(diasOperador, p.operatorId, ymd);
     }
 
     // Roster de supervisores: todos los de rol SUPERVISOR, más cualquier id
