@@ -173,7 +173,8 @@ export class InformesTemporalesService {
    * tarjetas sueltas que ya no se pueden cerrar por otra vía. «Pendiente»
    * incluye la tarjeta YA cerrada con un `closeClientId` de este lote: es la
    * que quedó cerrada en un intento cortado a la mitad (sin informe), y el
-   * reintento tiene que poder completarlo.
+   * reintento tiene que poder completarlo. Las ya cerradas por él sin informe
+   * (resto de un lote fallido) se enlazan aunque el cliente ya no las mande.
    *
    * Los cierres van uno por uno, FUERA de una transacción común: cada
    * `closeCard` tiene su propia tx (foto, combustible, AdBlue) y es
@@ -217,6 +218,16 @@ export class InformesTemporalesService {
       );
     }
 
+    // Pendientes del supervisor sin informe: las abiertas, las ya cerradas
+    // con un `closeClientId` de este lote (intento cortado a la mitad) y las
+    // que él mismo cerró sin que llegara a crearse su informe. Esas últimas
+    // solo pueden ser restos de un lote fallido —el dueño cierra una temporal
+    // únicamente vía informe—: un lote online donde la tarjeta 1 se cerró y
+    // la 2 falló, el cliente descartó la operación, refrescó sus tarjetas (la
+    // 1 ya no aparece, está cerrada) y reenvió solo la 2. Se enlazan a ESTE
+    // informe aunque no vengan en `cierres`: si no, quedarían cerradas,
+    // temporales y sin informe para siempre (fuera del reporte, del Excel y
+    // del borrado).
     const pendientes = await this.prisma.registroHorometro.findMany({
       where: {
         supervisorId: userId,
@@ -225,22 +236,37 @@ export class InformesTemporalesService {
         OR: [
           { valorFinal: null },
           { closeClientId: { in: dto.cierres.map((c) => c.closeClientId) } },
+          { valorFinal: { not: null }, closedById: userId },
         ],
       },
       select: {
         id: true,
         fecha: true,
+        valorFinal: true,
+        closeClientId: true,
         equipo: { select: { internalCode: true } },
       },
     });
     await this.assertLoteCuadra(pendientes, cardIds, userId);
 
+    const porId = new Map(pendientes.map((card) => [card.id, card]));
     for (const { cardId, ...cierre } of dto.cierres) {
+      const card = porId.get(cardId);
+      // Ya cerrada con OTRO `closeClientId` (resto de un lote fallido que el
+      // cliente reenvía con un cierre nuevo): no se vuelve a cerrar, solo se
+      // enlaza. Con el mismo, `closeCard` la devuelve tal cual (idempotente).
+      if (
+        card?.valorFinal != null &&
+        card.closeClientId !== cierre.closeClientId
+      ) {
+        continue;
+      }
       await this.shifts.closeCard(cardId, cierre, session, {
         viaInforme: true,
       });
     }
 
+    const enlazar = pendientes.map((card) => card.id);
     const inicio = new Date(
       Math.min(...pendientes.map((card) => card.fecha.getTime())),
     );
@@ -264,10 +290,24 @@ export class InformesTemporalesService {
           fin: new Date(),
         },
       });
-      await tx.registroHorometro.updateMany({
-        where: { id: { in: cardIds }, supervisorId: userId },
+      // Solo las que siguen sin informe: si otro envío concurrente ya se
+      // llevó alguna, el conteo no cuadra y se deshace todo (el informe
+      // incluido) en vez de quedar con un lote a medias.
+      const { count } = await tx.registroHorometro.updateMany({
+        where: {
+          id: { in: enlazar },
+          supervisorId: userId,
+          informeTemporalId: null,
+        },
         data: { informeTemporalId: dto.id },
       });
+      if (count !== enlazar.length) {
+        throw new ConflictException({
+          message:
+            'Algunas tarjetas ya quedaron en otro informe. Recarga y vuelve a cerrar.',
+          code: ERROR_CODES.INFORME_TARJETAS_DESCUADRADAS,
+        });
+      }
     });
 
     const creado = await this.findRecord(dto.id);
@@ -474,15 +514,25 @@ export class InformesTemporalesService {
     }));
   }
 
-  /** 409 si el lote no son EXACTAMENTE las tarjetas pendientes. */
+  /**
+   * 409 si el lote no cuadra con las pendientes: tienen que venir TODAS las
+   * abiertas y nada fuera de las pendientes. Las ya cerradas (resto de un
+   * intento anterior) pueden venir o no: se enlazan igual.
+   */
   private async assertLoteCuadra(
-    pendientes: { id: string; equipo: { internalCode: string } }[],
+    pendientes: {
+      id: string;
+      valorFinal: number | null;
+      equipo: { internalCode: string };
+    }[],
     cardIds: string[],
     userId: string,
   ): Promise<void> {
     const enviadas = new Set(cardIds);
     const pendientesIds = new Set(pendientes.map((card) => card.id));
-    const faltan = pendientes.filter((card) => !enviadas.has(card.id));
+    const faltan = pendientes.filter(
+      (card) => card.valorFinal == null && !enviadas.has(card.id),
+    );
     const sobran = cardIds.filter((id) => !pendientesIds.has(id));
     if (faltan.length === 0 && sobran.length === 0) return;
 

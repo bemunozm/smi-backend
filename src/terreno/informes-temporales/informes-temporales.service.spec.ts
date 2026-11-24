@@ -27,7 +27,10 @@ describe('InformesTemporalesService.create', () => {
     },
     registroHorometro: {
       findMany: jest.fn(),
-      updateMany: jest.fn<unknown, [Record<string, unknown>]>(),
+      updateMany: jest.fn<
+        Promise<{ count: number }>,
+        [{ where: { id: { in: string[] } } }]
+      >(),
     },
     $transaction: jest.fn(),
   };
@@ -42,12 +45,14 @@ describe('InformesTemporalesService.create', () => {
     {
       id: 'c1',
       fecha: new Date('2026-11-24T11:00:00.000Z'),
+      valorFinal: null,
       closeClientId: null,
       equipo: { internalCode: 'SEM05' },
     },
     {
       id: 'c2',
       fecha: new Date('2026-11-24T10:00:00.000Z'),
+      valorFinal: null,
       closeClientId: null,
       equipo: { internalCode: 'WA470' },
     },
@@ -136,6 +141,10 @@ describe('InformesTemporalesService.create', () => {
     prisma.$transaction.mockImplementation(
       (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma),
     );
+    // Por defecto enlaza todas las que se le piden (ninguna la tomó otro informe).
+    prisma.registroHorometro.updateMany.mockImplementation((args) =>
+      Promise.resolve({ count: args.where.id.in.length }),
+    );
     closeCard.mockResolvedValue({});
     sign.mockResolvedValue('https://storage.local/signed/x.jpg');
   });
@@ -160,7 +169,8 @@ describe('InformesTemporalesService.create', () => {
     });
     expect(closeCard.mock.calls[1][0]).toBe('c2');
 
-    // Pendientes: abiertas del supervisor o ya cerradas con un closeClientId del lote.
+    // Pendientes: abiertas del supervisor, ya cerradas con un closeClientId
+    // del lote, o cerradas por él sin informe (resto de un lote fallido).
     expect(prisma.registroHorometro.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -170,6 +180,7 @@ describe('InformesTemporalesService.create', () => {
           OR: [
             { valorFinal: null },
             { closeClientId: { in: ['cc-1', 'cc-2'] } },
+            { valorFinal: { not: null }, closedById: SUP },
           ],
         },
       }),
@@ -186,7 +197,7 @@ describe('InformesTemporalesService.create', () => {
     });
     expect(data.fin).toBeInstanceOf(Date);
     expect(prisma.registroHorometro.updateMany.mock.calls[0][0]).toMatchObject({
-      where: { id: { in: ['c1', 'c2'] } },
+      where: { id: { in: ['c1', 'c2'] }, informeTemporalId: null },
       data: { informeTemporalId: INFORME_ID },
     });
 
@@ -230,7 +241,7 @@ describe('InformesTemporalesService.create', () => {
     // c1 quedó cerrada en el intento anterior (con su closeClientId del lote):
     // la consulta de pendientes la sigue trayendo.
     prisma.registroHorometro.findMany.mockResolvedValue([
-      { ...pendientes[0], closeClientId: 'cc-1' },
+      { ...pendientes[0], valorFinal: 1210, closeClientId: 'cc-1' },
       pendientes[1],
     ]);
     prisma.informeTemporal.findUnique
@@ -242,6 +253,68 @@ describe('InformesTemporalesService.create', () => {
     // closeCard es idempotente por closeClientId: se reintenta igual.
     expect(closeCard).toHaveBeenCalledTimes(2);
     expect(prisma.informeTemporal.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('enlaza la tarjeta que quedó cerrada en un lote fallido aunque el reenvío ya no la traiga', async () => {
+    // Intento online anterior: c1 se cerró, c2 falló y el cliente descartó la
+    // operación. Al refrescar, c1 (cerrada) salió del formulario y el reenvío
+    // trae solo c2, con un id de informe y closeClientId propios.
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      { ...pendientes[0], valorFinal: 1210, closeClientId: 'cc-viejo' },
+      pendientes[1],
+    ]);
+    prisma.informeTemporal.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(informeRow());
+
+    await service.create(dto({ cierres: [cierre('c2', 'cc-2')] }), session);
+
+    // c1 no se vuelve a cerrar: ya lo estaba.
+    expect(closeCard).toHaveBeenCalledTimes(1);
+    expect(closeCard.mock.calls[0][0]).toBe('c2');
+    // …pero queda enlazada a este informe, y cuenta para el inicio.
+    expect(prisma.registroHorometro.updateMany.mock.calls[0][0]).toMatchObject({
+      where: { id: { in: ['c1', 'c2'] }, informeTemporalId: null },
+      data: { informeTemporalId: INFORME_ID },
+    });
+    expect(prisma.informeTemporal.create.mock.calls[0][0].data).toMatchObject({
+      inicio: new Date('2026-11-24T10:00:00.000Z'),
+    });
+  });
+
+  it('una ya cerrada que vuelve con otro closeClientId no se cierra de nuevo, solo se enlaza', async () => {
+    prisma.registroHorometro.findMany.mockResolvedValue([
+      { ...pendientes[0], valorFinal: 1210, closeClientId: 'cc-viejo' },
+      pendientes[1],
+    ]);
+    prisma.informeTemporal.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(informeRow());
+
+    await service.create(dto(), session);
+
+    expect(closeCard).toHaveBeenCalledTimes(1);
+    expect(closeCard.mock.calls[0][0]).toBe('c2');
+    expect(
+      prisma.registroHorometro.updateMany.mock.calls[0][0].where.id.in,
+    ).toEqual(['c1', 'c2']);
+  });
+
+  it('si otra tarjeta ya quedó en otro informe, el enlace no cuadra y se deshace con 409', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(null);
+    // Un envío concurrente se llevó una de las dos entre la consulta y el enlace.
+    prisma.registroHorometro.updateMany.mockResolvedValue({ count: 1 });
+
+    const err: unknown = await service
+      .create(dto(), session)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ConflictException);
+    expect((err as ConflictException).getResponse()).toMatchObject({
+      code: 'INFORME_TARJETAS_DESCUADRADAS',
+    });
+    // El error sale de DENTRO de la tx: la crea y el enlace se revierten juntos.
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 
   it('lote incompleto da 409 INFORME_TARJETAS_DESCUADRADAS con el código del equipo faltante', async () => {
