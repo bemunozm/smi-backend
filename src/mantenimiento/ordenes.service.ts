@@ -139,6 +139,9 @@ type CierreLectura =
     }
   | { tipo: 'LIVIANO'; equipmentId: string; lectura: number | null };
 
+/** Opciones de la transacción de `finalizar` (ver el comentario de uso). */
+const FINALIZAR_TX_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
+
 /** La unidad de Flota cuyo estado declara el cierre («Finalizar tarea»). */
 type EquipoACerrar = { id: string; status: EquipmentStatus };
 
@@ -631,10 +634,19 @@ export class OrdenesService {
         }
         return {
           ownerId: existing.ownerId,
-          result: async () => ({
-            orden: await this.findOne(id),
-            intervencion: await existing.result(),
-          }),
+          result: async () => {
+            const orden = await this.findOne(id);
+            // Solo es un reintento de ESTE cierre si la orden quedó
+            // COMPLETADA (el cierre es atómico). Si sigue abierta, la
+            // intervención vino de otro camino (el POST suelto cuyo PATCH
+            // falló): responder «finalizada» repetiría el bug original.
+            if (orden.estado !== EstadoOT.COMPLETADA) {
+              throw new ConflictException(
+                'Esa intervención ya existe pero la operación no quedó finalizada; vuelve a finalizarla',
+              );
+            }
+            return { orden, intervencion: await existing.result() };
+          },
         };
       },
       create: () => this.finalizarFresh(id, dto, editor),
@@ -702,7 +714,10 @@ export class OrdenesService {
           editor,
         });
         return { orden, intervencion, estadoAnterior: vigente.estado };
-      });
+        // Más larga que el PATCH (un `stock.issue` por insumo + el ancla): el
+        // timeout por defecto de Prisma (5 s) podría cortar un cierre válido
+        // con varios insumos sobre una base lenta.
+      }, FINALIZAR_TX_OPTIONS);
     } catch (error: unknown) {
       await this.intervenciones.descartar(preparada);
       throw error;

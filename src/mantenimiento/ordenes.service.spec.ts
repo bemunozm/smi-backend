@@ -2401,6 +2401,53 @@ describe('OrdenesService', () => {
       expectNadaEscrito();
     });
 
+    it('intervención existente pero la orden NO quedó finalizada: 409, sin escribir', async () => {
+      // El POST suelto de la intervención entró y el PATCH de la orden falló
+      // (el bug original): no se puede responder «finalizada».
+      orden(LIVIANO);
+      intervencionFindUnique.mockResolvedValue({
+        ...fila('orden_liv'),
+        createdById: MOCK_MANTENEDOR.id,
+      });
+
+      await expect(
+        service.finalizar('orden_liv', DTO, MOCK_MANTENEDOR),
+      ).rejects.toThrow(
+        new ConflictException(
+          'Esa intervención ya existe pero la operación no quedó finalizada; vuelve a finalizarla',
+        ),
+      );
+      expect(queryRaw).not.toHaveBeenCalled();
+      expectNadaEscrito();
+    });
+
+    it('la transacción del cierre lleva timeout propio (varios insumos + ancla)', async () => {
+      const spy = jest.fn((...[fn]: [(tx: unknown) => unknown, unknown?]) =>
+        fn({
+          ordenTrabajo: {
+            findUnique: ordenTrabajoFindUnique,
+            update: ordenTrabajoUpdate,
+          },
+          hallazgo: { updateMany: hallazgoUpdateMany },
+          equipment: {
+            findUnique: equipmentFindUnique,
+            update: equipmentUpdate,
+          },
+          intervencion: { create: intervencionCreate },
+          $queryRaw: queryRaw,
+        }),
+      );
+      const prisma = (
+        service as unknown as { prisma: { $transaction: unknown } }
+      ).prisma;
+      prisma.$transaction = spy;
+      orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO' });
+
+      await service.finalizar('orden_1', DTO, MOCK_MANTENEDOR);
+
+      expect(spy.mock.calls[0][1]).toEqual({ maxWait: 5_000, timeout: 15_000 });
+    });
+
     it('stock insuficiente: el 409 revierte todo, la foto se suelta y no hay avisos', async () => {
       orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO' });
       stockIssue.mockRejectedValue(
