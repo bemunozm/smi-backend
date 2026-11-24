@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   ValidateNested,
 } from 'class-validator';
@@ -81,6 +82,8 @@ export class CreateInformeTemporalDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)
+  // Solo espacios no es un texto: el service lo recortaría a ''.
+  @Matches(/\S/, { message: 'Escribe la actividad realizada.' })
   actividad1!: string;
 
   @IsOptional()
@@ -106,6 +109,8 @@ export class CreateInformeTemporalDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(120)
+  // Solo espacios no es un texto: el service lo recortaría a ''.
+  @Matches(/\S/, { message: 'Escribe el supervisor responsable.' })
   supervisorResponsable1!: string;
 
   @IsOptional()

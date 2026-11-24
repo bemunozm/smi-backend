@@ -7,6 +7,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   ValidateNested,
 } from 'class-validator';
@@ -39,6 +40,8 @@ export class UpdateInformeTemporalDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)
+  // Solo espacios no es un texto: el service lo recortaría a ''.
+  @Matches(/\S/, { message: 'Escribe la actividad realizada.' })
   actividad1?: string;
 
   /** Vacío = quitar la actividad 2. */
@@ -64,6 +67,8 @@ export class UpdateInformeTemporalDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(120)
+  // Solo espacios no es un texto: el service lo recortaría a ''.
+  @Matches(/\S/, { message: 'Escribe el supervisor responsable.' })
   supervisorResponsable1?: string;
 
   @IsOptional()

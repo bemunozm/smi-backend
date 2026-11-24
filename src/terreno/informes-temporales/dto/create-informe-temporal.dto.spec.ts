@@ -3,6 +3,7 @@ import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 
 import { CreateInformeTemporalDto } from './create-informe-temporal.dto';
+import { UpdateInformeTemporalDto } from './update-informe-temporal.dto';
 
 function cierre(overrides: Record<string, unknown> = {}) {
   return {
@@ -90,5 +91,37 @@ describe('CreateInformeTemporalDto', () => {
     );
     const errores = await validate(dto, estricto);
     expect(errores.map((e) => e.property)).toContain('fecha');
+  });
+});
+
+describe('textos obligatorios con solo espacios', () => {
+  it.each(['actividad1', 'supervisorResponsable1'])(
+    'crear: %s con solo espacios se rechaza',
+    async (campo) => {
+      const dto = plainToInstance(
+        CreateInformeTemporalDto,
+        base({ [campo]: '   ' }),
+      );
+      const errores = await validate(dto, estricto);
+      expect(errores.map((e) => e.property)).toContain(campo);
+    },
+  );
+
+  it.each(['actividad1', 'supervisorResponsable1'])(
+    'corregir: %s con solo espacios se rechaza',
+    async (campo) => {
+      const dto = plainToInstance(UpdateInformeTemporalDto, {
+        [campo]: ' \t ',
+      });
+      const errores = await validate(dto, estricto);
+      expect(errores.map((e) => e.property)).toContain(campo);
+    },
+  );
+
+  it('corregir: un texto con espacios alrededor sigue valiendo', async () => {
+    const dto = plainToInstance(UpdateInformeTemporalDto, {
+      actividad1: '  Limpieza  ',
+    });
+    expect(await validate(dto, estricto)).toHaveLength(0);
   });
 });
