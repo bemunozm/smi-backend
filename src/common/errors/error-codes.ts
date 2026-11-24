@@ -60,6 +60,9 @@ export const ERROR_CODES = {
   /** Cierre (sin el informe) o carga en curso sobre una tarjeta del
    * supervisor temporal: se cierra con su informe, junto con las demás. */
   TEMPORAL_CARD: 'TEMPORAL_CARD',
+  /** `POST /informes-temporales` cuyo lote no son EXACTAMENTE las tarjetas
+   * pendientes del supervisor temporal (falta una abierta o sobra una). */
+  INFORME_TARJETAS_DESCUADRADAS: 'INFORME_TARJETAS_DESCUADRADAS',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
