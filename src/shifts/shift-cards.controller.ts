@@ -49,6 +49,7 @@ export class ShiftCardsController {
     ROLES.ADMIN,
     ROLES.MANTENEDOR,
     ROLES.PREVENCIONISTA,
+    ROLES.SUPERVISOR_TEMPORAL,
   ])
   async open(
     @Body() dto: OpenShiftCardDto,
@@ -177,6 +178,8 @@ export class ShiftCardsController {
    * administrador.
    */
   @Delete(':id')
+  // También el SUPERVISOR_TEMPORAL: borra su tarjeta abierta por error.
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SUPERVISOR_TEMPORAL])
   @HttpCode(HttpStatus.OK)
   async remove(@Param('id') id: string, @Session() session: UserSession) {
     await this.service.removeCard(id, session);
@@ -202,6 +205,7 @@ export class ShiftCardsController {
     ROLES.ADMIN,
     ROLES.MANTENEDOR,
     ROLES.PREVENCIONISTA,
+    ROLES.SUPERVISOR_TEMPORAL,
   ])
   async mine(@Session() session: UserSession) {
     return { data: await this.service.mine(session), message: 'ok' };

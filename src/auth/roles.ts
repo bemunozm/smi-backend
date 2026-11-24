@@ -57,6 +57,13 @@ export const ROLES = {
    * combustible —, igual que «Mi camioneta» del mantenedor. Nada de pesados.
    */
   PREVENCIONISTA: 'PREVENCIONISTA',
+  /**
+   * Supervisor temporal (reemplazo puntual de un supervisor): abre tarjetas de
+   * turno sin las reglas de horario del turno y las cierra todas juntas en un
+   * reporte aparte. No cierra tarjetas sueltas ni registra cargas de
+   * combustible; solo borra la tarjeta abierta por error.
+   */
+  SUPERVISOR_TEMPORAL: 'SUPERVISOR_TEMPORAL',
 } as const;
 
 export type Role = (typeof ROLES)[keyof typeof ROLES];
