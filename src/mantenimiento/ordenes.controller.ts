@@ -15,11 +15,14 @@ import type { UserSession } from '@thallesp/nestjs-better-auth';
 import { ROLES } from '../auth/roles';
 import { ExpectedFields } from '../common/concurrency/expected-fields.decorator';
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
+import { assertCierreSecretariaSinInsumos } from './common/assert-cierre-secretaria';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
 import { CreateMantencionHistoricaDto } from './dto/create-mantencion-historica.dto';
 import { CreateOrdenDto } from './dto/create-orden.dto';
 import { DeleteOrdenQueryDto } from './dto/delete-orden-query.dto';
+import { FinalizarOrdenDto } from './dto/finalizar-orden.dto';
 import { FindOrdenesQueryDto } from './dto/find-ordenes-query.dto';
+import type { OrdenFinalizadaResponseDto } from './dto/orden-finalizada-response.dto';
 import type { OrdenResponseDto } from './dto/orden-response.dto';
 import type { TareaResponseDto } from './dto/tarea-response.dto';
 import { ToggleTareaDto } from './dto/toggle-tarea.dto';
@@ -33,6 +36,11 @@ interface OrdenListResponse {
 
 interface OrdenDetailResponse {
   data: OrdenResponseDto;
+  message: string;
+}
+
+interface OrdenFinalizadaResponse {
+  data: OrdenFinalizadaResponseDto;
   message: string;
 }
 
@@ -108,6 +116,32 @@ export class OrdenesController {
       expected,
     );
     return { data, message: 'Orden de trabajo actualizada' };
+  }
+
+  /**
+   * «Finalizar tarea» atómico: la intervención del cierre (insumos, foto) y
+   * la orden COMPLETADA (ancla de la pizarra, estado del equipo) en una sola
+   * transacción. Reemplaza al POST de la intervención + PATCH de la orden,
+   * que dejaban la intervención y el stock escritos si el PATCH se rechazaba
+   * (esos dos endpoints siguen vigentes para los clientes ya desplegados).
+   *
+   * Roles: los que pueden registrar una intervención Y cerrar la orden.
+   * SECRETARIA cierra sin insumos, igual que en la intervención suelta.
+   */
+  @Post(':id/finalizar')
+  @Roles([ROLES.ADMIN, ROLES.MANTENEDOR, ROLES.SECRETARIA])
+  async finalizar(
+    @Param('id') id: string,
+    @Body() dto: FinalizarOrdenDto,
+    @Session() session: UserSession,
+  ): Promise<OrdenFinalizadaResponse> {
+    assertNonEmptyId(id);
+    assertCierreSecretariaSinInsumos(session.user.role, dto);
+    const data = await this.ordenesService.finalizar(id, dto, {
+      id: session.user.id,
+      name: session.user.name,
+    });
+    return { data, message: 'Operación finalizada' };
   }
 
   /**

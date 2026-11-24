@@ -6,7 +6,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { EstadoOT, MovementReason, OrigenOT, TipoOT } from '@prisma/client';
+import {
+  EquipmentStatus,
+  EstadoOT,
+  MovementReason,
+  OrigenOT,
+  PrioridadOT,
+  TipoOT,
+} from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 
 import {
@@ -15,6 +22,7 @@ import {
 } from '../common/concurrency/assert-expected-locked';
 import type { ExpectedValues } from '../common/concurrency/expected-fields';
 import { createOrReturn } from '../common/idempotency/create-or-return';
+import { ERROR_CODES } from '../common/errors/error-codes';
 import { PrismaService } from '../common/prisma/prisma.service';
 import {
   StockService,
@@ -28,6 +36,7 @@ import type {
 } from '../common/events/domain-events';
 import { todayInBusinessTimeZone } from '../common/dates/business-time';
 import { resolveAsignadosMap } from './common/asignado.util';
+import { IntervencionesService } from './intervenciones.service';
 import { currentCycle } from './maintenance-plans/maintenance-cycle';
 import {
   assertLecturaNoBajaDeAnterior,
@@ -45,6 +54,8 @@ import {
 import type { AsignadoResponseDto } from './dto/asignado-response.dto';
 import type { CreateMantencionHistoricaDto } from './dto/create-mantencion-historica.dto';
 import type { CreateOrdenDto } from './dto/create-orden.dto';
+import type { FinalizarOrdenDto } from './dto/finalizar-orden.dto';
+import type { OrdenFinalizadaResponseDto } from './dto/orden-finalizada-response.dto';
 import type { OrdenResponseDto } from './dto/orden-response.dto';
 import type { TareaResponseDto } from './dto/tarea-response.dto';
 import type { UpdateOrdenDto } from './dto/update-orden.dto';
@@ -128,6 +139,12 @@ type CierreLectura =
     }
   | { tipo: 'LIVIANO'; equipmentId: string; lectura: number | null };
 
+/** Opciones de la transacción de `finalizar` (ver el comentario de uso). */
+const FINALIZAR_TX_OPTIONS = { maxWait: 5_000, timeout: 15_000 };
+
+/** La unidad de Flota cuyo estado declara el cierre («Finalizar tarea»). */
+type EquipoACerrar = { id: string; status: EquipmentStatus };
+
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
 const CAMPO_LABEL: Record<string, string> = {
   estado: 'Estado',
@@ -145,6 +162,9 @@ export class OrdenesService {
     private readonly eventEmitter: EventEmitter2,
     private readonly storage: StorageService,
     private readonly stock: StockService,
+    // Solo en este sentido (órdenes → intervenciones): `IntervencionesService`
+    // no conoce a `OrdenesService`, así que no hay dependencia circular.
+    private readonly intervenciones: IntervencionesService,
   ) {}
 
   async findAll(estado?: EstadoOT): Promise<OrdenResponseDto[]> {
@@ -524,73 +544,10 @@ export class OrdenesService {
         'El estado del equipo solo puede cambiarse al completar la orden',
       );
     }
-    // `equipoId` de la OT es texto libre (suele ser el código interno): se
-    // resuelve contra Flota igual que en los insumos. Si no resuelve, el
-    // cierre NO se bloquea — no hay unidad que actualizar.
-    const equipmentId = dto.equipmentStatus
-      ? await this.resolveEquipmentId(ordenAnterior.equipoId)
-      : null;
-    if (dto.equipmentStatus && !equipmentId) {
-      this.logger.warn(
-        `Orden ${id}: equipo "${ordenAnterior.equipoId}" no resuelto en Flota — su estado no se actualiza`,
-      );
-    }
-
-    // Quien la pasa a EN_PROCESO o la completa queda como responsable si
-    // nadie estaba asignado (pedido del cliente, 17/11/2026: el tablero
-    // mostraba «Sin asignar» en operaciones que alguien sí trabajó).
-    const write = (
-      db: Prisma.TransactionClient,
-      asignadoPrevio: string | null,
-    ) =>
-      db.ordenTrabajo.update({
-        where: { id },
-        data: {
-          estado: dto.estado,
-          asignadoAId:
-            dto.asignadoAId ??
-            (asignadoPrevio == null &&
-            (dto.estado === EstadoOT.EN_PROCESO ||
-              dto.estado === EstadoOT.COMPLETADA)
-              ? editor.id
-              : undefined),
-          prioridad: dto.prioridad,
-          titulo: dto.titulo,
-        },
-        select: ORDEN_SELECT,
-      });
-
-    // En la MISMA transacción que el cierre: una orden completada con el
-    // equipo a medio actualizar contaría dos historias.
-    const applyEquipmentStatus = async (tx: Prisma.TransactionClient) => {
-      if (!dto.equipmentStatus || !equipmentId) return;
-      await tx.equipment.update({
-        where: { id: equipmentId },
-        data: { status: dto.equipmentStatus },
-      });
-    };
-
-    // El ancla (la última mantención real) se escribe solo en el CRUCE a
-    // COMPLETADA y antes que la orden: si la lectura no vale, el 400 sale
-    // sin haber escrito nada. El reintento de un cierre ya aplicado no cruza
-    // y no la vuelve a escribir.
-    const applyLecturaCierre = async (
-      tx: Prisma.TransactionClient,
-      estadoPrevio: EstadoOT,
-    ) => {
-      if (
-        dto.estado !== EstadoOT.COMPLETADA ||
-        estadoPrevio === EstadoOT.COMPLETADA
-      ) {
-        return;
-      }
-      await this.aplicarLecturaCierre(
-        tx,
-        ordenAnterior,
-        dto.lecturaMantencion,
-        editor,
-      );
-    };
+    const equipo = await this.resolverEquipoACerrar(
+      ordenAnterior,
+      dto.equipmentStatus,
+    );
 
     // La escritura y la transición del hallazgo ligado van juntas: una orden
     // completada cuyo hallazgo quedó ABIERTO contaría dos historias.
@@ -603,36 +560,28 @@ export class OrdenesService {
     // la orden ya COMPLETADA.
     const { orden, estadoAnterior } = await this.prisma.$transaction(
       async (tx) => {
-        const vigente = await assertExpectedLocked({
-          tx,
-          table: 'ordenTrabajo',
-          id,
+        const vigente = await this.bloquearOrden(tx, id, {
           expected,
-          read: (db) =>
-            db.ordenTrabajo.findUnique({
-              where: { id },
-              select: {
-                estado: true,
-                asignadoAId: true,
-                prioridad: true,
-                titulo: true,
-              },
-            }),
-          // Solo los campos de la ORDEN: `equipmentStatus` no es columna de
-          // la fila y no participa de la precondición.
           desired: definedFields({
             estado: dto.estado,
             asignadoAId: dto.asignadoAId,
             prioridad: dto.prioridad,
             titulo: dto.titulo,
           }),
-          labels: CAMPO_LABEL,
-          notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
         });
-        await applyLecturaCierre(tx, vigente.estado);
-        const actualizada = await write(tx, vigente.asignadoAId);
-        await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
-        await applyEquipmentStatus(tx);
+        const actualizada = await this.escribirOrden(tx, {
+          ordenAnterior,
+          vigente,
+          data: {
+            estado: dto.estado,
+            asignadoAId: dto.asignadoAId,
+            prioridad: dto.prioridad,
+            titulo: dto.titulo,
+          },
+          lecturaMantencion: dto.lecturaMantencion,
+          equipo,
+          editor,
+        });
         return { orden: actualizada, estadoAnterior: vigente.estado };
       },
     );
@@ -647,6 +596,292 @@ export class OrdenesService {
       orden.asignadoAId,
     ]);
     return this.toResponseDto(orden, asignados);
+  }
+
+  /**
+   * «Finalizar tarea» en UNA transacción: la intervención del cierre (con el
+   * descuento de stock de sus insumos) y el cruce de la orden a COMPLETADA
+   * (ancla de la pizarra, responsable, hallazgo ligado y estado del equipo) —
+   * o queda todo o no queda nada.
+   *
+   * Antes eran dos requests (POST intervención + PATCH orden): si el PATCH se
+   * rechazaba (p. ej. la lectura de la mantención no valía), la intervención y
+   * el stock ya estaban escritos y la orden seguía EN_PROCESO, sin pizarra.
+   *
+   * `dto.id` es el id de la intervención y la clave de idempotencia: el
+   * reintento offline de un cierre que ya confirmó devuelve la orden y esa
+   * intervención sin volver a escribir (ni a descontar stock).
+   */
+  async finalizar(
+    id: string,
+    dto: FinalizarOrdenDto,
+    editor: Editor,
+  ): Promise<OrdenFinalizadaResponseDto> {
+    return createOrReturn({
+      id: dto.id,
+      userId: editor.id,
+      conflictMessage: 'Ya existe una intervención con ese id de otro usuario',
+      findExisting: async (intervencionId) => {
+        const existing = await this.intervenciones.findExisting(intervencionId);
+        if (!existing) return null;
+        // Del mismo usuario pero de otra orden: no es un reintento de ESTE
+        // cierre, y devolverla mezclaría dos historias.
+        if (existing.ownerId === editor.id && existing.ordenId !== id) {
+          throw new ConflictException({
+            message: 'Ese id de intervención ya se usó en otra operación',
+            code: ERROR_CODES.ID_CONFLICT,
+          });
+        }
+        return {
+          ownerId: existing.ownerId,
+          result: async () => {
+            const orden = await this.findOne(id);
+            // Solo es un reintento de ESTE cierre si la orden quedó
+            // COMPLETADA (el cierre es atómico). Si sigue abierta, la
+            // intervención vino de otro camino (el POST suelto cuyo PATCH
+            // falló): responder «finalizada» repetiría el bug original.
+            if (orden.estado !== EstadoOT.COMPLETADA) {
+              throw new ConflictException(
+                'Esa intervención ya existe pero la operación no quedó finalizada; vuelve a finalizarla',
+              );
+            }
+            return { orden, intervencion: await existing.result() };
+          },
+        };
+      },
+      create: () => this.finalizarFresh(id, dto, editor),
+    });
+  }
+
+  private async finalizarFresh(
+    id: string,
+    dto: FinalizarOrdenDto,
+    editor: Editor,
+  ): Promise<OrdenFinalizadaResponseDto> {
+    const ordenAnterior = await this.findOrdenOrThrow(id);
+    this.assertFinalizable(ordenAnterior.estado);
+
+    // Todo lo que puede rechazar el cierre va ANTES de escribir (y de
+    // reclamar la foto): una lectura inválida responde 400 sin dejar
+    // intervención, movimiento de stock ni cambio en la orden. Dentro de la
+    // transacción se vuelve a validar al escribir el ancla.
+    if (dto.lecturaMantencion != null) {
+      await this.resolverLecturaCierre(
+        this.prisma,
+        ordenAnterior,
+        dto.lecturaMantencion,
+      );
+    }
+    const equipo = await this.resolverEquipoACerrar(
+      ordenAnterior,
+      dto.equipmentStatus,
+    );
+    const preparada = await this.intervenciones.preparar(
+      ordenAnterior,
+      dto,
+      editor.id,
+    );
+
+    const events: PendingStockEvents = [];
+    let cierre: {
+      orden: SelectedOrden;
+      intervencion: Awaited<
+        ReturnType<IntervencionesService['crearEnTransaccion']>
+      >;
+      estadoAnterior: EstadoOT;
+    };
+    try {
+      cierre = await this.prisma.$transaction(async (tx) => {
+        // Bajo el bloqueo: dos «Finalizar» simultáneos no cruzan los dos. El
+        // que espera ve la orden ya COMPLETADA y pierde con 409 (si era el
+        // mismo cierre, `createOrReturn` encuentra la intervención ganadora y
+        // devuelve esa).
+        const vigente = await this.bloquearOrden(tx, id, {
+          desired: { estado: EstadoOT.COMPLETADA },
+        });
+        this.assertFinalizable(vigente.estado);
+        const intervencion = await this.intervenciones.crearEnTransaccion(
+          tx,
+          preparada,
+          events,
+        );
+        const orden = await this.escribirOrden(tx, {
+          ordenAnterior,
+          vigente,
+          data: { estado: EstadoOT.COMPLETADA },
+          lecturaMantencion: dto.lecturaMantencion,
+          equipo,
+          editor,
+        });
+        return { orden, intervencion, estadoAnterior: vigente.estado };
+        // Más larga que el PATCH (un `stock.issue` por insumo + el ancla): el
+        // timeout por defecto de Prisma (5 s) podría cortar un cierre válido
+        // con varios insumos sobre una base lenta.
+      }, FINALIZAR_TX_OPTIONS);
+    } catch (error: unknown) {
+      await this.intervenciones.descartar(preparada);
+      throw error;
+    }
+
+    // Después del commit: avisos de stock bajo y de la orden completada.
+    this.stock.emitPending(events);
+    this.emitTransicionEstado(cierre.estadoAnterior, cierre.orden);
+    this.logger.log(
+      `Orden de trabajo finalizada: ${id} (intervención ${cierre.intervencion.id})`,
+    );
+
+    const asignados = await resolveAsignadosMap(this.prisma, [
+      cierre.orden.asignadoAId,
+    ]);
+    return {
+      orden: await this.toResponseDto(cierre.orden, asignados),
+      intervencion: await this.intervenciones.shapeOne(cierre.intervencion),
+    };
+  }
+
+  /** Una orden finalizada o cancelada ya no se cierra (es historial). */
+  private assertFinalizable(estado: EstadoOT): void {
+    if (estado === EstadoOT.COMPLETADA) {
+      throw new ConflictException('La operación ya está finalizada');
+    }
+    if (estado === EstadoOT.CANCELADA) {
+      throw new ConflictException('La operación está cancelada');
+    }
+  }
+
+  /**
+   * Bloquea la fila de la orden (`SELECT ... FOR UPDATE`) y devuelve su valor
+   * vigente, validando `X-Expected` si vino. Lo que se decide a partir de él
+   * (si hubo transición, el responsable) es siempre sobre el dato vigente.
+   */
+  private bloquearOrden(
+    tx: Prisma.TransactionClient,
+    id: string,
+    opciones: { expected?: ExpectedValues; desired: Record<string, unknown> },
+  ): Promise<{
+    estado: EstadoOT;
+    asignadoAId: string | null;
+    prioridad: PrioridadOT;
+    titulo: string;
+  }> {
+    return assertExpectedLocked({
+      tx,
+      table: 'ordenTrabajo',
+      id,
+      expected: opciones.expected,
+      read: (db) =>
+        db.ordenTrabajo.findUnique({
+          where: { id },
+          select: {
+            estado: true,
+            asignadoAId: true,
+            prioridad: true,
+            titulo: true,
+          },
+        }),
+      // Solo los campos de la ORDEN: `equipmentStatus` no es columna de la
+      // fila y no participa de la precondición.
+      desired: opciones.desired,
+      labels: CAMPO_LABEL,
+      notFoundMessage: `Orden de trabajo con id "${id}" no encontrada`,
+    });
+  }
+
+  /**
+   * `equipoId` de la OT es texto libre (suele ser el código interno): se
+   * resuelve contra Flota igual que en los insumos. Si no resuelve, el cierre
+   * NO se bloquea — no hay unidad que actualizar.
+   */
+  private async resolverEquipoACerrar(
+    orden: SelectedOrden,
+    status: EquipmentStatus | undefined,
+  ): Promise<EquipoACerrar | null> {
+    if (!status) return null;
+    const equipmentId = await this.resolveEquipmentId(orden.equipoId);
+    if (!equipmentId) {
+      this.logger.warn(
+        `Orden ${orden.id}: equipo "${orden.equipoId}" no resuelto en Flota — su estado no se actualiza`,
+      );
+      return null;
+    }
+    return { id: equipmentId, status };
+  }
+
+  /**
+   * Escribe la orden bajo el bloqueo y, en el CRUCE a COMPLETADA, el resto
+   * del cierre en la MISMA transacción. Lo comparten el PATCH (`update`) y
+   * `finalizar`, para que cerrar por cualquiera de los dos cuente la misma
+   * historia:
+   *
+   * 1. El ancla (la última mantención real, la que mueve la pizarra) se
+   *    escribe ANTES que la orden: si la lectura no vale, el 400 sale sin
+   *    haber escrito nada. El reintento de un cierre ya aplicado no cruza y
+   *    no la vuelve a escribir.
+   * 2. Quien la pasa a EN_PROCESO o la completa queda como responsable si
+   *    nadie estaba asignado (pedido del cliente, 17/11/2026: el tablero
+   *    mostraba «Sin asignar» en operaciones que alguien sí trabajó).
+   * 3. El hallazgo ligado sigue a la orden (`syncHallazgoEstado`).
+   * 4. El estado del equipo declarado al cerrar: una orden completada con el
+   *    equipo a medio actualizar contaría dos historias.
+   */
+  private async escribirOrden(
+    tx: Prisma.TransactionClient,
+    cambio: {
+      /** La orden leída antes de la transacción (tareas, hito, equipo). */
+      ordenAnterior: SelectedOrden;
+      /** Su valor vigente bajo el bloqueo: decide si hay transición. */
+      vigente: { estado: EstadoOT; asignadoAId: string | null };
+      data: {
+        estado?: EstadoOT;
+        asignadoAId?: string;
+        prioridad?: PrioridadOT;
+        titulo?: string;
+      };
+      lecturaMantencion?: number;
+      equipo: EquipoACerrar | null;
+      editor: Editor;
+    },
+  ): Promise<SelectedOrden> {
+    const { ordenAnterior, vigente, data, equipo, editor } = cambio;
+
+    if (
+      data.estado === EstadoOT.COMPLETADA &&
+      vigente.estado !== EstadoOT.COMPLETADA
+    ) {
+      await this.aplicarLecturaCierre(
+        tx,
+        ordenAnterior,
+        cambio.lecturaMantencion,
+        editor,
+      );
+    }
+
+    const actualizada = await tx.ordenTrabajo.update({
+      where: { id: ordenAnterior.id },
+      data: {
+        estado: data.estado,
+        asignadoAId:
+          data.asignadoAId ??
+          (vigente.asignadoAId == null &&
+          (data.estado === EstadoOT.EN_PROCESO ||
+            data.estado === EstadoOT.COMPLETADA)
+            ? editor.id
+            : undefined),
+        prioridad: data.prioridad,
+        titulo: data.titulo,
+      },
+      select: ORDEN_SELECT,
+    });
+
+    await this.syncHallazgoEstado(tx, actualizada, vigente.estado);
+
+    if (equipo) {
+      await tx.equipment.update({
+        where: { id: equipo.id },
+        data: { status: equipo.status },
+      });
+    }
+    return actualizada;
   }
 
   /**

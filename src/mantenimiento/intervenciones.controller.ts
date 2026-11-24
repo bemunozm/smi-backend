@@ -1,15 +1,9 @@
-import {
-  Body,
-  Controller,
-  ForbiddenException,
-  Get,
-  Param,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
-import { ROLES, sessionHasRole } from '../auth/roles';
+import { ROLES } from '../auth/roles';
+import { assertCierreSecretariaSinInsumos } from './common/assert-cierre-secretaria';
 import { assertNonEmptyId } from './common/assert-non-empty-id';
 import { CreateIntervencionDto } from './dto/create-intervencion.dto';
 import type { IntervencionResponseDto } from './dto/intervencion-response.dto';
@@ -52,14 +46,7 @@ export class IntervencionesController {
     @Session() session: UserSession,
   ): Promise<IntervencionDetailResponse> {
     assertNonEmptyId(ordenId, 'ordenId');
-    if (
-      sessionHasRole(session.user.role, ROLES.SECRETARIA) &&
-      ((dto.insumos?.length ?? 0) > 0 || dto.branchId !== undefined)
-    ) {
-      throw new ForbiddenException(
-        'Secretaría registra el cierre sin insumos: el stock lo descuenta el taller.',
-      );
-    }
+    assertCierreSecretariaSinInsumos(session.user.role, dto);
     const data = await this.intervencionesService.create(
       ordenId,
       dto,

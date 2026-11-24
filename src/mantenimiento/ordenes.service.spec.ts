@@ -11,6 +11,7 @@ import { PrismaService } from '../common/prisma/prisma.service';
 import { StockService } from '../inventory/stock.service';
 import { StorageService } from '../storage/storage.service';
 import { DOMAIN_EVENTS } from '../common/events/domain-events';
+import { IntervencionesService } from './intervenciones.service';
 import { OrdenesService } from './ordenes.service';
 
 const MOCK_ORDEN = {
@@ -87,6 +88,8 @@ describe('OrdenesService', () => {
   const ordenTrabajoUpdate = jest.fn();
   const ordenTrabajoDelete = jest.fn();
   const intervencionFindMany = jest.fn();
+  const intervencionFindUnique = jest.fn();
+  const intervencionCreate = jest.fn();
   const deleteBestEffort = jest.fn();
   const tareaOTFindUnique = jest.fn();
   const tareaOTUpdate = jest.fn();
@@ -123,6 +126,9 @@ describe('OrdenesService', () => {
     ordenTrabajoDelete.mockReset();
     intervencionFindMany.mockReset();
     intervencionFindMany.mockResolvedValue([]);
+    intervencionFindUnique.mockReset();
+    intervencionFindUnique.mockResolvedValue(null);
+    intervencionCreate.mockReset();
     deleteBestEffort.mockReset();
     tareaOTFindUnique.mockReset();
     tareaOTUpdate.mockReset();
@@ -181,6 +187,9 @@ describe('OrdenesService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrdenesService,
+        // La real: `finalizar` escribe la intervención con su lógica (insumos,
+        // stock, foto) sobre los mismos mocks de Prisma/Stock/Storage.
+        IntervencionesService,
         {
           provide: PrismaService,
           useValue: {
@@ -190,7 +199,10 @@ describe('OrdenesService', () => {
               create: ordenTrabajoCreate,
               update: ordenTrabajoUpdate,
             },
-            intervencion: { findMany: intervencionFindMany },
+            intervencion: {
+              findMany: intervencionFindMany,
+              findUnique: intervencionFindUnique,
+            },
             maintenancePlanItem: { findMany: planItemFindMany },
             tareaOT: {
               findUnique: tareaOTFindUnique,
@@ -248,6 +260,7 @@ describe('OrdenesService', () => {
                   findUnique: equipmentFindUnique,
                   update: equipmentUpdate,
                 },
+                intervencion: { create: intervencionCreate },
                 $queryRaw: queryRaw,
               }),
           },
@@ -2013,6 +2026,494 @@ describe('OrdenesService', () => {
 
       expect(recordCreate).not.toHaveBeenCalled();
       expect(recordUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('finalizar (cierre atómico: intervención + orden en una transacción)', () => {
+    const INTERVENCION_ID = '7f1c2a3b-4d5e-4f60-8a71-9b8c7d6e5f40';
+
+    /** La OT que crea `checkLightServices` para un liviano sin pauta. */
+    const LIVIANO = {
+      ...MOCK_ORDEN,
+      id: 'orden_liv',
+      equipoId: 'eq_liv',
+      asignadoAId: null,
+      titulo: 'Mantención 30.000 km · CM-010',
+      estado: 'EN_PROCESO',
+      tipo: 'PREVENTIVA',
+      origen: 'PREVENTIVO',
+      origenDetalle: 'Livianos: mantención de 30.000 km',
+    };
+    const CAMIONETA = {
+      id: 'eq_liv',
+      equipmentClass: 'LIGHT',
+      controlUnit: 'KM',
+      currentHourmeter: null,
+      currentMileage: 31_500,
+    };
+    const PAUTA = { ...MOCK_PREVENTIVA, estado: 'EN_PROCESO' };
+
+    const fila = (
+      ordenId: string,
+      overrides: Record<string, unknown> = {},
+    ) => ({
+      id: INTERVENCION_ID,
+      ordenId,
+      tipo: 'PREVENTIVA',
+      detalle: 'Cambio de aceite',
+      horasHombre: 2,
+      horometro: null,
+      fotoKey: null,
+      soloLectura: false,
+      fecha: new Date('2026-11-24T12:00:00.000Z'),
+      realizadaPorId: MOCK_MANTENEDOR.id,
+      insumos: [],
+      ...overrides,
+    });
+
+    const DTO = {
+      id: INTERVENCION_ID,
+      tipo: 'PREVENTIVA' as const,
+      detalle: 'Cambio de aceite',
+      horasHombre: 2,
+    };
+
+    /** Una orden que el cierre encuentra igual fuera y bajo el bloqueo. */
+    const orden = (o: Record<string, unknown>) => {
+      ordenTrabajoFindUnique.mockResolvedValue(o);
+      ordenTrabajoUpdate.mockImplementation(
+        (args: { data: Record<string, unknown> }) =>
+          Promise.resolve({
+            ...o,
+            estado: args.data.estado,
+            asignadoAId: args.data.asignadoAId ?? o.asignadoAId,
+          }),
+      );
+      intervencionCreate.mockResolvedValue(fila(o.id as string));
+    };
+
+    /** Nada escrito: ni intervención, ni stock, ni orden, ni ancla, ni avisos. */
+    const expectNadaEscrito = () => {
+      expect(intervencionCreate).not.toHaveBeenCalled();
+      expect(stockIssue).not.toHaveBeenCalled();
+      expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
+      expect(recordCreate).not.toHaveBeenCalled();
+      expect(recordCreateMany).not.toHaveBeenCalled();
+      expect(recordUpdateMany).not.toHaveBeenCalled();
+      expect(equipmentUpdate).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+      expect(emitPending).not.toHaveBeenCalled();
+    };
+
+    beforeEach(() => {
+      userFindMany.mockResolvedValue([MOCK_MANTENEDOR]);
+    });
+
+    it('liviano: crea la intervención, completa la orden y escribe el servicio en la pizarra', async () => {
+      orden(LIVIANO);
+      equipmentFindUnique.mockResolvedValue(CAMIONETA);
+      recordCount.mockResolvedValue(2);
+
+      const result = await service.finalizar(
+        'orden_liv',
+        { ...DTO, lecturaMantencion: 31_000, equipmentStatus: 'OPERATIONAL' },
+        MOCK_MANTENEDOR,
+      );
+
+      // La fila bloqueada: dos cierres simultáneos no cruzan los dos.
+      expect(queryRaw).toHaveBeenCalled();
+      expect(intervencionCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            id: INTERVENCION_ID,
+            ordenId: 'orden_liv',
+            createdById: MOCK_MANTENEDOR.id,
+            realizadaPorId: MOCK_MANTENEDOR.id,
+            detalle: 'Cambio de aceite',
+          }) as unknown,
+        }),
+      );
+      expect(recordCreate).toHaveBeenCalledWith({
+        data: {
+          equipmentId: 'eq_liv',
+          planItemId: null,
+          kind: 'SERVICIO',
+          milestone: 10_000,
+          cycle: 3,
+          description: 'Mantención 30.000 km · CM-010',
+          counterAt: 31_000,
+          doneById: MOCK_MANTENEDOR.id,
+          doneByName: MOCK_MANTENEDOR.name,
+          ordenId: 'orden_liv',
+        },
+      });
+      // Nadie asignado: queda como responsable quien la finalizó.
+      expect(ordenTrabajoUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'orden_liv' },
+          data: expect.objectContaining({
+            estado: 'COMPLETADA',
+            asignadoAId: MOCK_MANTENEDOR.id,
+          }) as unknown,
+        }),
+      );
+      expect(equipmentUpdate).toHaveBeenCalledWith({
+        where: { id: 'eq_liv' },
+        data: { status: 'OPERATIONAL' },
+      });
+      expect(emit).toHaveBeenCalledWith(DOMAIN_EVENTS.ORDEN_COMPLETED, {
+        ordenId: 'orden_liv',
+        equipoId: 'eq_liv',
+        titulo: 'Mantención 30.000 km · CM-010',
+      });
+      expect(result.orden.estado).toBe('COMPLETADA');
+      expect(result.orden.asignadoA).toEqual({
+        id: MOCK_MANTENEDOR.id,
+        nombre: MOCK_MANTENEDOR.name,
+      });
+      expect(result.intervencion).toEqual(
+        expect.objectContaining({
+          id: INTERVENCION_ID,
+          ordenId: 'orden_liv',
+          realizadaPor: MOCK_MANTENEDOR.name,
+          fotoUrl: null,
+          fecha: '2026-11-24T12:00:00.000Z',
+        }),
+      );
+    });
+
+    it('pauta: registra el hito con la lectura (ancla) y completa la orden', async () => {
+      orden(PAUTA);
+      planItemFindMany.mockResolvedValue([
+        { id: 'item_a', description: 'Cambio de aceite', kind: 'LUBRICANTE' },
+        { id: 'item_b', description: 'Cambio de filtro', kind: 'FILTRO' },
+      ]);
+
+      await service.finalizar(
+        'orden_prev',
+        { ...DTO, lecturaMantencion: 240 },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(recordCreateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicates: true }),
+      );
+      const calls = recordUpdateMany.mock.calls as unknown as Array<
+        [{ where: Record<string, unknown>; data: Record<string, unknown> }]
+      >;
+      const { where, data } = calls[calls.length - 1][0];
+      expect(where).toEqual({
+        equipmentId: { in: ['eq_flota_1', 'CM-003'] },
+        planItemId: { not: null },
+        cycle: 1,
+        milestone: 250,
+      });
+      expect(data.counterAt).toBe(240);
+      expect(data.ordenId).toBe('orden_prev');
+      expect(intervencionCreate).toHaveBeenCalledTimes(1);
+      expect(ordenTrabajoUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ estado: 'COMPLETADA' }) as unknown,
+        }),
+      );
+    });
+
+    it('con insumos: descuenta stock en la MISMA transacción y avisa solo tras confirmar', async () => {
+      orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO' });
+      stockIssue.mockResolvedValue({});
+
+      await service.finalizar(
+        'orden_1',
+        {
+          ...DTO,
+          branchId: 'faena',
+          insumos: [{ insumoId: 'item_1', cantidad: 2 }],
+        },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(stockIssue).toHaveBeenCalledTimes(1);
+      const [input, within] = stockIssue.mock.calls[0] as [
+        Record<string, unknown>,
+        { tx: unknown; events: unknown[] },
+      ];
+      expect(input).toEqual({
+        itemId: 'item_1',
+        branchId: 'faena',
+        quantity: 2,
+        reason: 'INTERVENTION',
+        performedById: MOCK_MANTENEDOR.id,
+        equipmentId: 'eq_flota_1',
+        reference: 'orden_1',
+      });
+      expect(within.tx).toBeDefined();
+      expect(emitPending).toHaveBeenCalledWith(within.events);
+    });
+
+    it('lectura inválida: 400 y NO escribe nada (ni intervención ni stock ni foto)', async () => {
+      orden(LIVIANO);
+      equipmentFindUnique.mockResolvedValue(CAMIONETA);
+      recordFindMany.mockResolvedValue([
+        {
+          equipmentId: 'eq_liv',
+          milestone: 10_000,
+          cycle: 2,
+          counterAt: 30_500,
+          doneAt: new Date('2026-10-01T12:00:00.000Z'),
+        },
+      ]);
+
+      await expect(
+        service.finalizar(
+          'orden_liv',
+          {
+            ...DTO,
+            lecturaMantencion: 30_000,
+            fotoKey: 'tmp/user_mantenedor/foto.jpg',
+            branchId: 'faena',
+            insumos: [{ insumoId: 'item_1', cantidad: 1 }],
+          },
+          MOCK_MANTENEDOR,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expectNadaEscrito();
+      expect(claimTmp).not.toHaveBeenCalled();
+    });
+
+    it('reintento con el mismo id: devuelve lo ya hecho sin volver a escribir ni descontar', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...LIVIANO,
+        estado: 'COMPLETADA',
+        asignadoAId: MOCK_MANTENEDOR.id,
+      });
+      intervencionFindUnique.mockResolvedValue({
+        ...fila('orden_liv', {
+          insumos: [{ id: 'ii_1', insumoId: 'item_1', cantidad: 2 }],
+        }),
+        createdById: MOCK_MANTENEDOR.id,
+      });
+
+      const result = await service.finalizar(
+        'orden_liv',
+        {
+          ...DTO,
+          lecturaMantencion: 31_000,
+          branchId: 'faena',
+          insumos: [{ insumoId: 'item_1', cantidad: 2 }],
+        },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(result.orden.estado).toBe('COMPLETADA');
+      expect(result.intervencion.id).toBe(INTERVENCION_ID);
+      expect(result.intervencion.insumos).toEqual([
+        { id: 'ii_1', insumoId: 'item_1', cantidad: 2 },
+      ]);
+      expect(queryRaw).not.toHaveBeenCalled();
+      expectNadaEscrito();
+    });
+
+    it('id de intervención de otro usuario: 409 ID_CONFLICT', async () => {
+      orden(LIVIANO);
+      intervencionFindUnique.mockResolvedValue({
+        ...fila('orden_liv'),
+        createdById: 'otro_usuario',
+      });
+
+      await expect(
+        service.finalizar('orden_liv', DTO, MOCK_MANTENEDOR),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+      expectNadaEscrito();
+    });
+
+    it('id de intervención ya usado en OTRA orden: 409 ID_CONFLICT', async () => {
+      orden(LIVIANO);
+      intervencionFindUnique.mockResolvedValue({
+        ...fila('otra_orden'),
+        createdById: MOCK_MANTENEDOR.id,
+      });
+
+      await expect(
+        service.finalizar('orden_liv', DTO, MOCK_MANTENEDOR),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { code: ERROR_CODES.ID_CONFLICT },
+      });
+      expectNadaEscrito();
+    });
+
+    it('orden ya finalizada (sin ser un reintento): 409 y no escribe nada', async () => {
+      orden({ ...LIVIANO, estado: 'COMPLETADA' });
+
+      await expect(
+        service.finalizar('orden_liv', DTO, MOCK_MANTENEDOR),
+      ).rejects.toThrow(
+        new ConflictException('La operación ya está finalizada'),
+      );
+      expectNadaEscrito();
+    });
+
+    it('orden cancelada: 409 y no escribe nada', async () => {
+      orden({ ...LIVIANO, estado: 'CANCELADA' });
+
+      await expect(
+        service.finalizar('orden_liv', DTO, MOCK_MANTENEDOR),
+      ).rejects.toThrow(new ConflictException('La operación está cancelada'));
+      expectNadaEscrito();
+    });
+
+    it('bajo el bloqueo otro cierre ya la completó: 409, sin intervención', async () => {
+      // Fuera de la transacción se veía EN_PROCESO; bajo el bloqueo, otro
+      // «Finalizar» (con otro id) ya la dejó COMPLETADA.
+      orden(LIVIANO);
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce(LIVIANO)
+        .mockResolvedValueOnce({ estado: 'COMPLETADA', asignadoAId: null });
+
+      await expect(
+        service.finalizar('orden_liv', DTO, MOCK_MANTENEDOR),
+      ).rejects.toThrow(
+        new ConflictException('La operación ya está finalizada'),
+      );
+      expectNadaEscrito();
+    });
+
+    it('dos envíos simultáneos del mismo cierre: el perdedor devuelve lo del ganador', async () => {
+      orden(LIVIANO);
+      ordenTrabajoFindUnique
+        .mockResolvedValueOnce(LIVIANO)
+        .mockResolvedValueOnce({ estado: 'COMPLETADA', asignadoAId: null })
+        .mockResolvedValue({ ...LIVIANO, estado: 'COMPLETADA' });
+      // Antes de empezar no existía; tras el 409 la relectura ve la del
+      // ganador (mismo usuario, misma orden).
+      intervencionFindUnique.mockResolvedValueOnce(null).mockResolvedValue({
+        ...fila('orden_liv'),
+        createdById: MOCK_MANTENEDOR.id,
+      });
+
+      const result = await service.finalizar('orden_liv', DTO, MOCK_MANTENEDOR);
+
+      expect(result.orden.estado).toBe('COMPLETADA');
+      expect(result.intervencion.id).toBe(INTERVENCION_ID);
+      expectNadaEscrito();
+    });
+
+    it('intervención existente pero la orden NO quedó finalizada: 409, sin escribir', async () => {
+      // El POST suelto de la intervención entró y el PATCH de la orden falló
+      // (el bug original): no se puede responder «finalizada».
+      orden(LIVIANO);
+      intervencionFindUnique.mockResolvedValue({
+        ...fila('orden_liv'),
+        createdById: MOCK_MANTENEDOR.id,
+      });
+
+      await expect(
+        service.finalizar('orden_liv', DTO, MOCK_MANTENEDOR),
+      ).rejects.toThrow(
+        new ConflictException(
+          'Esa intervención ya existe pero la operación no quedó finalizada; vuelve a finalizarla',
+        ),
+      );
+      expect(queryRaw).not.toHaveBeenCalled();
+      expectNadaEscrito();
+    });
+
+    it('la transacción del cierre lleva timeout propio (varios insumos + ancla)', async () => {
+      const spy = jest.fn((...[fn]: [(tx: unknown) => unknown, unknown?]) =>
+        fn({
+          ordenTrabajo: {
+            findUnique: ordenTrabajoFindUnique,
+            update: ordenTrabajoUpdate,
+          },
+          hallazgo: { updateMany: hallazgoUpdateMany },
+          equipment: {
+            findUnique: equipmentFindUnique,
+            update: equipmentUpdate,
+          },
+          intervencion: { create: intervencionCreate },
+          $queryRaw: queryRaw,
+        }),
+      );
+      const prisma = (
+        service as unknown as { prisma: { $transaction: unknown } }
+      ).prisma;
+      prisma.$transaction = spy;
+      orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO' });
+
+      await service.finalizar('orden_1', DTO, MOCK_MANTENEDOR);
+
+      expect(spy.mock.calls[0][1]).toEqual({ maxWait: 5_000, timeout: 15_000 });
+    });
+
+    it('stock insuficiente: el 409 revierte todo, la foto se suelta y no hay avisos', async () => {
+      orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO' });
+      stockIssue.mockRejectedValue(
+        new ConflictException('Stock insuficiente en la bodega'),
+      );
+
+      await expect(
+        service.finalizar(
+          'orden_1',
+          {
+            ...DTO,
+            fotoKey: 'tmp/user_mantenedor/foto.jpg',
+            branchId: 'faena',
+            insumos: [{ insumoId: 'item_1', cantidad: 99 }],
+          },
+          MOCK_MANTENEDOR,
+        ),
+      ).rejects.toThrow('Stock insuficiente en la bodega');
+
+      // La intervención se intentó DENTRO de la transacción que se revierte;
+      // la orden no llegó a escribirse.
+      expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
+      expect(recordCreate).not.toHaveBeenCalled();
+      expect(discard).toHaveBeenCalledWith(
+        'claimed/tmp/user_mantenedor/foto.jpg',
+      );
+      expect(emit).not.toHaveBeenCalled();
+      expect(emitPending).not.toHaveBeenCalled();
+    });
+
+    it('insumos sin bodega: 400 antes de tocar nada', async () => {
+      orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO' });
+
+      await expect(
+        service.finalizar(
+          'orden_1',
+          { ...DTO, insumos: [{ insumoId: 'item_1', cantidad: 1 }] },
+          MOCK_MANTENEDOR,
+        ),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'Indica la bodega de la que salen los insumos.',
+        ),
+      );
+      expectNadaEscrito();
+      expect(queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('cierra el hallazgo ligado en la misma transacción', async () => {
+      orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO', hallazgoId: 'hz_1' });
+
+      await service.finalizar('orden_1', DTO, MOCK_MANTENEDOR);
+
+      expect(hallazgoUpdateMany).toHaveBeenCalledWith({
+        where: { id: 'hz_1', estado: 'EN_PROCESO' },
+        data: { estado: 'CERRADO' },
+      });
+    });
+
+    it('orden inexistente: 404', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue(null);
+
+      await expect(
+        service.finalizar('missing', DTO, MOCK_MANTENEDOR),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expectNadaEscrito();
     });
   });
 });
