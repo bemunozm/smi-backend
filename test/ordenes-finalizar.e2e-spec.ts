@@ -9,13 +9,33 @@
  * id del run en el código/nombre, así un rerun no choca con una corrida
  * anterior y no se toca nada ajeno.
  *
- * Se salta completo (`describe.skip`) si Postgres no está arriba.
+ * Se salta completo (`describe.skip`) si Postgres no está arriba. Los casos
+ * con fotos usan además MinIO REAL (bucket propio) y se saltan si no está.
  */
 import { randomUUID } from 'node:crypto';
 
+import { isMinioReachable, isPostgresReachable } from './helpers/reachability';
+
+const TEST_BUCKET = 'smi-ordenes-finalizar-e2e';
+// IMPORTANTE: `env.ts` lee `process.env.STORAGE_BUCKET` en IMPORT-TIME — esta
+// asignación debe correr ANTES del primer `import` real de `AppModule`/`env`
+// (ver la cabecera de `files-storage.e2e-spec.ts`).
+process.env.STORAGE_BUCKET = TEST_BUCKET;
+
+import {
+  CreateBucketCommand,
+  DeleteObjectCommand,
+  HeadBucketCommand,
+  ListObjectsV2Command,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ControlUnit, EquipmentClass, EstadoOT } from '@prisma/client';
 
+import {
+  DEFAULT_DEV_STORAGE_ACCESS_KEY_ID,
+  DEFAULT_DEV_STORAGE_SECRET_ACCESS_KEY,
+} from '../src/common/config/env';
 import { PrismaService } from '../src/common/prisma/prisma.service';
 import { LIGHT_SERVICE_RECORD_KIND } from '../src/mantenimiento/maintenance-plans/maintenance-anchors';
 import {
@@ -29,10 +49,11 @@ import {
   SEED_PASSWORD,
   SupertestAgent,
 } from './helpers/login-agent';
-import { isPostgresReachable } from './helpers/reachability';
 
 const postgresReachable = isPostgresReachable();
 const maybeDescribe = postgresReachable ? describe : describe.skip;
+const minioReachable = postgresReachable && isMinioReachable();
+const maybeDescribeFotos = minioReachable ? describe : describe.skip;
 
 if (!postgresReachable) {
   console.warn(
@@ -47,7 +68,34 @@ interface FinalizarData {
     id: string;
     ordenId: string;
     insumos: { insumoId: string; cantidad: number }[];
+    fotoUrl: string | null;
+    fotoUrls: string[];
   };
+}
+
+const MINIMAL_JPEG = Buffer.from([
+  0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00,
+]);
+
+/** Las keys del bucket de prueba que ya no son `tmp/` (fotos reclamadas). */
+async function finalKeys(client: S3Client): Promise<string[]> {
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+  do {
+    const listed = await client.send(
+      new ListObjectsV2Command({
+        Bucket: TEST_BUCKET,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    for (const object of listed.Contents ?? []) {
+      if (object.Key && !object.Key.startsWith('tmp/')) keys.push(object.Key);
+    }
+    continuationToken = listed.IsTruncated
+      ? listed.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+  return keys;
 }
 
 /** Lectura actual de la camioneta y la del servicio anterior (ancla). */
@@ -307,5 +355,125 @@ maybeDescribe('Finalizar orden atómico (e2e)', () => {
     expect(await prisma.stockMovement.count({ where: { itemId } })).toBe(1);
     expect(await prisma.intervencion.count({ where: { ordenId } })).toBe(1);
     expect(await servicios(equipo.id)).toHaveLength(2);
+  });
+
+  maybeDescribeFotos('varias fotos del cierre (MinIO)', () => {
+    let rawS3: S3Client;
+
+    beforeAll(async () => {
+      rawS3 = new S3Client({
+        endpoint: 'http://localhost:9000',
+        region: 'us-east-1',
+        forcePathStyle: true,
+        credentials: {
+          accessKeyId: DEFAULT_DEV_STORAGE_ACCESS_KEY_ID,
+          secretAccessKey: DEFAULT_DEV_STORAGE_SECRET_ACCESS_KEY,
+        },
+        requestChecksumCalculation: 'WHEN_REQUIRED',
+        responseChecksumValidation: 'WHEN_REQUIRED',
+      });
+      try {
+        await rawS3.send(new HeadBucketCommand({ Bucket: TEST_BUCKET }));
+      } catch {
+        await rawS3.send(new CreateBucketCommand({ Bucket: TEST_BUCKET }));
+      }
+    });
+
+    afterAll(async () => {
+      const listed = await rawS3.send(
+        new ListObjectsV2Command({ Bucket: TEST_BUCKET }),
+      );
+      for (const object of listed.Contents ?? []) {
+        await rawS3.send(
+          new DeleteObjectCommand({ Bucket: TEST_BUCKET, Key: object.Key }),
+        );
+      }
+    });
+
+    const subirFoto = async (nombre: string): Promise<string> => {
+      const upload = await mantenedor
+        .post('/api/files')
+        .attach('file', MINIMAL_JPEG, nombre)
+        .expect(201);
+      return (upload.body as ApiEnvelope<{ key: string }>).data.key;
+    };
+
+    it('2 fotos: dos filas en orden, dos URLs firmadas y el reintento no duplica', async () => {
+      const equipo = await newCamioneta();
+      const ordenId = await newOrdenServicio(equipo.code);
+      const fotoKeys = [
+        await subirFoto('antes.jpg'),
+        await subirFoto('despues.jpg'),
+      ];
+      const antes = await finalKeys(rawS3);
+      const body = cierre({ lecturaMantencion: 40_500, fotoKeys });
+
+      const first = await mantenedor
+        .post(`/api/mantenimiento/ordenes/${ordenId}/finalizar`)
+        .send(body)
+        .expect(201);
+      const replay = await mantenedor
+        .post(`/api/mantenimiento/ordenes/${ordenId}/finalizar`)
+        .send(body)
+        .expect(201);
+
+      const data = (first.body as ApiEnvelope<FinalizarData>).data;
+      expect(data.intervencion.fotoUrls).toHaveLength(2);
+      expect(data.intervencion.fotoUrl).toBe(data.intervencion.fotoUrls[0]);
+      expect(JSON.stringify(first.body)).not.toMatch(/fotoKey|tmp\//);
+      const replayData = (replay.body as ApiEnvelope<FinalizarData>).data;
+      expect(replayData.intervencion.fotoUrls).toHaveLength(2);
+
+      const filas = await prisma.intervencionFoto.findMany({
+        where: { intervencionId: body.id },
+        orderBy: { orden: 'asc' },
+      });
+      expect(filas.map((f) => f.orden)).toEqual([0, 1]);
+      // Cada foto se reclamó UNA vez (el reintento no reclama de nuevo).
+      const nuevas = (await finalKeys(rawS3)).filter((k) => !antes.includes(k));
+      expect(nuevas.sort()).toEqual(filas.map((f) => f.key).sort());
+    });
+
+    it('stock insuficiente con 2 fotos: 409, ninguna fila y ninguna foto reclamada queda en el bucket', async () => {
+      const equipo = await newCamioneta();
+      const ordenId = await newOrdenServicio(equipo.code);
+      const { branchId, itemId } = await newStock(1);
+      const fotoKeys = [await subirFoto('a.jpg'), await subirFoto('b.jpg')];
+      const antes = await finalKeys(rawS3);
+      const body = cierre({
+        lecturaMantencion: 40_500,
+        branchId,
+        insumos: [{ insumoId: itemId, cantidad: 5 }],
+        fotoKeys,
+      });
+
+      await mantenedor
+        .post(`/api/mantenimiento/ordenes/${ordenId}/finalizar`)
+        .send(body)
+        .expect(409);
+
+      expect(await prisma.intervencion.count({ where: { ordenId } })).toBe(0);
+      expect(
+        await prisma.intervencionFoto.count({
+          where: { intervencionId: body.id },
+        }),
+      ).toBe(0);
+      expect((await finalKeys(rawS3)).sort()).toEqual(antes.sort());
+    });
+
+    it('11 fotos: 400 sin escribir nada', async () => {
+      const equipo = await newCamioneta();
+      const ordenId = await newOrdenServicio(equipo.code);
+      const body = cierre({
+        lecturaMantencion: 40_500,
+        fotoKeys: Array.from({ length: 11 }, (_, i) => `tmp/x/${i}.jpg`),
+      });
+
+      await mantenedor
+        .post(`/api/mantenimiento/ordenes/${ordenId}/finalizar`)
+        .send(body)
+        .expect(400);
+      expect(await estadoDe(ordenId)).toBe(EstadoOT.EN_PROCESO);
+    });
   });
 });

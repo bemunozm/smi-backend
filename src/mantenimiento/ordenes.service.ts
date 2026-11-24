@@ -933,12 +933,20 @@ export class OrdenesService {
     }
     const intervenciones = await this.prisma.intervencion.findMany({
       where: { ordenId: id },
-      select: { fotoKey: true },
+      select: { fotoKey: true, fotos: { select: { key: true } } },
     });
+    // `fotoKey` repite la primera de `fotos`: el Set evita borrarla dos veces.
     const fotos = [
-      ...orden.tareas.map((t) => t.fotoKey),
-      ...intervenciones.map((i) => i.fotoKey),
-    ].filter((key): key is string => !!key);
+      ...new Set(
+        [
+          ...orden.tareas.map((t) => t.fotoKey),
+          ...intervenciones.flatMap((i) => [
+            i.fotoKey,
+            ...i.fotos.map((foto) => foto.key),
+          ]),
+        ].filter((key): key is string => !!key),
+      ),
+    ];
 
     await this.prisma.$transaction(async (tx) => {
       if (registrar) {

@@ -1324,11 +1324,14 @@ model Intervencion {
   horasHombre    Float                @default(0)
   horometro      Float?
   realizadaPorId String? // soft ref → user.id
-  /// Key en el bucket (R2/MinIO) de la foto del cierre — qué se hizo/ocupó.
+  /// Key en el bucket (R2/MinIO) de la PRIMERA foto del cierre. Las fotos
+  /// viven en `fotos` (hasta 10); esta columna se sigue escribiendo con la
+  /// primera para que una versión anterior del backend la siga mostrando.
   /// Mismo patrón que `Hallazgo.fotoKey`: la API expone solo la URL firmada.
   fotoKey        String?
   soloLectura    Boolean              @default(false)
   insumos        IntervencionInsumo[]
+  fotos          IntervencionFoto[]
   fecha          DateTime             @default(now())
 
   /// `user.id` de Better Auth que creó la fila (soft ref, sin FK). Con el id del
@@ -1349,6 +1352,22 @@ model IntervencionInsumo {
 
   @@index([intervencionId])
   @@map("intervencion_insumo")
+}
+
+/// Una foto del cierre de una intervención (hasta 10, en el orden en que se
+/// adjuntaron). La API expone solo las URLs firmadas, nunca la key.
+model IntervencionFoto {
+  id             String       @id @default(cuid())
+  intervencionId String
+  intervencion   Intervencion @relation(fields: [intervencionId], references: [id], onDelete: Cascade)
+  /// Key definitiva en el bucket (ya reclamada del `tmp/`).
+  key            String
+  /// Posición de la foto (0 = la primera).
+  orden          Int
+  createdAt      DateTime     @default(now())
+
+  @@index([intervencionId])
+  @@map("intervencion_foto")
 }
 
 model UmbralMantenimiento {

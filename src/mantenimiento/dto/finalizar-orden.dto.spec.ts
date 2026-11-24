@@ -70,4 +70,25 @@ describe('FinalizarOrdenDto', () => {
     });
     expect(await validate(dto)).toHaveLength(0);
   });
+  it('fotoKeys: hasta 10 keys no vacías; 11 → error', async () => {
+    const keys = (n: number) =>
+      Array.from({ length: n }, (_, i) => `tmp/u1/${i}.jpg`);
+    expect(await errores(base({ fotoKeys: keys(10) }))).toEqual([]);
+    expect(await errores(base({ fotoKeys: keys(11) }))).toEqual(['fotoKeys']);
+    expect(await errores(base({ fotoKeys: ['tmp/u1/a.jpg', ''] }))).toEqual([
+      'fotoKeys',
+    ]);
+    expect(await errores(base({ fotoKeys: 'tmp/u1/a.jpg' }))).toEqual([
+      'fotoKeys',
+    ]);
+  });
+
+  it('el alta suelta de intervenciones también acepta fotoKeys', async () => {
+    const dto = plainToInstance(CreateIntervencionDto, {
+      tipo: 'CORRECTIVA',
+      detalle: 'x',
+      fotoKeys: Array.from({ length: 11 }, (_, i) => `tmp/u1/${i}.jpg`),
+    });
+    expect((await validate(dto)).map((e) => e.property)).toEqual(['fotoKeys']);
+  });
 });

@@ -15,9 +15,10 @@ import {
 } from '../inventory/stock.service';
 import { StorageService } from '../storage/storage.service';
 import { resolveAsignadosMap } from './common/asignado.util';
-import type {
-  CreateIntervencionDto,
-  IntervencionBaseDto,
+import {
+  MAX_FOTOS_CIERRE,
+  type CreateIntervencionDto,
+  type IntervencionBaseDto,
 } from './dto/create-intervencion.dto';
 import type { IntervencionResponseDto } from './dto/intervencion-response.dto';
 
@@ -29,6 +30,7 @@ const INTERVENCION_SELECT = {
   horasHombre: true,
   horometro: true,
   fotoKey: true,
+  fotos: { select: { key: true }, orderBy: { orden: 'asc' } },
   soloLectura: true,
   fecha: true,
   realizadaPorId: true,
@@ -45,8 +47,8 @@ export type SelectedIntervencion = Prisma.IntervencionGetPayload<{
 /**
  * Una intervención lista para escribirse dentro de una transacción: lo que se
  * valida y resuelve ANTES de abrirla (bodega, unidad de Flota, foto ya
- * reclamada). La deja `preparar`, la escribe `crearEnTransaccion` y, si la
- * transacción no confirma, `descartar` suelta la foto.
+ * reclamadas). La deja `preparar`, la escribe `crearEnTransaccion` y, si la
+ * transacción no confirma, `descartar` suelta las fotos.
  */
 export interface IntervencionPreparada {
   orden: { id: string; equipoId: string };
@@ -54,15 +56,15 @@ export interface IntervencionPreparada {
   userId: string;
   /** Unidad de Flota a la que se imputan los insumos (null si no resuelve). */
   equipmentId: string | null;
-  /** Key definitiva de la foto, ya reclamada del `tmp/`. */
-  fotoKey: string | undefined;
+  /** Keys definitivas de las fotos, ya reclamadas del `tmp/`, en orden. */
+  fotoKeys: string[];
 }
 
 /** Una intervención ya existente con el id del cliente (reintento offline). */
 export interface IntervencionExistente {
   ownerId: string | null;
   ordenId: string;
-  /** La respuesta de la fila (URL de la foto firmada al momento). */
+  /** La respuesta de la fila (URLs de las fotos firmadas al momento). */
   result: () => Promise<IntervencionResponseDto>;
 }
 
@@ -167,9 +169,10 @@ export class IntervencionesService {
 
   /**
    * Todo lo que va ANTES de la transacción: exige la bodega si hay insumos,
-   * resuelve la unidad de Flota y reclama la foto. El claim queda fuera del
-   * try del caller (patrón `hallazgos.service.createFresh`): si falla, no hay
-   * nada que revertir. Lo usan el alta suelta y `OrdenesService.finalizar`.
+   * resuelve la unidad de Flota y reclama las fotos. El claim queda fuera del
+   * try del caller (patrón `hallazgos.service.createFresh`): si falla, suelta
+   * aquí mismo las que alcanzó a reclamar y no queda nada que revertir. Lo
+   * usan el alta suelta y `OrdenesService.finalizar`.
    */
   async preparar(
     orden: { id: string; equipoId: string },
@@ -183,17 +186,52 @@ export class IntervencionesService {
       );
     }
 
+    // `fotoKey` (escrituras encoladas con una sola foto) y `fotoKeys` son UNA
+    // lista: la vieja primero, sin repetir. El tope vale para la suma.
+    const tmpKeys = [
+      ...new Set([
+        ...(dto.fotoKey ? [dto.fotoKey] : []),
+        ...(dto.fotoKeys ?? []),
+      ]),
+    ];
+    if (tmpKeys.length > MAX_FOTOS_CIERRE) {
+      throw new BadRequestException(
+        `Puedes adjuntar hasta ${MAX_FOTOS_CIERRE} fotos al cierre.`,
+      );
+    }
+
     // `equipoId` de la OT es texto libre (código interno o id de Flota): si se
     // resuelve, el movimiento queda imputado a la unidad; si no, el descuento
     // sale igual — la trazabilidad por `reference` (la OT) no se pierde.
     const equipmentId =
       insumos.length > 0 ? await this.resolveEquipmentId(orden.equipoId) : null;
 
-    const fotoKey = dto.fotoKey
-      ? await this.storage.claimTmp(dto.fotoKey, userId, 'intervencion-photo')
-      : undefined;
+    const fotoKeys = await this.reclamarFotos(tmpKeys, userId);
 
-    return { orden, dto, userId, equipmentId, fotoKey };
+    return { orden, dto, userId, equipmentId, fotoKeys };
+  }
+
+  /**
+   * Reclama las fotos de a una, en orden. Si una falla (key ajena, ya
+   * reclamada, inexistente), suelta las anteriores antes de propagar el
+   * error: ninguna queda huérfana en el bucket.
+   */
+  private async reclamarFotos(
+    tmpKeys: string[],
+    userId: string,
+  ): Promise<string[]> {
+    const reclamadas: string[] = [];
+    try {
+      for (const tmpKey of tmpKeys) {
+        reclamadas.push(
+          await this.storage.claimTmp(tmpKey, userId, 'intervencion-photo'),
+        );
+      }
+    } catch (error: unknown) {
+      await this.soltarFotos(reclamadas);
+      throw error;
+    }
+    return reclamadas;
   }
 
   /**
@@ -208,7 +246,7 @@ export class IntervencionesService {
     preparada: IntervencionPreparada,
     events: PendingStockEvents,
   ): Promise<SelectedIntervencion> {
-    const { orden, dto, userId, equipmentId, fotoKey } = preparada;
+    const { orden, dto, userId, equipmentId, fotoKeys } = preparada;
     const insumos = dto.insumos ?? [];
 
     const created = await tx.intervencion.create({
@@ -221,7 +259,13 @@ export class IntervencionesService {
         detalle: dto.detalle,
         horasHombre: dto.horasHombre,
         horometro: dto.horometro,
-        fotoKey: fotoKey ?? null,
+        // La primera también en la columna vieja: un backend anterior la
+        // sigue mostrando si hubiera que volver atrás.
+        fotoKey: fotoKeys[0] ?? null,
+        fotos:
+          fotoKeys.length > 0
+            ? { create: fotoKeys.map((key, orden) => ({ key, orden })) }
+            : undefined,
         insumos:
           insumos.length > 0
             ? {
@@ -255,13 +299,16 @@ export class IntervencionesService {
   }
 
   /**
-   * La transacción no confirmó (p. ej. 409 por stock insuficiente): la foto
-   * ya reclamada en el bucket quedaría huérfana — se suelta.
+   * La transacción no confirmó (p. ej. 409 por stock insuficiente): las
+   * fotos ya reclamadas en el bucket quedarían huérfanas — se sueltan todas.
    */
   async descartar(preparada: IntervencionPreparada): Promise<void> {
-    if (preparada.fotoKey) {
-      await this.storage.discard(preparada.fotoKey);
-    }
+    await this.soltarFotos(preparada.fotoKeys);
+  }
+
+  /** Suelta cada foto (`discard` nunca lanza: una no impide las demás). */
+  private async soltarFotos(keys: string[]): Promise<void> {
+    for (const key of keys) await this.storage.discard(key);
   }
 
   /** `toResponseDto` para UNA fila: resuelve su `realizadaPor` por su cuenta. */
@@ -307,13 +354,24 @@ export class IntervencionesService {
   }
 
   /**
-   * Nunca devuelve `fotoKey` — solo `fotoUrl` firmada cuando hay foto (mismo
-   * criterio que `HallazgosService.shape`).
+   * Nunca devuelve keys — solo URLs firmadas (mismo criterio que
+   * `HallazgosService.shape`). Las fotos salen de `fotos`; una fila sin filas
+   * de fotos pero con `fotoKey` (escrita por un backend anterior a la tabla)
+   * responde esa única foto.
    */
   private async toResponseDto(
     intervencion: SelectedIntervencion,
     nombres: Map<string, { nombre: string }>,
   ): Promise<IntervencionResponseDto> {
+    const keys =
+      intervencion.fotos.length > 0
+        ? intervencion.fotos.map((foto) => foto.key)
+        : intervencion.fotoKey
+          ? [intervencion.fotoKey]
+          : [];
+    const fotoUrls = await Promise.all(
+      keys.map((key) => this.storage.sign(key)),
+    );
     return {
       id: intervencion.id,
       ordenId: intervencion.ordenId,
@@ -321,9 +379,8 @@ export class IntervencionesService {
       detalle: intervencion.detalle,
       horasHombre: intervencion.horasHombre,
       horometro: intervencion.horometro,
-      fotoUrl: intervencion.fotoKey
-        ? await this.storage.sign(intervencion.fotoKey)
-        : null,
+      fotoUrl: fotoUrls[0] ?? null,
+      fotoUrls,
       soloLectura: intervencion.soloLectura,
       realizadaPor:
         (intervencion.realizadaPorId &&
