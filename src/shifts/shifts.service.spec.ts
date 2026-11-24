@@ -4109,6 +4109,8 @@ describe('ShiftsService', () => {
           { supervisorId: 'sup_1' },
           {
             equipo: { equipmentClass: 'LIGHT' },
+            // Un liviano temporal ajeno es privado (y no lo puede cerrar).
+            temporal: false,
             OR: [{ valorFinal: null }, { closedById: 'sup_1' }],
           },
         ],
@@ -4304,6 +4306,245 @@ describe('ShiftsService', () => {
         { include: Record<string, unknown> },
       ];
       expect(args.include).toHaveProperty('exitReports');
+    });
+  });
+
+  /**
+   * SUPERVISOR_TEMPORAL: horario libre. Abre una tarjeta por equipo sin la
+   * ventana de `shiftDate` ni `Shift`, y las cierra todas juntas con su
+   * informe (`closeCard(..., { viaInforme: true })`). Sus tarjetas no las ve
+   * ni las cierra el resto de los supervisores.
+   */
+  describe('supervisor temporal', () => {
+    const temporal = buildSession('tmp_1', 'SUPERVISOR_TEMPORAL');
+    const openDto: OpenShiftCardDto = {
+      id: 'card_t1',
+      equipoId: 'e1',
+      operatorId: 'op_1',
+      valorInicial: 100,
+      shiftDate: todayShiftDate(),
+      shiftType: 'DIURNO',
+      capturedAt: iso(),
+    };
+
+    it('openCard como SUPERVISOR_TEMPORAL no crea Shift y marca temporal', async () => {
+      await service.openCard(openDto, temporal);
+
+      expect(prisma.shift.upsert).not.toHaveBeenCalled();
+      expect(lastCallData(tx.registroHorometro.create)).toMatchObject({
+        temporal: true,
+        shiftId: null,
+        supervisorId: 'tmp_1',
+        turno: 'DIURNO',
+      });
+    });
+
+    it('openCard temporal acepta shiftDate fuera de ventana', async () => {
+      await expect(
+        service.openCard(
+          { ...openDto, shiftDate: todayShiftDate(-40) },
+          temporal,
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    describe('reloj fijo', () => {
+      beforeEach(() => {
+        jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+        // 02:00 en Chile: sigue corriendo el día de turno anterior.
+        jest.setSystemTime(new Date('2026-11-24T05:00:00.000Z'));
+      });
+      afterEach(() => jest.useRealTimers());
+
+      it('openCard temporal a las 02:00 busca el checklist del día anterior', async () => {
+        await service.openCard(
+          { ...openDto, shiftDate: '2026-11-24', capturedAt: iso() },
+          temporal,
+        );
+
+        const esperado = {
+          where: {
+            equipmentId_date: {
+              equipmentId: 'e1',
+              date: new Date('2026-11-23T00:00:00.000Z'),
+            },
+          },
+          select: { status: true },
+        };
+        expect(prisma.dailyChecklist.findUnique).toHaveBeenCalledWith(esperado);
+        expect(tx.dailyChecklist.findUnique).toHaveBeenCalledWith(esperado);
+        // Ni el día del dto ni ningún otro.
+        expect(prisma.dailyChecklist.findUnique).toHaveBeenCalledTimes(1);
+        expect(tx.dailyChecklist.findUnique).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('openCard temporal con equipo ocupado da EQUIPMENT_BUSY', async () => {
+      tx.registroHorometro.findFirst.mockResolvedValue({
+        supervisorId: 'otro_sup',
+        fecha: new Date(),
+      });
+      tx.user.findUnique.mockResolvedValue({ name: 'Ana Torres' });
+
+      await expect(service.openCard(openDto, temporal)).rejects.toMatchObject({
+        response: { code: 'EQUIPMENT_BUSY' },
+      });
+      expect(tx.registroHorometro.create).not.toHaveBeenCalled();
+    });
+
+    describe('cierre', () => {
+      const closeDto: CloseShiftCardDto = {
+        closeClientId: 'close_t1',
+        valorFinal: 130,
+        fuelLiters: 0,
+        noFuelReason: 'Sin carga',
+        capturedAt: iso(),
+      };
+
+      beforeEach(() => {
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          id: 'card_t1',
+          equipoId: 'e1',
+          valorInicial: 100,
+          valorFinal: null,
+          supervisorId: 'tmp_1',
+          closeClientId: null,
+          closedAt: null,
+          temporal: true,
+          turno: 'DIURNO',
+          shift: null,
+          fecha: new Date(),
+          createdAt: new Date(),
+          clientClockSkewMs: null,
+          belowPreviousReading: false,
+        });
+        prisma.equipment.findUnique.mockResolvedValue({
+          equipmentClass: 'LIGHT',
+        });
+        tx.equipment.findUnique.mockResolvedValue({
+          controlUnit: 'KM',
+          currentHourmeter: null,
+          currentMileage: 100,
+        });
+        tx.registroHorometro.findUnique.mockResolvedValue(
+          buildCardRecord({
+            id: 'card_t1',
+            valorFinal: 130,
+            shiftId: null,
+            shift: null,
+            equipo: { ...EQUIPO_INCLUDE, equipmentClass: 'LIGHT' },
+          }),
+        );
+      });
+
+      it('closeCard de tarjeta temporal por un SUPERVISOR da 409 TEMPORAL_CARD', async () => {
+        await expect(
+          service.closeCard(
+            'card_t1',
+            { ...closeDto, shiftDate: todayShiftDate(), shiftType: 'DIURNO' },
+            buildSession('sup_1'),
+          ),
+        ).rejects.toMatchObject({ response: { code: 'TEMPORAL_CARD' } });
+        expect(tx.registroHorometro.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('closeCard de su propia tarjeta temporal sin viaInforme también da 409', async () => {
+        await expect(
+          service.closeCard('card_t1', closeDto, temporal),
+        ).rejects.toBeInstanceOf(ConflictException);
+      });
+
+      it('ADMIN sí puede cerrar una tarjeta temporal sin informe', async () => {
+        await expect(
+          service.closeCard(
+            'card_t1',
+            { ...closeDto, shiftDate: todayShiftDate(), shiftType: 'DIURNO' },
+            buildSession('admin_1', 'ADMIN'),
+          ),
+        ).resolves.toBeDefined();
+      });
+
+      it('closeCard con viaInforme cierra la temporal sin turno y closedShiftId null', async () => {
+        await service.closeCard('card_t1', closeDto, temporal, {
+          viaInforme: true,
+        });
+
+        expect(prisma.shift.upsert).not.toHaveBeenCalled();
+        expect(lastCallData(tx.registroHorometro.updateMany)).toMatchObject({
+          valorFinal: 130,
+          closedById: 'tmp_1',
+          closedShiftId: null,
+        });
+      });
+
+      it('viaInforme no salta el chequeo de dueño: otro supervisor da 403', async () => {
+        await expect(
+          service.closeCard('card_t1', closeDto, buildSession('sup_1'), {
+            viaInforme: true,
+          }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+      });
+    });
+
+    it('addFuelLoad en tarjeta temporal da 409 TEMPORAL_CARD', async () => {
+      prisma.registroCombustible.findUnique.mockResolvedValue(null);
+      prisma.registroHorometro.findUnique.mockResolvedValue({
+        equipoId: 'e1',
+        valorInicial: 1200,
+        valorFinal: null,
+        closedAt: null,
+        temporal: true,
+        equipo: {
+          equipmentClass: 'LIGHT',
+          controlUnit: 'KM',
+          currentHourmeter: null,
+          currentMileage: 1200,
+        },
+      });
+
+      await expect(
+        service.addFuelLoad(
+          'card_t1',
+          {
+            id: '44444444-4444-4444-8444-444444444444',
+            liters: 45,
+            reading: 1250,
+            tmpPhotoKey: 'tmp/admin_1/11111111-1111-4111-8111-111111111111.jpg',
+            capturedAt: iso(),
+          },
+          // Ni el ADMIN: la carga va en el informe.
+          buildSession('admin_1', 'ADMIN'),
+        ),
+      ).rejects.toMatchObject({ response: { code: 'TEMPORAL_CARD' } });
+      expect(claimTmp).not.toHaveBeenCalled();
+    });
+
+    it('mine de SUPERVISOR excluye livianos temporales ajenos', async () => {
+      prisma.registroHorometro.findMany.mockResolvedValue([]);
+
+      await service.mine(buildSession('sup_1'));
+
+      const [args] = prisma.registroHorometro.findMany.mock.calls[0] as [
+        { where: { AND: [{ OR: Array<Record<string, unknown>> }, unknown] } },
+      ];
+      expect(args.where.AND[0].OR[1]).toMatchObject({
+        equipo: { equipmentClass: 'LIGHT' },
+        temporal: false,
+      });
+    });
+
+    it('mine de SUPERVISOR_TEMPORAL solo trae las suyas temporales', async () => {
+      prisma.registroHorometro.findMany.mockResolvedValue([]);
+
+      await service.mine(temporal);
+
+      const [args] = prisma.registroHorometro.findMany.mock.calls[0] as [
+        { where: { AND: [Record<string, unknown>, unknown] } },
+      ];
+      expect(args.where.AND[0]).toEqual({
+        supervisorId: 'tmp_1',
+        temporal: true,
+      });
     });
   });
 });

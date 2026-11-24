@@ -57,6 +57,9 @@ export const ERROR_CODES = {
   /** Cierre sin `fuelLiters` de una tarjeta SIN cargas registradas con ella
    * abierta: solo el liviano que ya cargó puede omitir los litros. */
   FUEL_LITERS_REQUIRED: 'FUEL_LITERS_REQUIRED',
+  /** Cierre (sin el informe) o carga en curso sobre una tarjeta del
+   * supervisor temporal: se cierra con su informe, junto con las demás. */
+  TEMPORAL_CARD: 'TEMPORAL_CARD',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
