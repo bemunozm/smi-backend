@@ -4454,14 +4454,22 @@ describe('ShiftsService', () => {
         ).rejects.toBeInstanceOf(ConflictException);
       });
 
-      it('ADMIN sí puede cerrar una tarjeta temporal sin informe', async () => {
+      it('ADMIN sí puede cerrar una tarjeta temporal sin informe, sin turno y con closedShiftId null', async () => {
+        // Sin shiftDate/shiftType: la temporal nunca entra a un turno, ni al
+        // del ADMIN que la cierra (no se filtra a un reporte de salida).
         await expect(
           service.closeCard(
             'card_t1',
-            { ...closeDto, shiftDate: todayShiftDate(), shiftType: 'DIURNO' },
+            closeDto,
             buildSession('admin_1', 'ADMIN'),
           ),
         ).resolves.toBeDefined();
+
+        expect(prisma.shift.upsert).not.toHaveBeenCalled();
+        expect(lastCallData(tx.registroHorometro.updateMany)).toMatchObject({
+          closedById: 'admin_1',
+          closedShiftId: null,
+        });
       });
 
       it('closeCard con viaInforme cierra la temporal sin turno y closedShiftId null', async () => {

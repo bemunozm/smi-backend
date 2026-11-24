@@ -745,10 +745,13 @@ export class ShiftsService {
     let fuelShiftDay = card.shift
       ? { day: formatDateOnly(card.shift.date), type: card.shift.type }
       : { day: shiftDayOf(card.fecha), type: card.turno };
-    // Por el informe temporal no hay turno de quien cierra: el liviano queda
-    // fuera de todo reporte de salida (`closedShiftId = null`) y su carga se
-    // fecha por el reloj de apertura (`shiftDayOf(card.fecha)`, arriba).
-    if (esLiviano && !viaInforme) {
+    // Una tarjeta temporal NUNCA entra a un turno — ni cerrada por su informe
+    // ni cerrada suelta por el ADMIN (que si no la colgaría de SU `Shift` y
+    // se filtraría a su reporte de salida): no se exige ni se crea el turno
+    // de quien cierra, `closedShiftId` queda `null` y la carga se fecha por
+    // el reloj de apertura (`shiftDayOf(card.fecha)`, arriba).
+    const sinTurno = viaInforme || card.temporal;
+    if (esLiviano && !sinTurno) {
       if (!dto.shiftDate || !dto.shiftType) {
         throw new BadRequestException(
           'Falta el turno de quien cierra la tarjeta del liviano.',
