@@ -3774,6 +3774,55 @@ describe('ShiftsService', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
+    describe('tarjeta del supervisor temporal', () => {
+      const temporal = buildSession('sup_1', 'SUPERVISOR_TEMPORAL');
+
+      it('su dueño no puede eliminarla cerrada: 409 TEMPORAL_CARD', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue(
+          deletableCard({ temporal: true }),
+        );
+
+        expect(
+          await errorOf(service.removeCard('card_1', temporal)),
+        ).toMatchObject({ code: 'TEMPORAL_CARD' });
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('su dueño sí elimina la abierta por error', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue(
+          deletableCard({
+            temporal: true,
+            valorFinal: null,
+            fuelLiters: null,
+            pumpPhotoKey: null,
+            closedAt: null,
+            fechaSalida: null,
+          }),
+        );
+
+        await service.removeCard('card_1', temporal);
+
+        expect(tx.registroHorometro.delete).toHaveBeenCalledWith({
+          where: { id: 'card_1' },
+        });
+      });
+
+      it('el ADMIN sí elimina la cerrada', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue(
+          deletableCard({ temporal: true }),
+        );
+
+        await service.removeCard(
+          'card_1',
+          buildSession('adm_1', 'ADMIN', 'Admin'),
+        );
+
+        expect(tx.registroHorometro.delete).toHaveBeenCalledWith({
+          where: { id: 'card_1' },
+        });
+      });
+    });
+
     it('un ADMIN puede eliminar la tarjeta de otro', async () => {
       await service.removeCard(
         'card_1',
@@ -4381,9 +4430,14 @@ describe('ShiftsService', () => {
       });
       afterEach(() => jest.useRealTimers());
 
-      it('openCard temporal a las 02:00 busca el checklist del día anterior', async () => {
+      it('openCard temporal abierta a las 02:00 busca el checklist del día anterior', async () => {
         await service.openCard(
-          { ...openDto, shiftDate: '2026-11-24', capturedAt: iso() },
+          {
+            ...openDto,
+            shiftDate: '2026-11-24',
+            // 02:00 en Chile: la hora en que se abrió, no la del servidor.
+            capturedAt: '2026-11-24T05:00:00.000Z',
+          },
           temporal,
         );
 
@@ -4401,6 +4455,37 @@ describe('ShiftsService', () => {
         // Ni el día del dto ni ningún otro.
         expect(prisma.dailyChecklist.findUnique).toHaveBeenCalledTimes(1);
         expect(tx.dailyChecklist.findUnique).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('apertura encolada offline', () => {
+      beforeEach(() => {
+        jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+        // Llega al servidor a las 09:00 en Chile: ya corre el día de turno 24.
+        jest.setSystemTime(new Date('2026-11-24T12:00:00.000Z'));
+      });
+      afterEach(() => jest.useRealTimers());
+
+      it('abierta antes de las 08:00 y sincronizada después: checklist del día en que se abrió', async () => {
+        await service.openCard(
+          {
+            ...openDto,
+            shiftDate: '2026-11-24',
+            // 07:00 en Chile: todavía el día de turno 23.
+            capturedAt: '2026-11-24T10:00:00.000Z',
+          },
+          temporal,
+        );
+
+        expect(prisma.dailyChecklist.findUnique).toHaveBeenCalledWith({
+          where: {
+            equipmentId_date: {
+              equipmentId: 'e1',
+              date: new Date('2026-11-23T00:00:00.000Z'),
+            },
+          },
+          select: { status: true },
+        });
       });
     });
 

@@ -439,10 +439,13 @@ export class ShiftsService {
       ROLES.SUPERVISOR_TEMPORAL,
     );
     // Día del checklist que libera el equipo: el del `shiftDate` reportado,
-    // o —sin turno, en el temporal— el día de turno que marca el reloj (a
-    // las 02:00 sigue corriendo el de ayer, mismo criterio que `shiftDayOf`).
+    // o —sin turno, en el temporal— el día de turno de CUANDO abrió (a las
+    // 02:00 sigue corriendo el de ayer, mismo criterio que `shiftDayOf`). Se
+    // mira `capturedAt`, no el reloj del servidor: una apertura que esperó
+    // en la cola offline y llega después de las 08:00 sigue siendo del día
+    // en que se abrió.
     const checklistDay = parseDateOnlyUtc(
-      esTemporal ? shiftDayOf(now) : dto.shiftDate,
+      esTemporal ? shiftDayOf(capturedAt) : dto.shiftDate,
     );
     // Ventana razonable de `shiftDate` — antes de tocar cualquier estado
     // (ni el operador, ni menos el `Shift`, que sí escribe).
@@ -1619,6 +1622,16 @@ export class ShiftsService {
       throw new ForbiddenException({
         message: 'No puedes eliminar la tarjeta de otro supervisor',
         code: ERROR_CODES.NOT_OWNER,
+      });
+    }
+    // El supervisor temporal solo borra su tarjeta ABIERTA (abierta por
+    // error). Una cerrada ya es parte de su informe —o de un lote que se
+    // enlazará al siguiente—: la elimina el ADMIN, con el informe.
+    if (card.temporal && !isAdmin && card.valorFinal != null) {
+      throw new ConflictException({
+        message:
+          'Esta tarjeta ya se cerró con el informe: solo el administrador puede eliminarla.',
+        code: ERROR_CODES.TEMPORAL_CARD,
       });
     }
     const abierta = card.valorFinal === null;
