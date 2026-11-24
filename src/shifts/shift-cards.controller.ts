@@ -156,8 +156,13 @@ export class ShiftCardsController {
    * Corrección de una tarjeta ya enviada. `X-Expected`
    * (opcional) lleva los valores que el cliente vio al editar; ver
    * `assertExpected`.
+   *
+   * También la SECRETARIA, pero solo sobre tarjetas del supervisor temporal
+   * (corrige lecturas y litros desde el informe); en cualquier otra el
+   * service responde 403.
    */
   @Patch(':id')
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateShiftCardDto,

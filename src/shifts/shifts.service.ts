@@ -1493,7 +1493,8 @@ export class ShiftsService {
   }
 
   /**
-   * `PATCH /api/shift-cards/:id` — corrige una tarjeta ya enviada. Solo el supervisor dueño o un ADMIN.
+   * `PATCH /api/shift-cards/:id` — corrige una tarjeta ya enviada. Solo el
+   * supervisor dueño o un ADMIN; la SECRETARIA, solo una tarjeta temporal.
    *
    * Es seguro de reintentar desde la cola offline: la fila se bloquea
    * (`FOR UPDATE`) y se relee dentro de la transacción, y `X-Expected` deja
@@ -2265,7 +2266,11 @@ export class ShiftsService {
     }
   }
 
-  /** La tarjeta si existe y la sesión es su dueña o ADMIN; si no, 404 / 403. */
+  /**
+   * La tarjeta si existe y la sesión es su dueña o ADMIN; si no, 404 / 403.
+   * La SECRETARIA solo corrige tarjetas del supervisor temporal (lecturas y
+   * litros desde el detalle de su informe): cualquier otra, 403.
+   */
   private async findOwnedCard(id: string, session: UserSession) {
     const card = await this.prisma.registroHorometro.findUnique({
       where: { id },
@@ -2273,6 +2278,7 @@ export class ShiftsService {
         supervisorId: true,
         operatorId: true,
         valorFinal: true,
+        temporal: true,
         // El turno al que pertenece: la clave del `Shift` de destino cuando la
         // edición corrige el turno (mismo día y supervisor, otro tipo).
         shift: { select: { type: true, date: true, supervisorId: true } },
@@ -2281,7 +2287,10 @@ export class ShiftsService {
     if (!card) throw this.cardNotFound();
 
     const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
+    const secretariaEnTemporal =
+      card.temporal && sessionHasRole(session.user.role, ROLES.SECRETARIA);
     if (card.supervisorId !== session.user.id && !isAdmin) {
+      if (secretariaEnTemporal) return card;
       throw new ForbiddenException({
         message: 'No puedes modificar la tarjeta de otro supervisor',
         code: ERROR_CODES.NOT_OWNER,

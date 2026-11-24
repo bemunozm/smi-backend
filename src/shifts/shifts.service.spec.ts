@@ -2792,6 +2792,31 @@ describe('ShiftsService', () => {
         expect(prisma.$transaction).not.toHaveBeenCalled();
       });
 
+      it('la SECRETARIA corrige la tarjeta de un supervisor temporal', async () => {
+        const secre = buildSession('sec_1', 'SECRETARIA', 'Sec Uno');
+        givenCard(closedCard({ temporal: true, shift: null, shiftId: null }));
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          supervisorId: 'sup_1',
+          operatorId: 'op_1',
+          valorFinal: 130,
+          temporal: true,
+          shift: null,
+        });
+
+        await service.update('card_1', { valorFinal: 140 }, secre);
+
+        expect(changeLog.record).toHaveBeenCalledTimes(1);
+      });
+
+      it('la SECRETARIA recibe 403 NOT_OWNER en una tarjeta normal', async () => {
+        const secre = buildSession('sec_1', 'SECRETARIA', 'Sec Uno');
+
+        expect(
+          await errorOf(service.update('card_1', { valorFinal: 140 }, secre)),
+        ).toMatchObject({ code: 'NOT_OWNER' });
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
       it('un ADMIN puede editar la tarjeta de otro', async () => {
         const admin = buildSession('adm_1', 'ADMIN', 'Admin');
 
