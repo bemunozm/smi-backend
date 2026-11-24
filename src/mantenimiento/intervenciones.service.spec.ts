@@ -18,6 +18,7 @@ const MOCK_INTERVENCION = {
   horasHombre: 1.5,
   horometro: null,
   fotoKey: null,
+  fotos: [] as { key: string }[],
   soloLectura: false,
   fecha: new Date('2026-01-03T00:00:00.000Z'),
   realizadaPorId: 'user_1',
@@ -32,6 +33,7 @@ const MOCK_RESPONSE = {
   horasHombre: 1.5,
   horometro: null,
   fotoUrl: null,
+  fotoUrls: [],
   soloLectura: false,
   realizadaPor: 'Marco Díaz',
   insumos: [{ id: 'insumo_row_1', insumoId: 'item_1', cantidad: 2 }],
@@ -316,5 +318,194 @@ describe('IntervencionesService', () => {
     expect(result).toEqual(MOCK_RESPONSE);
     expect(transaction).not.toHaveBeenCalled();
     expect(stockIssue).not.toHaveBeenCalled();
+  });
+  describe('varias fotos del cierre (fotoKeys)', () => {
+    beforeEach(() => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        id: 'orden_1',
+        equipoId: 'EQ-1',
+      });
+      storageClaimTmp.mockImplementation((key: string) =>
+        Promise.resolve(`final/${key}`),
+      );
+      storageSign.mockImplementation((key: string) =>
+        Promise.resolve(`https://signed/${key}`),
+      );
+      txIntervencionCreate.mockImplementation(
+        (args: { data: { fotos?: { create: { key: string }[] } } }) =>
+          Promise.resolve({
+            ...MOCK_INTERVENCION,
+            insumos: [],
+            fotos: (args.data.fotos?.create ?? []).map((f) => ({
+              key: f.key,
+            })),
+          }),
+      );
+    });
+
+    it('reclama cada foto, crea una IntervencionFoto por foto en orden y responde fotoUrls firmadas', async () => {
+      const result = await service.create(
+        'orden_1',
+        {
+          tipo: 'CORRECTIVA',
+          detalle: 'x',
+          fotoKeys: [
+            'tmp/user_1/a.jpg',
+            'tmp/user_1/b.jpg',
+            'tmp/user_1/c.jpg',
+          ],
+        },
+        'user_1',
+      );
+
+      expect(storageClaimTmp.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+        'tmp/user_1/a.jpg',
+        'tmp/user_1/b.jpg',
+        'tmp/user_1/c.jpg',
+      ]);
+      const [args] = txIntervencionCreate.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(args.data.fotos).toEqual({
+        create: [
+          { key: 'final/tmp/user_1/a.jpg', orden: 0 },
+          { key: 'final/tmp/user_1/b.jpg', orden: 1 },
+          { key: 'final/tmp/user_1/c.jpg', orden: 2 },
+        ],
+      });
+      // La columna vieja queda con la primera (compatibilidad hacia atrás).
+      expect(args.data.fotoKey).toBe('final/tmp/user_1/a.jpg');
+      expect(result.fotoUrls).toEqual([
+        'https://signed/final/tmp/user_1/a.jpg',
+        'https://signed/final/tmp/user_1/b.jpg',
+        'https://signed/final/tmp/user_1/c.jpg',
+      ]);
+      expect(result.fotoUrl).toBe('https://signed/final/tmp/user_1/a.jpg');
+      expect(result).not.toHaveProperty('fotoKey');
+      expect(result).not.toHaveProperty('fotoKeys');
+    });
+
+    it('fotoKey + fotoKeys se unen en una sola lista (fotoKey primero, sin repetir)', async () => {
+      await service.create(
+        'orden_1',
+        {
+          tipo: 'CORRECTIVA',
+          detalle: 'x',
+          fotoKey: 'tmp/user_1/vieja.jpg',
+          fotoKeys: ['tmp/user_1/a.jpg', 'tmp/user_1/vieja.jpg'],
+        },
+        'user_1',
+      );
+
+      expect(storageClaimTmp.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+        'tmp/user_1/vieja.jpg',
+        'tmp/user_1/a.jpg',
+      ]);
+    });
+
+    it('más de 10 fotos sumando fotoKey y fotoKeys: 400 sin reclamar nada', async () => {
+      await expect(
+        service.create(
+          'orden_1',
+          {
+            tipo: 'CORRECTIVA',
+            detalle: 'x',
+            fotoKey: 'tmp/user_1/extra.jpg',
+            fotoKeys: Array.from(
+              { length: 10 },
+              (_, i) => `tmp/user_1/${i}.jpg`,
+            ),
+          },
+          'user_1',
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(storageClaimTmp).not.toHaveBeenCalled();
+      expect(transaction).not.toHaveBeenCalled();
+    });
+
+    it('si falla el claim de una foto, suelta las ya reclamadas y no escribe nada', async () => {
+      storageClaimTmp.mockImplementation((key: string) =>
+        key.endsWith('b.jpg')
+          ? Promise.reject(new BadRequestException('Archivo no encontrado'))
+          : Promise.resolve(`final/${key}`),
+      );
+
+      await expect(
+        service.create(
+          'orden_1',
+          {
+            tipo: 'CORRECTIVA',
+            detalle: 'x',
+            fotoKeys: [
+              'tmp/user_1/a.jpg',
+              'tmp/user_1/b.jpg',
+              'tmp/user_1/c.jpg',
+            ],
+          },
+          'user_1',
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(storageDiscard).toHaveBeenCalledTimes(1);
+      expect(storageDiscard).toHaveBeenCalledWith('final/tmp/user_1/a.jpg');
+      expect(transaction).not.toHaveBeenCalled();
+    });
+
+    it('stock insuficiente con 3 fotos: se sueltan las 3', async () => {
+      stockIssue.mockRejectedValue(
+        new ConflictException('Existencia insuficiente'),
+      );
+
+      await expect(
+        service.create(
+          'orden_1',
+          {
+            ...DTO_CON_INSUMOS,
+            fotoKeys: [
+              'tmp/user_1/a.jpg',
+              'tmp/user_1/b.jpg',
+              'tmp/user_1/c.jpg',
+            ],
+          },
+          'user_1',
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(storageDiscard.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+        'final/tmp/user_1/a.jpg',
+        'final/tmp/user_1/b.jpg',
+        'final/tmp/user_1/c.jpg',
+      ]);
+    });
+
+    it('intervención vieja con solo fotoKey (sin filas de fotos): fotoUrls trae esa', async () => {
+      intervencionFindMany.mockResolvedValue([
+        { ...MOCK_INTERVENCION, fotoKey: 'intervencion-photos/vieja.jpg' },
+      ]);
+
+      const [result] = await service.findAllByOrden('orden_1');
+
+      expect(result.fotoUrls).toEqual([
+        'https://signed/intervencion-photos/vieja.jpg',
+      ]);
+      expect(result.fotoUrl).toBe(
+        'https://signed/intervencion-photos/vieja.jpg',
+      );
+    });
+
+    it('con filas de fotos, fotoUrls sale de ellas en su orden', async () => {
+      intervencionFindMany.mockResolvedValue([
+        {
+          ...MOCK_INTERVENCION,
+          fotoKey: 'k/1.jpg',
+          fotos: [{ key: 'k/1.jpg' }, { key: 'k/2.jpg' }],
+        },
+      ]);
+
+      const [result] = await service.findAllByOrden('orden_1');
+
+      expect(result.fotoUrls).toEqual([
+        'https://signed/k/1.jpg',
+        'https://signed/k/2.jpg',
+      ]);
+    });
   });
 });

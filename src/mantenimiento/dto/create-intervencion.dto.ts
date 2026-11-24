@@ -1,6 +1,7 @@
 import { TipoOT } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsEnum,
   IsNotEmpty,
@@ -13,6 +14,9 @@ import {
 } from 'class-validator';
 
 import { CreateIntervencionInsumoDto } from './create-intervencion-insumo.dto';
+
+/** Tope de fotos por cierre de intervención. */
+export const MAX_FOTOS_CIERRE = 10;
 
 /**
  * Lo que describe el cierre de una intervención (qué se hizo, insumos, foto).
@@ -38,12 +42,23 @@ export class IntervencionBaseDto {
   @IsNumber()
   horometro?: number;
 
-  /** Key temporal (`tmp/<userId>/…`) de la foto del cierre subida por
-   * `POST /api/files`. El servicio la reclama a su key definitiva. */
+  /** Key temporal (`tmp/<userId>/…`) de UNA foto del cierre subida por
+   * `POST /api/files`. Se sigue aceptando por las escrituras offline ya
+   * encoladas con una sola foto; si viene junto a `fotoKeys`, va primera. */
   @IsOptional()
   @IsString()
   @IsNotEmpty()
   fotoKey?: string;
+
+  /** Keys temporales de las fotos del cierre (hasta 10, en orden). El
+   * servicio las reclama todas antes de escribir y, si algo falla, las suelta
+   * todas. El tope de 10 se vuelve a exigir sumando `fotoKey`. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_FOTOS_CIERRE)
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  fotoKeys?: string[];
 
   /** Bodega de la que salen los insumos. Obligatoria cuando `insumos` viene
    * con filas (el servicio lo exige): cada consumo descuenta stock REAL de

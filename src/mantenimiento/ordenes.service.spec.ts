@@ -835,12 +835,37 @@ describe('OrdenesService', () => {
         estado: 'EN_PROCESO',
         tareas: [{ ...MOCK_ORDEN.tareas[0], fotoKey: 'tareas/t1.jpg' }],
       });
-      intervencionFindMany.mockResolvedValue([{ fotoKey: 'int/i1.jpg' }]);
+      intervencionFindMany.mockResolvedValue([
+        { fotoKey: 'int/i1.jpg', fotos: [{ key: 'int/i1.jpg' }] },
+      ]);
 
       await service.remove('orden_1', {}, MOCK_MANTENEDOR);
 
       expect(deleteBestEffort).toHaveBeenCalledWith('tareas/t1.jpg');
       expect(deleteBestEffort).toHaveBeenCalledWith('int/i1.jpg');
+    });
+
+    it('borra del bucket TODAS las fotos de cada intervención (IntervencionFoto), sin repetir', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...MOCK_ORDEN,
+        estado: 'EN_PROCESO',
+      });
+      intervencionFindMany.mockResolvedValue([
+        {
+          fotoKey: 'int/i1.jpg',
+          fotos: [{ key: 'int/i1.jpg' }, { key: 'int/i2.jpg' }],
+        },
+        { fotoKey: null, fotos: [{ key: 'int/i3.jpg' }] },
+      ]);
+
+      await service.remove('orden_1', {}, MOCK_MANTENEDOR);
+
+      const borradas = deleteBestEffort.mock.calls.map((c: unknown[]) => c[0]);
+      expect(borradas.sort()).toEqual([
+        'int/i1.jpg',
+        'int/i2.jpg',
+        'int/i3.jpg',
+      ]);
     });
   });
 
@@ -2064,6 +2089,7 @@ describe('OrdenesService', () => {
       horasHombre: 2,
       horometro: null,
       fotoKey: null,
+      fotos: [],
       soloLectura: false,
       fecha: new Date('2026-11-24T12:00:00.000Z'),
       realizadaPorId: MOCK_MANTENEDOR.id,
@@ -2476,6 +2502,118 @@ describe('OrdenesService', () => {
       );
       expect(emit).not.toHaveBeenCalled();
       expect(emitPending).not.toHaveBeenCalled();
+    });
+
+    it('con 3 fotoKeys crea 3 IntervencionFoto en orden y responde 3 fotoUrls', async () => {
+      orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO' });
+      intervencionCreate.mockImplementation(
+        (args: { data: { fotos?: { create: { key: string }[] } } }) =>
+          Promise.resolve(
+            fila('orden_1', {
+              fotos: (args.data.fotos?.create ?? []).map((f) => ({
+                key: f.key,
+              })),
+            }),
+          ),
+      );
+
+      const result = await service.finalizar(
+        'orden_1',
+        {
+          ...DTO,
+          fotoKeys: [
+            'tmp/user_mantenedor/a.jpg',
+            'tmp/user_mantenedor/b.jpg',
+            'tmp/user_mantenedor/c.jpg',
+          ],
+        },
+        MOCK_MANTENEDOR,
+      );
+
+      const [args] = intervencionCreate.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ];
+      expect(args.data.fotos).toEqual({
+        create: [
+          { key: 'claimed/tmp/user_mantenedor/a.jpg', orden: 0 },
+          { key: 'claimed/tmp/user_mantenedor/b.jpg', orden: 1 },
+          { key: 'claimed/tmp/user_mantenedor/c.jpg', orden: 2 },
+        ],
+      });
+      expect(result.intervencion.fotoUrls).toEqual([
+        'https://signed/claimed/tmp/user_mantenedor/a.jpg',
+        'https://signed/claimed/tmp/user_mantenedor/b.jpg',
+        'https://signed/claimed/tmp/user_mantenedor/c.jpg',
+      ]);
+      expect(result.intervencion.fotoUrl).toBe(
+        'https://signed/claimed/tmp/user_mantenedor/a.jpg',
+      );
+    });
+
+    it('stock insuficiente con 3 fotos: no escribe nada y suelta las 3 reclamadas', async () => {
+      orden({ ...MOCK_ORDEN, estado: 'EN_PROCESO' });
+      stockIssue.mockRejectedValue(
+        new ConflictException('Stock insuficiente en la bodega'),
+      );
+
+      await expect(
+        service.finalizar(
+          'orden_1',
+          {
+            ...DTO,
+            fotoKeys: [
+              'tmp/user_mantenedor/a.jpg',
+              'tmp/user_mantenedor/b.jpg',
+              'tmp/user_mantenedor/c.jpg',
+            ],
+            branchId: 'faena',
+            insumos: [{ insumoId: 'item_1', cantidad: 99 }],
+          },
+          MOCK_MANTENEDOR,
+        ),
+      ).rejects.toThrow('Stock insuficiente en la bodega');
+
+      expect(ordenTrabajoUpdate).not.toHaveBeenCalled();
+      expect(discard.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+        'claimed/tmp/user_mantenedor/a.jpg',
+        'claimed/tmp/user_mantenedor/b.jpg',
+        'claimed/tmp/user_mantenedor/c.jpg',
+      ]);
+    });
+
+    it('reintento de un cierre con fotos: no reclama ni duplica fotos, devuelve las ya guardadas', async () => {
+      ordenTrabajoFindUnique.mockResolvedValue({
+        ...LIVIANO,
+        estado: 'COMPLETADA',
+        asignadoAId: MOCK_MANTENEDOR.id,
+      });
+      intervencionFindUnique.mockResolvedValue({
+        ...fila('orden_liv', {
+          fotoKey: 'intervencion-photo/a.jpg',
+          fotos: [
+            { key: 'intervencion-photo/a.jpg' },
+            { key: 'intervencion-photo/b.jpg' },
+          ],
+        }),
+        createdById: MOCK_MANTENEDOR.id,
+      });
+
+      const result = await service.finalizar(
+        'orden_liv',
+        {
+          ...DTO,
+          fotoKeys: ['tmp/user_mantenedor/a.jpg', 'tmp/user_mantenedor/b.jpg'],
+        },
+        MOCK_MANTENEDOR,
+      );
+
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(discard).not.toHaveBeenCalled();
+      expectNadaEscrito();
+      expect(result.intervencion.fotoUrls).toEqual([
+        'https://signed/intervencion-photo/a.jpg',
+        'https://signed/intervencion-photo/b.jpg',
+      ]);
     });
 
     it('insumos sin bodega: 400 antes de tocar nada', async () => {
