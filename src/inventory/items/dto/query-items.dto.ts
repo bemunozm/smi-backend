@@ -35,6 +35,11 @@ export class QueryItemsDto {
   @IsString()
   categoryId?: string;
 
+  /** Solo los ítems asignados a este equipo (ficha del equipo y filtro de la lista). */
+  @IsOptional()
+  @IsString()
+  equipmentId?: string;
+
   /**
    * Sin el filtro se devuelven todos. La pantalla pide `isActive=true`: un ítem
    * dado de baja sigue existiendo para que su kardex se lea, pero no debe

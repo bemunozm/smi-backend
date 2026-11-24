@@ -41,6 +41,17 @@ describe('ItemsService', () => {
   const movementFindUnique = jest.fn();
   const queryRaw = jest.fn();
 
+  const movementGroupBy = jest.fn();
+  const equipmentFindMany = jest.fn();
+  const compatDeleteMany = jest.fn();
+  const compatUpsert = jest.fn();
+  const compatFindMany = jest.fn();
+  const compatDelegate = {
+    deleteMany: compatDeleteMany,
+    upsert: compatUpsert,
+    findMany: compatFindMany,
+  };
+
   const itemDelegate = {
     findMany,
     findUnique,
@@ -63,6 +74,11 @@ describe('ItemsService', () => {
       emitPending,
       movementFindUnique,
       queryRaw,
+      movementGroupBy,
+      equipmentFindMany,
+      compatDeleteMany,
+      compatUpsert,
+      compatFindMany,
     ].forEach((mock) => mock.mockReset());
 
     const module: TestingModule = await Test.createTestingModule({
@@ -75,11 +91,18 @@ describe('ItemsService', () => {
             stockMovement: {
               findMany: jest.fn().mockResolvedValue([]),
               findUnique: movementFindUnique,
+              groupBy: movementGroupBy,
             },
+            equipment: { findMany: equipmentFindMany },
+            partCompatibility: compatDelegate,
             // El create corre dentro de una transacción: el mock ejecuta el
             // callback con el mismo delegate, que es lo que hace Prisma.
             $transaction: (fn: (tx: unknown) => unknown) =>
-              fn({ inventoryItem: itemDelegate, $queryRaw: queryRaw }),
+              fn({
+                inventoryItem: itemDelegate,
+                partCompatibility: compatDelegate,
+                $queryRaw: queryRaw,
+              }),
           },
         },
         {
@@ -147,7 +170,7 @@ describe('ItemsService', () => {
 
         const res = await service.create({ ...dto, id: ID }, 'u1');
 
-        expect(res).toEqual({ id: ID, sku: 'FIL-001' });
+        expect(res).toEqual({ id: ID, sku: 'FIL-001', compatibilities: [] });
         expect(create).not.toHaveBeenCalled();
         expect(receive).not.toHaveBeenCalled();
       });
@@ -172,7 +195,7 @@ describe('ItemsService', () => {
 
         const res = await service.create({ ...dto, id: ID }, 'u1');
 
-        expect(res).toEqual({ id: ID, sku: 'FIL-001' });
+        expect(res).toEqual({ id: ID, sku: 'FIL-001', compatibilities: [] });
         expect(receive).not.toHaveBeenCalled();
       });
 
@@ -467,6 +490,182 @@ describe('ItemsService', () => {
       const res = await service.adjust('i1', dto, 'u1');
 
       expect(res.movement).toBeNull();
+    });
+  });
+
+  describe('equipos asignados', () => {
+    it('findAll aplana los equipos y filtra por equipmentId en una sola consulta', async () => {
+      findMany.mockResolvedValue([
+        {
+          id: 'i1',
+          compatibilities: [
+            {
+              equipmentId: 'e1',
+              note: 'solo serie 4500',
+              equipment: { internalCode: 'EXC-01' },
+            },
+          ],
+        },
+      ]);
+
+      const res = await service.findAll({ equipmentId: 'e1' });
+
+      expect(findMany).toHaveBeenCalledTimes(1);
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { compatibilities: { some: { equipmentId: 'e1' } } },
+        }),
+      );
+      expect(res[0].compatibilities).toEqual([
+        { equipmentId: 'e1', internalCode: 'EXC-01', note: 'solo serie 4500' },
+      ]);
+    });
+
+    describe('setCompatibilities', () => {
+      beforeEach(() => {
+        findUnique.mockResolvedValue({ id: 'i1', compatibilities: [] });
+        compatFindMany.mockResolvedValue([
+          {
+            equipmentId: 'e1',
+            note: null,
+            equipment: { internalCode: 'EXC-01' },
+          },
+        ]);
+      });
+
+      it('borra los que ya no están y crea o actualiza el resto', async () => {
+        equipmentFindMany.mockResolvedValue([{ id: 'e1' }, { id: 'e2' }]);
+
+        const res = await service.setCompatibilities(
+          'i1',
+          {
+            entries: [
+              { equipmentId: 'e1', note: ' con adaptador ' },
+              { equipmentId: 'e2' },
+            ],
+          },
+          'u1',
+        );
+
+        expect(compatDeleteMany).toHaveBeenCalledWith({
+          where: { itemId: 'i1', equipmentId: { notIn: ['e1', 'e2'] } },
+        });
+        expect(compatUpsert).toHaveBeenCalledTimes(2);
+        expect(compatUpsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { equipmentId_itemId: { equipmentId: 'e2', itemId: 'i1' } },
+            create: {
+              equipmentId: 'e2',
+              itemId: 'i1',
+              note: null,
+              declaredById: 'u1',
+            },
+          }),
+        );
+        expect(res).toEqual([
+          { equipmentId: 'e1', internalCode: 'EXC-01', note: null },
+        ]);
+      });
+
+      it('un equipo repetido cuenta una vez', async () => {
+        equipmentFindMany.mockResolvedValue([{ id: 'e1' }]);
+
+        await service.setCompatibilities(
+          'i1',
+          {
+            entries: [
+              { equipmentId: 'e1', note: 'a' },
+              { equipmentId: 'e1', note: 'b' },
+            ],
+          },
+          'u1',
+        );
+
+        expect(compatUpsert).toHaveBeenCalledTimes(1);
+        expect(compatUpsert).toHaveBeenCalledWith(
+          expect.objectContaining({ update: { note: 'b' } }),
+        );
+      });
+
+      it('con una lista vacía deja al ítem sin equipos', async () => {
+        equipmentFindMany.mockResolvedValue([]);
+
+        await service.setCompatibilities('i1', { entries: [] }, 'u1');
+
+        expect(compatDeleteMany).toHaveBeenCalledWith({
+          where: { itemId: 'i1', equipmentId: { notIn: [] } },
+        });
+        expect(compatUpsert).not.toHaveBeenCalled();
+      });
+
+      it('404 si un equipo no existe, sin escribir nada', async () => {
+        equipmentFindMany.mockResolvedValue([{ id: 'e1' }]);
+
+        await expect(
+          service.setCompatibilities(
+            'i1',
+            { entries: [{ equipmentId: 'e1' }, { equipmentId: 'ghost' }] },
+            'u1',
+          ),
+        ).rejects.toThrow(/ghost/);
+        expect(compatDeleteMany).not.toHaveBeenCalled();
+        expect(compatUpsert).not.toHaveBeenCalled();
+      });
+
+      it('404 si el ítem no existe', async () => {
+        findUnique.mockResolvedValue(null);
+        await expect(
+          service.setCompatibilities('nope', { entries: [] }, 'u1'),
+        ).rejects.toThrow(NotFoundException);
+      });
+    });
+
+    describe('consumers', () => {
+      it('agrega las salidas por equipo, la más reciente primero', async () => {
+        findUnique.mockResolvedValue({ id: 'i1', compatibilities: [] });
+        movementGroupBy.mockResolvedValue([
+          {
+            equipmentId: 'e1',
+            _sum: { quantity: 12 },
+            _count: { _all: 3 },
+            _max: { occurredAt: new Date('2026-10-01T00:00:00Z') },
+          },
+          {
+            equipmentId: 'e2',
+            _sum: { quantity: 4 },
+            _count: { _all: 1 },
+            _max: { occurredAt: new Date('2026-11-01T00:00:00Z') },
+          },
+        ]);
+        equipmentFindMany.mockResolvedValue([
+          { id: 'e1', internalCode: 'EXC-01' },
+          { id: 'e2', internalCode: 'CAM-02' },
+        ]);
+
+        const res = await service.consumers('i1');
+
+        expect(movementGroupBy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: {
+              itemId: 'i1',
+              direction: 'OUT',
+              equipmentId: { not: null },
+            },
+          }),
+        );
+        expect(res.map((r) => r.internalCode)).toEqual(['CAM-02', 'EXC-01']);
+        expect(res[1]).toMatchObject({
+          totalQuantity: 12,
+          movementCount: 3,
+        });
+      });
+
+      it('sin salidas imputadas devuelve una lista vacía', async () => {
+        findUnique.mockResolvedValue({ id: 'i1', compatibilities: [] });
+        movementGroupBy.mockResolvedValue([]);
+        equipmentFindMany.mockResolvedValue([]);
+        expect(await service.consumers('i1')).toEqual([]);
+      });
     });
   });
 

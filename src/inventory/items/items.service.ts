@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import {
   ItemType,
+  MovementDirection,
   MovementReason,
   Prisma,
   UnitOfMeasure,
@@ -22,6 +23,11 @@ import {
   resolveExisting,
 } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import {
+  COMPATIBILITIES_INCLUDE,
+  toItemEquipment,
+  withEquipments,
+} from './compatibility';
 import { StockService, type PendingStockEvents } from '../stock.service';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import {
@@ -29,6 +35,7 @@ import {
   CreateItemDto,
   PACKAGED_UNITS,
 } from './dto/create-item.dto';
+import { SetCompatibilitiesDto } from './dto/set-compatibilities.dto';
 import { QueryItemsDto } from './dto/query-items.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
 
@@ -47,6 +54,7 @@ const STOCK_INCLUDE = {
     orderBy: { branch: { name: 'asc' } },
   },
   category: { select: { id: true, name: true } },
+  ...COMPATIBILITIES_INCLUDE,
 } satisfies Prisma.InventoryItemInclude;
 
 /** Cómo se nombra cada dato en el mensaje de conflicto (`STALE_UPDATE`). */
@@ -114,12 +122,13 @@ export class ItemsService {
     private readonly stock: StockService,
   ) {}
 
-  findAll(filters: QueryItemsDto) {
-    return this.prisma.inventoryItem.findMany({
+  async findAll(filters: QueryItemsDto) {
+    const items = await this.prisma.inventoryItem.findMany({
       where: this.buildWhere(filters),
       include: STOCK_INCLUDE,
       orderBy: { name: 'asc' },
     });
+    return items.map(withEquipments);
   }
 
   async findOne(id: string) {
@@ -128,7 +137,7 @@ export class ItemsService {
       include: STOCK_INCLUDE,
     });
     if (!item) throw new NotFoundException(`Ítem "${id}" no encontrado`);
-    return item;
+    return withEquipments(item);
   }
 
   /**
@@ -241,7 +250,7 @@ export class ItemsService {
         });
       });
       this.stock.emitPending(events);
-      return item;
+      return withEquipments(item);
     } catch (error: unknown) {
       // Un choque con la PK es la carrera de dos reintentos con el mismo id:
       // lo resuelve `createOrReturn`, no es un SKU repetido.
@@ -282,11 +291,13 @@ export class ItemsService {
   /** Da de baja o reactiva un ítem: sale (o vuelve) a listados y selectores; el kardex no se toca. */
   async setActive(id: string, isActive: boolean) {
     await this.findOne(id);
-    return this.prisma.inventoryItem.update({
-      where: { id },
-      data: { isActive },
-      include: STOCK_INCLUDE,
-    });
+    return withEquipments(
+      await this.prisma.inventoryItem.update({
+        where: { id },
+        data: { isActive },
+        include: STOCK_INCLUDE,
+      }),
+    );
   }
 
   async update(id: string, dto: UpdateItemDto, expected?: ExpectedValues) {
@@ -302,8 +313,8 @@ export class ItemsService {
         include: STOCK_INCLUDE,
       });
     try {
-      if (!expected) return await write(this.prisma);
-      return await this.prisma.$transaction(async (tx) => {
+      if (!expected) return withEquipments(await write(this.prisma));
+      const updated = await this.prisma.$transaction(async (tx) => {
         await assertExpectedLocked({
           tx,
           table: 'inventoryItem',
@@ -320,6 +331,7 @@ export class ItemsService {
         });
         return write(tx);
       });
+      return withEquipments(updated);
     } catch (error: unknown) {
       throw this.translateKnownErrors(error);
     }
@@ -388,6 +400,115 @@ export class ItemsService {
   }
 
   /**
+   * Reemplaza el set de equipos asignados al ítem (compatibilidad declarada).
+   * Es idempotente: el mismo body dos veces deja el mismo estado, así que sirve
+   * para reintentos de la cola offline. Un equipo repetido en el body cuenta una
+   * vez (gana la última nota).
+   */
+  async setCompatibilities(
+    id: string,
+    dto: SetCompatibilitiesDto,
+    declaredById: string,
+  ) {
+    await this.findOne(id);
+
+    const notes = new Map<string, string | null>();
+    for (const entry of dto.entries) {
+      notes.set(entry.equipmentId, entry.note ?? null);
+    }
+    const equipmentIds = [...notes.keys()];
+
+    const found = await this.prisma.equipment.findMany({
+      where: { id: { in: equipmentIds } },
+      select: { id: true },
+    });
+    if (found.length !== equipmentIds.length) {
+      const known = new Set(found.map((e) => e.id));
+      const missing = equipmentIds.filter((e) => !known.has(e));
+      throw new NotFoundException(
+        `Equipo(s) no encontrado(s): ${missing.join(', ')}`,
+      );
+    }
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.partCompatibility.deleteMany({
+          where: { itemId: id, equipmentId: { notIn: equipmentIds } },
+        });
+        for (const [equipmentId, note] of notes) {
+          await tx.partCompatibility.upsert({
+            where: { equipmentId_itemId: { equipmentId, itemId: id } },
+            create: { equipmentId, itemId: id, note, declaredById },
+            update: { note },
+          });
+        }
+      });
+    } catch (error: unknown) {
+      // Un equipo borrado entre la validación y la escritura: FK.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2003'
+      ) {
+        throw new NotFoundException('Alguno de los equipos ya no existe');
+      }
+      throw error;
+    }
+
+    const rows = await this.prisma.partCompatibility.findMany({
+      where: { itemId: id },
+      select: COMPATIBILITIES_INCLUDE.compatibilities.select,
+      orderBy: COMPATIBILITIES_INCLUDE.compatibilities.orderBy,
+    });
+    return rows.map(toItemEquipment);
+  }
+
+  /**
+   * «Consumido por»: qué equipos han gastado el ítem según las salidas de
+   * stock imputadas a un equipo. Se agrega en la base (una consulta más una
+   * por los códigos), el más reciente primero.
+   */
+  async consumers(id: string) {
+    await this.findOne(id);
+
+    const groups = await this.prisma.stockMovement.groupBy({
+      by: ['equipmentId'],
+      where: {
+        itemId: id,
+        direction: MovementDirection.OUT,
+        equipmentId: { not: null },
+      },
+      _sum: { quantity: true },
+      _count: { _all: true },
+      _max: { occurredAt: true },
+    });
+
+    const equipmentIds = groups.flatMap((g) =>
+      g.equipmentId ? [g.equipmentId] : [],
+    );
+    const equipments = await this.prisma.equipment.findMany({
+      where: { id: { in: equipmentIds } },
+      select: { id: true, internalCode: true },
+    });
+    const codes = new Map(equipments.map((e) => [e.id, e.internalCode]));
+
+    return groups
+      .flatMap((g) => {
+        const code = g.equipmentId ? codes.get(g.equipmentId) : undefined;
+        if (!g.equipmentId || !code || !g._max.occurredAt) return [];
+        return [
+          {
+            equipmentId: g.equipmentId,
+            internalCode: code,
+            totalQuantity: g._sum.quantity ?? 0,
+            movementCount: g._count._all,
+            lastAt: g._max.occurredAt,
+          },
+        ];
+      })
+      .sort((a, b) => b.lastAt.getTime() - a.lastAt.getTime());
+  }
+
+  /**
    * Un ítem con movimientos es historia del inventario: borrarlo se llevaría el
    * kardex por delante (`onDelete: Cascade`). Se bloquea explícitamente y se
    * sugiere la baja lógica, en vez de dejar que la FK decida.
@@ -424,6 +545,9 @@ export class ItemsService {
     if (filters.type) where.type = filters.type;
     if (filters.categoryId) where.categoryId = filters.categoryId;
     if (filters.isActive !== undefined) where.isActive = filters.isActive;
+    if (filters.equipmentId) {
+      where.compatibilities = { some: { equipmentId: filters.equipmentId } };
+    }
 
     return where;
   }
