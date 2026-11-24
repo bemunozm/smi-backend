@@ -22,6 +22,14 @@ describe('ItemsController (roles)', () => {
     expect(rolesDe('setActive')).toEqual([ROLES.ADMIN, ROLES.SECRETARIA]);
   });
 
+  it('asignar equipos es del ADMIN y la SECRETARIA; «consumido por» lo leen todos', () => {
+    expect(rolesDe('setCompatibilities')).toEqual([
+      ROLES.ADMIN,
+      ROLES.SECRETARIA,
+    ]);
+    expect(rolesDe('consumers')).toBeUndefined();
+  });
+
   it('ajustar por conteo y eliminar son solo del ADMIN', () => {
     expect(rolesDe('adjust')).toEqual([ROLES.ADMIN]);
     expect(rolesDe('remove')).toEqual([ROLES.ADMIN]);

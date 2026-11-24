@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
@@ -18,6 +19,7 @@ import { ExpectedFields } from '../../common/concurrency/expected-fields.decorat
 import type { ExpectedValues } from '../../common/concurrency/expected-fields';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
 import { CreateItemDto } from './dto/create-item.dto';
+import { SetCompatibilitiesDto } from './dto/set-compatibilities.dto';
 import { QueryItemsDto } from './dto/query-items.dto';
 import { SetItemActiveDto } from './dto/set-item-active.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
@@ -53,6 +55,28 @@ export class ItemsController {
   async kardex(@Param('id') id: string, @Query('branchId') branchId?: string) {
     assertNonEmptyId(id);
     return { data: await this.service.kardex(id, branchId), message: 'ok' };
+  }
+
+  /** «Consumido por»: equipos que han gastado el ítem (solo lectura). */
+  @Get(':id/consumers')
+  async consumers(@Param('id') id: string) {
+    assertNonEmptyId(id);
+    return { data: await this.service.consumers(id), message: 'ok' };
+  }
+
+  /** Reemplaza el set de equipos asignados al ítem (idempotente). */
+  @Put(':id/compatibilities')
+  @Roles([ROLES.ADMIN, ROLES.SECRETARIA])
+  async setCompatibilities(
+    @Param('id') id: string,
+    @Body() dto: SetCompatibilitiesDto,
+    @Session() session: UserSession,
+  ) {
+    assertNonEmptyId(id);
+    return {
+      data: await this.service.setCompatibilities(id, dto, session.user.id),
+      message: 'Equipos asignados actualizados',
+    };
   }
 
   @Post()
