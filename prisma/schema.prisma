@@ -838,9 +838,67 @@ model RegistroHorometro {
   /// livianos; ver `RegistroCombustible.tarjetaEnCursoId`).
   cargasEnCurso RegistroCombustible[] @relation("CargasEnCurso")
 
+  /// `true` = tarjeta abierta por un SUPERVISOR_TEMPORAL: no pertenece a un
+  /// `Shift` (`shiftId` queda `null`) y se cierra en bloque dentro de un
+  /// `InformeTemporal`, no en el reporte diario del turno.
+  temporal          Boolean          @default(false)
+  /// Informe temporal en el que se cerró esta tarjeta. `SetNull`: borrar un
+  /// informe no debe borrar las tarjetas (y sus horómetros) que lo componen.
+  informeTemporalId String?          @map("informe_temporal_id")
+  informeTemporal   InformeTemporal? @relation(fields: [informeTemporalId], references: [id], onDelete: SetNull)
+
   @@index([shiftId])
   @@index([supervisorId])
   @@index([closedShiftId])
+  @@index([informeTemporalId])
+  @@index([supervisorId, temporal])
+}
+
+/// Informe de un supervisor temporal: agrupa las tarjetas `temporal` que
+/// cerró juntas, con su propio correlativo `numero` (independiente de los
+/// folios del reporte diario y de `TrabajoExtraordinario.numero`).
+model InformeTemporal {
+  /// UUID generado por el cliente: el reintento offline de "enviar informe"
+  /// es idempotente (se relee por este id en vez de crear otro).
+  id     String @id
+  /// Correlativo propio (secuencia `informe_temporal_numero_seq`).
+  numero Int    @unique @default(autoincrement())
+
+  /// Sin hora: el informe es "el día X" (mismo criterio que `Shift.date`).
+  fecha DateTime @db.Date
+  /// DIURNO | NOCTURNO — `String`, mismo criterio que `Shift.type`.
+  turno String
+
+  actividad1 String
+  actividad2 String?
+
+  /// Personal del informe: `{ actividad: 1|2; operatorId: string | null; nombre: string }[]`.
+  /// `Json` porque es un snapshot de texto del momento del envío.
+  personal      Json
+  observaciones String?
+
+  supervisorResponsable1 String
+  supervisorResponsable2 String?
+
+  fotosEnviadas Boolean
+  infoSubidaApp Boolean
+
+  /// Supervisor temporal que envía el informe — soft ref a `user.id` (sin FK,
+  /// igual que `RegistroHorometro.supervisorId`) + snapshot del nombre.
+  supervisorId     String
+  supervisorNombre String
+
+  /// Ventana del informe (reloj del dispositivo): primera entrada y última salida.
+  inicio DateTime
+  fin    DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tarjetas RegistroHorometro[]
+
+  @@index([fecha])
+  @@map("informe_temporal")
 }
 
 /// Turno de Supervisión en Terreno: agrupa las tarjetas (`RegistroHorometro`)
