@@ -19,7 +19,8 @@ export type ChangeLogEntity =
   | 'maintenance_plan'
   | 'reporte_diario'
   | 'combustible'
-  | 'shift_exit_report';
+  | 'shift_exit_report'
+  | 'informe_temporal';
 
 /** Qué pasó con el registro: corrección, o eliminación definitiva. En una
  * eliminación `changes` guarda el resumen de lo borrado (`after` en «—»). */

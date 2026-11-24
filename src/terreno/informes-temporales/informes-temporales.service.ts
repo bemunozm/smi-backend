@@ -1,11 +1,20 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
+import { ROLES, sessionHasRole } from '../../auth/roles';
+import {
+  ChangeLogService,
+  diffFields,
+  type ComparableField,
+} from '../../change-log/change-log.service';
+import { toEditor } from '../../change-log/current-editor.decorator';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import { createOrReturn } from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -17,6 +26,8 @@ import {
   MAX_PERSONAL_POR_ACTIVIDAD,
   type PersonalInformeDto,
 } from './dto/create-informe-temporal.dto';
+import { QueryInformesTemporalesDto } from './dto/query-informes-temporales.dto';
+import { UpdateInformeTemporalDto } from './dto/update-informe-temporal.dto';
 
 /** Lo que se lee de cada informe para armar la respuesta. */
 const INFORME_INCLUDE = {
@@ -94,6 +105,49 @@ export interface InformeTemporalResponse {
   tarjetas: InformeTemporalTarjetaResponse[];
 }
 
+/** Los campos editables del informe, con la fecha como `YYYY-MM-DD`. */
+interface DatosInforme {
+  fecha: string;
+  turno: string;
+  actividad1: string;
+  actividad2: string | null;
+  personal: InformePersonal[];
+  observaciones: string | null;
+  supervisorResponsable1: string;
+  supervisorResponsable2: string | null;
+  fotosEnviadas: boolean;
+  infoSubidaApp: boolean;
+}
+
+const siNo = (v: unknown) => (v ? 'Sí' : 'No');
+
+/** Qué se compara y cómo se lee en el historial. */
+const CAMPOS_INFORME: readonly ComparableField<DatosInforme>[] = [
+  { field: 'fecha', label: 'Fecha' },
+  { field: 'turno', label: 'Turno' },
+  { field: 'actividad1', label: 'Actividad 1' },
+  { field: 'actividad2', label: 'Actividad 2' },
+  {
+    field: 'personal',
+    label: 'Personal',
+    format: (v) => {
+      const lista = v as InformePersonal[];
+      return lista.length === 0
+        ? '—'
+        : lista.map((p) => `${p.nombre} (act. ${p.actividad})`).join(', ');
+    },
+  },
+  { field: 'observaciones', label: 'Observaciones' },
+  { field: 'supervisorResponsable1', label: 'Supervisor responsable 1' },
+  { field: 'supervisorResponsable2', label: 'Supervisor responsable 2' },
+  { field: 'fotosEnviadas', label: 'Fotos enviadas', format: siNo },
+  {
+    field: 'infoSubidaApp',
+    label: 'Información subida a la app',
+    format: siNo,
+  },
+];
+
 /**
  * Informes del supervisor temporal: su jornada no tiene `Shift` ni reporte de
  * salida; la cierra con UN informe que cierra a la vez todas sus tarjetas
@@ -105,6 +159,7 @@ export class InformesTemporalesService {
     private readonly prisma: PrismaService,
     private readonly shifts: ShiftsService,
     private readonly storage: StorageService,
+    private readonly changeLog: ChangeLogService,
   ) {}
 
   /**
@@ -222,8 +277,181 @@ export class InformesTemporalesService {
     return this.shape(creado);
   }
 
+  /**
+   * `GET /api/informes-temporales` — del más nuevo al más viejo, con tope de
+   * 500: el listado no pagina y el rango (`desde`/`hasta`, inclusivo sobre
+   * `fecha`) es la forma de acotarlo.
+   */
+  async findAll(
+    query: QueryInformesTemporalesDto,
+  ): Promise<InformeTemporalResponse[]> {
+    const fecha: Prisma.DateTimeFilter = {};
+    if (query.desde) fecha.gte = parseDateOnlyUtc(query.desde);
+    if (query.hasta) fecha.lte = parseDateOnlyUtc(query.hasta);
+    const rows = await this.prisma.informeTemporal.findMany({
+      where: query.desde || query.hasta ? { fecha } : {},
+      include: INFORME_INCLUDE,
+      orderBy: { numero: 'desc' },
+      take: 500,
+    });
+    return Promise.all(rows.map((row) => this.shape(row)));
+  }
+
+  /** Un supervisor temporal solo ve SUS informes; ADMIN/SECRETARIA, todos. */
+  async findOne(
+    id: string,
+    session: UserSession,
+  ): Promise<InformeTemporalResponse> {
+    const informe = await this.findRecord(id);
+    if (!informe) throw new NotFoundException('Informe no encontrado');
+    const esStaff =
+      sessionHasRole(session.user.role, ROLES.ADMIN) ||
+      sessionHasRole(session.user.role, ROLES.SECRETARIA);
+    if (!esStaff && informe.supervisorId !== session.user.id) {
+      throw new ForbiddenException({
+        message: 'No puedes ver el informe de otro supervisor',
+        code: ERROR_CODES.NOT_OWNER,
+      });
+    }
+    return this.shape(informe);
+  }
+
+  /**
+   * Corrige los datos del informe (no sus tarjetas ni sus cierres). Lo que
+   * vino se monta sobre lo guardado y se valida el resultado; el cambio y su
+   * `ChangeLog` van en la misma tx, y si nada cambió de verdad no se escribe.
+   */
+  async update(
+    id: string,
+    dto: UpdateInformeTemporalDto,
+    session: UserSession,
+  ): Promise<InformeTemporalResponse> {
+    const editor = toEditor(session.user);
+    await this.prisma.$transaction(async (tx) => {
+      const actual = await tx.informeTemporal.findUnique({ where: { id } });
+      if (!actual) throw new NotFoundException('Informe no encontrado');
+
+      const antes: DatosInforme = {
+        fecha: formatDateOnly(actual.fecha),
+        turno: actual.turno,
+        actividad1: actual.actividad1,
+        actividad2: actual.actividad2,
+        personal: actual.personal as unknown as InformePersonal[],
+        observaciones: actual.observaciones,
+        supervisorResponsable1: actual.supervisorResponsable1,
+        supervisorResponsable2: actual.supervisorResponsable2,
+        fotosEnviadas: actual.fotosEnviadas,
+        infoSubidaApp: actual.infoSubidaApp,
+      };
+      const actividad2 =
+        dto.actividad2 !== undefined
+          ? dto.actividad2.trim() || null
+          : antes.actividad2;
+      const despues: DatosInforme = {
+        fecha: dto.fecha ?? antes.fecha,
+        turno: dto.turno ?? antes.turno,
+        actividad1: dto.actividad1?.trim() ?? antes.actividad1,
+        actividad2,
+        // Se valida el resultado combinado: quitar la actividad 2 con
+        // personal asignado a ella tiene que fallar aunque no venga `personal`.
+        personal: this.validarPersonal({
+          personal: dto.personal ?? antes.personal,
+          actividad2,
+        }),
+        observaciones:
+          dto.observaciones !== undefined
+            ? dto.observaciones || null
+            : antes.observaciones,
+        supervisorResponsable1:
+          dto.supervisorResponsable1?.trim() ?? antes.supervisorResponsable1,
+        supervisorResponsable2:
+          dto.supervisorResponsable2 !== undefined
+            ? dto.supervisorResponsable2.trim() || null
+            : antes.supervisorResponsable2,
+        fotosEnviadas: dto.fotosEnviadas ?? antes.fotosEnviadas,
+        infoSubidaApp: dto.infoSubidaApp ?? antes.infoSubidaApp,
+      };
+
+      const diff = diffFields<DatosInforme>(antes, despues, CAMPOS_INFORME);
+      if (diff.length === 0) return;
+
+      await tx.informeTemporal.update({
+        where: { id },
+        data: {
+          ...despues,
+          fecha: parseDateOnlyUtc(despues.fecha),
+          personal: despues.personal as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await this.changeLog.record(tx, 'informe_temporal', id, editor, diff);
+    });
+
+    const editado = await this.findRecord(id);
+    if (!editado) throw new NotFoundException('Informe no encontrado');
+    return this.shape(editado);
+  }
+
+  /** Quién cambió qué y cuándo, del más reciente al más viejo. */
+  findChanges(id: string) {
+    return this.changeLog.findFor('informe_temporal', id);
+  }
+
+  /**
+   * Elimina el informe CON sus tarjetas (solo ADMIN, ver controller). Cada
+   * tarjeta se borra con `ShiftsService.removeCard` (cargas de combustible,
+   * equipo, historial y aviso incluidos) y tiene su propia tx: si el proceso
+   * se corta a la mitad, reintentar sigue donde quedó — una tarjeta que ya no
+   * existe (NotFound) se da por borrada. El informe y su `ChangeLog` 'DELETE'
+   * van juntos al final.
+   */
+  async remove(id: string, session: UserSession): Promise<void> {
+    const informe = await this.findRecord(id);
+    if (!informe) return;
+
+    for (const { id: cardId } of informe.tarjetas) {
+      try {
+        await this.shifts.removeCard(cardId, session);
+      } catch (e) {
+        if (!(e instanceof NotFoundException)) throw e;
+      }
+    }
+
+    const borrado = (field: string, label: string, before: string) => ({
+      field,
+      label,
+      before,
+      after: '—',
+    });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.informeTemporal.delete({ where: { id } });
+      await this.changeLog.record(
+        tx,
+        'informe_temporal',
+        id,
+        toEditor(session.user),
+        [
+          borrado(
+            'informe',
+            'Informe',
+            `N° ${informe.numero} del ${formatDateOnly(informe.fecha)} (${informe.supervisorNombre})`,
+          ),
+          borrado(
+            'tarjetas',
+            'Tarjetas eliminadas',
+            informe.tarjetas.map((t) => t.equipo.internalCode).join(', ') ||
+              '—',
+          ),
+        ],
+        'DELETE',
+      );
+    });
+  }
+
   /** Máx. 10 personas por actividad, y la actividad 2 solo si existe. */
-  private validarPersonal(dto: CreateInformeTemporalDto): InformePersonal[] {
+  private validarPersonal(dto: {
+    personal: PersonalInformeDto[];
+    actividad2?: string | null;
+  }): InformePersonal[] {
     const tieneActividad2 = !!dto.actividad2?.trim();
     const porActividad = (n: 1 | 2) =>
       dto.personal.filter((p: PersonalInformeDto) => p.actividad === n).length;

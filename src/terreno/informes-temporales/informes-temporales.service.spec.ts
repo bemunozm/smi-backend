@@ -1,6 +1,12 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 
+import { ChangeLogService } from '../../change-log/change-log.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { buildSession } from '../../common/testing/fixtures';
 import { ShiftsService } from '../../shifts/shifts.service';
@@ -120,6 +126,7 @@ describe('InformesTemporalesService.create', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: ShiftsService, useValue: { closeCard } },
         { provide: StorageService, useValue: { sign } },
+        { provide: ChangeLogService, useValue: {} },
       ],
     }).compile();
     service = mod.get(InformesTemporalesService);
@@ -278,5 +285,248 @@ describe('InformesTemporalesService.create', () => {
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(closeCard).not.toHaveBeenCalled();
+  });
+});
+
+describe('InformesTemporalesService (listar, corregir, eliminar)', () => {
+  let service: InformesTemporalesService;
+  const ID = '7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f';
+  const SUP = 'sup_t1';
+  const admin = buildSession('adm1', 'ADMIN', 'Admin Uno');
+  const secre = buildSession('sec1', 'SECRETARIA', 'Sec Uno');
+
+  const prisma = {
+    informeTemporal: {
+      findMany: jest.fn<unknown, [Record<string, unknown>]>(),
+      findUnique: jest.fn(),
+      update: jest.fn<unknown, [Record<string, unknown>]>(),
+      delete: jest.fn<unknown, [Record<string, unknown>]>(),
+    },
+    $transaction: jest.fn(),
+  };
+  const removeCard = jest.fn<Promise<void>, [string, unknown]>();
+  const record = jest.fn();
+  const findFor = jest.fn();
+  const sign = jest.fn();
+
+  const tarjeta = (id: string, code: string) => ({
+    id,
+    equipo: {
+      id: `e-${id}`,
+      internalCode: code,
+      type: 'T',
+      brand: null,
+      model: null,
+    },
+    operador: 'x',
+    valorInicial: 1,
+    valorFinal: 2,
+    fuelLiters: null,
+    adBlueLiters: null,
+    pumpPhotoKey: null,
+    fecha: new Date(),
+    fechaSalida: null,
+  });
+
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: ID,
+    numero: 3,
+    fecha: new Date('2026-11-24T00:00:00.000Z'),
+    turno: 'DIURNO',
+    actividad1: 'Limpieza de cancha',
+    actividad2: null,
+    personal: [{ actividad: 1, operatorId: null, nombre: 'Juan Rojas' }],
+    observaciones: null,
+    supervisorResponsable1: 'Pedro Soto',
+    supervisorResponsable2: null,
+    fotosEnviadas: true,
+    infoSubidaApp: false,
+    supervisorId: SUP,
+    supervisorNombre: 'Ana Temporal',
+    inicio: new Date('2026-11-24T10:00:00.000Z'),
+    fin: new Date('2026-11-24T18:05:00.000Z'),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    tarjetas: [tarjeta('c1', 'A'), tarjeta('c2', 'B')],
+    ...over,
+  });
+
+  beforeEach(async () => {
+    const mod = await Test.createTestingModule({
+      providers: [
+        InformesTemporalesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ShiftsService, useValue: { removeCard } },
+        { provide: StorageService, useValue: { sign } },
+        { provide: ChangeLogService, useValue: { record, findFor } },
+      ],
+    }).compile();
+    service = mod.get(InformesTemporalesService);
+    jest.resetAllMocks();
+    prisma.$transaction.mockImplementation(
+      (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma),
+    );
+    sign.mockResolvedValue('https://storage.local/signed/x.jpg');
+    removeCard.mockResolvedValue(undefined);
+  });
+
+  it('list filtra por rango', async () => {
+    prisma.informeTemporal.findMany.mockResolvedValue([row()]);
+
+    const res = await service.findAll({
+      desde: '2026-11-01',
+      hasta: '2026-11-30',
+    });
+
+    const arg = prisma.informeTemporal.findMany.mock.calls[0][0];
+    expect(arg).toMatchObject({
+      where: {
+        fecha: {
+          gte: new Date('2026-11-01T00:00:00.000Z'),
+          lte: new Date('2026-11-30T00:00:00.000Z'),
+        },
+      },
+      orderBy: { numero: 'desc' },
+      take: 500,
+    });
+    expect(res[0].fecha).toBe('2026-11-24');
+  });
+
+  it('list sin rango no filtra por fecha', async () => {
+    prisma.informeTemporal.findMany.mockResolvedValue([]);
+    await service.findAll({});
+    expect(prisma.informeTemporal.findMany.mock.calls[0][0]).toMatchObject({
+      where: {},
+    });
+  });
+
+  it('findOne de otro supervisor temporal da 403', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(row());
+    const otro = buildSession('sup_otro', 'SUPERVISOR_TEMPORAL', 'Otro');
+
+    await expect(service.findOne(ID, otro)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    await expect(
+      service.findOne(ID, buildSession(SUP, 'SUPERVISOR_TEMPORAL')),
+    ).resolves.toMatchObject({ id: ID });
+    await expect(service.findOne(ID, secre)).resolves.toMatchObject({
+      id: ID,
+    });
+  });
+
+  it('findOne inexistente da 404', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(null);
+    await expect(service.findOne(ID, admin)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('update registra ChangeLog y no toca tarjetas', async () => {
+    prisma.informeTemporal.findUnique
+      .mockResolvedValueOnce(row())
+      .mockResolvedValueOnce(row({ actividad1: 'Despeje' }));
+
+    const res = await service.update(ID, { actividad1: 'Despeje' }, secre);
+
+    expect(prisma.informeTemporal.update.mock.calls[0][0]).toMatchObject({
+      where: { id: ID },
+      data: { actividad1: 'Despeje' },
+    });
+    expect(record).toHaveBeenCalledTimes(1);
+    const [, entity, entityId, editor, changes, action] = record.mock
+      .calls[0] as [unknown, string, string, unknown, unknown[], string?];
+    expect(entity).toBe('informe_temporal');
+    expect(entityId).toBe(ID);
+    expect(editor).toEqual({ id: 'sec1', name: 'Sec Uno' });
+    expect(changes).toEqual([
+      {
+        field: 'actividad1',
+        label: 'Actividad 1',
+        before: 'Limpieza de cancha',
+        after: 'Despeje',
+      },
+    ]);
+    expect(action).toBeUndefined();
+    expect(removeCard).not.toHaveBeenCalled();
+    expect(res.actividad1).toBe('Despeje');
+  });
+
+  it('update sin cambios reales no escribe ni registra', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(row());
+    await service.update(ID, { actividad1: 'Limpieza de cancha' }, secre);
+    expect(prisma.informeTemporal.update).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('update valida personal contra el resultado combinado', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(row());
+    await expect(
+      service.update(
+        ID,
+        { personal: [{ actividad: 2, nombre: 'Juan' }] },
+        secre,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.informeTemporal.update).not.toHaveBeenCalled();
+  });
+
+  it('update inexistente da 404', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(null);
+    await expect(
+      service.update(ID, { actividad1: 'x' }, secre),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('delete borra cada tarjeta y luego el informe', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(row());
+    const orden: string[] = [];
+    removeCard.mockImplementation((id) => {
+      orden.push(`card:${id}`);
+      return Promise.resolve();
+    });
+    prisma.informeTemporal.delete.mockImplementation(() => {
+      orden.push('informe');
+      return Promise.resolve({});
+    });
+
+    await service.remove(ID, admin);
+
+    expect(removeCard).toHaveBeenNthCalledWith(1, 'c1', admin);
+    expect(removeCard).toHaveBeenNthCalledWith(2, 'c2', admin);
+    expect(orden).toEqual(['card:c1', 'card:c2', 'informe']);
+    expect(prisma.informeTemporal.delete).toHaveBeenCalledWith({
+      where: { id: ID },
+    });
+    expect(record).toHaveBeenCalledWith(
+      expect.anything(),
+      'informe_temporal',
+      ID,
+      expect.anything(),
+      expect.anything(),
+      'DELETE',
+    );
+  });
+
+  it('delete tolera tarjeta ya borrada', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(row());
+    removeCard.mockRejectedValueOnce(new NotFoundException('ya no existe'));
+
+    await service.remove(ID, admin);
+
+    expect(removeCard).toHaveBeenCalledTimes(2);
+    expect(prisma.informeTemporal.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('delete de un informe ya borrado no falla', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(null);
+    await expect(service.remove(ID, admin)).resolves.toBeUndefined();
+    expect(prisma.informeTemporal.delete).not.toHaveBeenCalled();
+  });
+
+  it('findChanges lee el historial de informe_temporal', async () => {
+    findFor.mockResolvedValue([]);
+    await service.findChanges(ID);
+    expect(findFor).toHaveBeenCalledWith('informe_temporal', ID);
   });
 });
