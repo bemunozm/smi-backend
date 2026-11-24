@@ -14,13 +14,14 @@ import {
 
 import { CreateIntervencionInsumoDto } from './create-intervencion-insumo.dto';
 
-export class CreateIntervencionDto {
-  /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
-   * offline. Opcional para no romper a un cliente que no lo manda. */
-  @IsOptional()
-  @IsUUID('4')
-  id?: string;
-
+/**
+ * Lo que describe el cierre de una intervención (qué se hizo, insumos, foto).
+ * Lo comparten el alta suelta (`CreateIntervencionDto`) y el cierre atómico
+ * de la orden (`FinalizarOrdenDto`); cada uno declara su `id` aparte porque en
+ * uno es opcional y en el otro obligatorio (class-validator hereda los
+ * decoradores: redeclararlo no le quitaría el `@IsOptional`).
+ */
+export class IntervencionBaseDto {
   @IsEnum(TipoOT)
   tipo!: TipoOT;
 
@@ -57,4 +58,12 @@ export class CreateIntervencionDto {
   @ValidateNested({ each: true })
   @Type(() => CreateIntervencionInsumoDto)
   insumos?: CreateIntervencionInsumoDto[];
+}
+
+export class CreateIntervencionDto extends IntervencionBaseDto {
+  /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
+   * offline. Opcional para no romper a un cliente que no lo manda. */
+  @IsOptional()
+  @IsUUID('4')
+  id?: string;
 }
