@@ -49,6 +49,7 @@ export class ShiftCardsController {
     ROLES.ADMIN,
     ROLES.MANTENEDOR,
     ROLES.PREVENCIONISTA,
+    ROLES.SUPERVISOR_TEMPORAL,
   ])
   async open(
     @Body() dto: OpenShiftCardDto,
@@ -89,12 +90,15 @@ export class ShiftCardsController {
   @Post(':id/close')
   @HttpCode(HttpStatus.OK)
   // También el MANTENEDOR: registra el km de la camioneta que usa para
-  // moverse en faena (solo livianos, lo valida el service).
+  // moverse en faena (solo livianos, lo valida el service). Y el
+  // SUPERVISOR_TEMPORAL, solo la de «Mi camioneta»: sus tarjetas temporales
+  // se cierran con el informe (409 `TEMPORAL_CARD`).
   @Roles([
     ROLES.SUPERVISOR,
     ROLES.ADMIN,
     ROLES.MANTENEDOR,
     ROLES.PREVENCIONISTA,
+    ROLES.SUPERVISOR_TEMPORAL,
   ])
   async close(
     @Param('id') id: string,
@@ -120,6 +124,7 @@ export class ShiftCardsController {
     ROLES.ADMIN,
     ROLES.MANTENEDOR,
     ROLES.PREVENCIONISTA,
+    ROLES.SUPERVISOR_TEMPORAL,
   ])
   async addFuelLoad(
     @Param('id') id: string,
@@ -155,8 +160,13 @@ export class ShiftCardsController {
    * Corrección de una tarjeta ya enviada. `X-Expected`
    * (opcional) lleva los valores que el cliente vio al editar; ver
    * `assertExpected`.
+   *
+   * También la SECRETARIA, pero solo sobre tarjetas del supervisor temporal
+   * (corrige lecturas y litros desde el informe); en cualquier otra el
+   * service responde 403.
    */
   @Patch(':id')
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SECRETARIA])
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateShiftCardDto,
@@ -177,6 +187,8 @@ export class ShiftCardsController {
    * administrador.
    */
   @Delete(':id')
+  // También el SUPERVISOR_TEMPORAL: borra su tarjeta abierta por error.
+  @Roles([ROLES.SUPERVISOR, ROLES.ADMIN, ROLES.SUPERVISOR_TEMPORAL])
   @HttpCode(HttpStatus.OK)
   async remove(@Param('id') id: string, @Session() session: UserSession) {
     await this.service.removeCard(id, session);
@@ -202,6 +214,7 @@ export class ShiftCardsController {
     ROLES.ADMIN,
     ROLES.MANTENEDOR,
     ROLES.PREVENCIONISTA,
+    ROLES.SUPERVISOR_TEMPORAL,
   ])
   async mine(@Session() session: UserSession) {
     return { data: await this.service.mine(session), message: 'ok' };

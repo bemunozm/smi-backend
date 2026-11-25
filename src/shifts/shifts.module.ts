@@ -32,6 +32,9 @@ import { ShiftsService } from './shifts.service';
   // `StorageService` — Shifts es dueño de `ShiftExitReport`, Notifications
   // solo orquesta. Ningún módulo de Shifts importa `NotificationsModule`
   // (evita el ciclo).
-  exports: [ShiftReportsService],
+  // `ShiftsService` se exporta para `InformesTemporalesModule`: el informe
+  // del supervisor temporal cierra sus tarjetas con `closeCard` (mismas
+  // reglas de foto, combustible y AdBlue que el cierre suelto).
+  exports: [ShiftReportsService, ShiftsService],
 })
 export class ShiftsModule {}

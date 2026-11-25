@@ -37,6 +37,7 @@ describe('AsistenciaService', () => {
   const prisma = {
     registroHorometro: { findMany: jest.fn() },
     trabajoExtraordinario: { findMany: jest.fn() },
+    informeTemporal: { findMany: jest.fn() },
     user: { findMany: jest.fn() },
     operator: { findMany: jest.fn() },
   };
@@ -52,6 +53,7 @@ describe('AsistenciaService', () => {
     jest.clearAllMocks();
     prisma.registroHorometro.findMany.mockResolvedValue([]);
     prisma.trabajoExtraordinario.findMany.mockResolvedValue([]);
+    prisma.informeTemporal.findMany.mockResolvedValue([]);
     prisma.user.findMany.mockResolvedValue([SUP1, SUP2]);
     prisma.operator.findMany.mockResolvedValue([OP1, OP2]);
   });
@@ -71,6 +73,23 @@ describe('AsistenciaService', () => {
 
     expect(persona(res, 'sup1')).toMatchObject({ dias: [7], total: 1 });
     expect(persona(res, 'op1')).toMatchObject({ dias: [7], total: 1 });
+  });
+
+  it('asistencia marca X al operador del personal del informe temporal', async () => {
+    prisma.informeTemporal.findMany.mockResolvedValue([
+      {
+        fecha: dia('2026-11-09'),
+        personal: [
+          { actividad: 1, operatorId: 'op1', nombre: 'Pedro Rojas' },
+          { actividad: 2, operatorId: null, nombre: 'Externo' },
+        ],
+      },
+    ]);
+
+    const res = await service.mes('2026-11');
+
+    expect(persona(res, 'op1')).toMatchObject({ dias: [9], total: 1 });
+    expect(persona(res, 'sup1')).toMatchObject({ dias: [], total: 0 });
   });
 
   it('un nocturno que cruza medianoche vale UNA sola X, en el día del turno', async () => {

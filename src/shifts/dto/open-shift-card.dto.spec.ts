@@ -22,6 +22,16 @@ describe('OpenShiftCardDto', () => {
     expect(await validate(dto)).toHaveLength(0);
   });
 
+  it('acepta camioneta booleana («Mi camioneta» del supervisor temporal)', async () => {
+    const dto = plainToInstance(OpenShiftCardDto, base({ camioneta: true }));
+    expect(await validate(dto)).toHaveLength(0);
+  });
+
+  it('rechaza camioneta que no es booleana', async () => {
+    const dto = plainToInstance(OpenShiftCardDto, base({ camioneta: 'si' }));
+    expect(await validate(dto)).not.toHaveLength(0);
+  });
+
   it('rechaza un shiftDate que no es una fecha real', async () => {
     const dto = plainToInstance(
       OpenShiftCardDto,

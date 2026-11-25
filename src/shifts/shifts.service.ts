@@ -246,6 +246,9 @@ export interface ShiftCardResponse {
    * livianos), de la más vieja a la más nueva. Vacío si no hay. No incluye
    * la carga del cierre, que sigue en `fuelLiters`/`pumpPhotoUrl`. */
   fuelLoads: ShiftCardFuelLoadResponse[];
+  /** Tarjeta del supervisor temporal que se cierra con su informe («Mis
+   * equipos»). `false` en todas las demás, incluida su camioneta. */
+  temporal: boolean;
 }
 
 export interface ShiftCardSummaryResponse {
@@ -428,9 +431,31 @@ export class ShiftsService {
       dto.capturedAt,
       now,
     );
+    // El supervisor temporal trabaja con horario libre: no hay turno ni día
+    // reportado que validar. Su tarjeta nace sin `Shift` (`shiftId: null`),
+    // marcada `temporal`, y se cierra después junto con las demás en su
+    // informe (`closeCard(..., { viaInforme: true })`). El `shiftDate` que
+    // igual manda el DTO se ignora; `shiftType` queda como `turno` solo
+    // porque la columna es obligatoria.
+    // Su camioneta («Mi camioneta», `dto.camioneta`) va aparte del informe:
+    // es una tarjeta de liviano normal, con turno, como la del prevencionista.
+    const rolTemporal = sessionHasRole(
+      session.user.role,
+      ROLES.SUPERVISOR_TEMPORAL,
+    );
+    const esTemporal = rolTemporal && dto.camioneta !== true;
+    // Día del checklist que libera el equipo: el del `shiftDate` reportado,
+    // o —sin turno, en el temporal— el día de turno de CUANDO abrió (a las
+    // 02:00 sigue corriendo el de ayer, mismo criterio que `shiftDayOf`). Se
+    // mira `capturedAt`, no el reloj del servidor: una apertura que esperó
+    // en la cola offline y llega después de las 08:00 sigue siendo del día
+    // en que se abrió.
+    const checklistDay = parseDateOnlyUtc(
+      esTemporal ? shiftDayOf(capturedAt) : dto.shiftDate,
+    );
     // Ventana razonable de `shiftDate` — antes de tocar cualquier estado
     // (ni el operador, ni menos el `Shift`, que sí escribe).
-    assertShiftDateWithinWindow(dto.shiftDate, now);
+    if (!esTemporal) assertShiftDateWithinWindow(dto.shiftDate, now);
     // Carga histórica (turno YA TERMINADO de un día pasado — `isPastShift`
     // exceptúa al nocturno de anoche que sigue corriendo de madrugada): el
     // estado ACTUAL del equipo no dice nada de ese día (hoy puede estar en
@@ -438,7 +463,9 @@ export class ShiftsService {
     // apertura; y la tarjeta se fecha DENTRO de ese día de negocio, que es
     // por donde agrupan el dashboard y las fichas (`createdAt` conserva
     // cuándo se cargó de verdad).
-    const pastShift = isPastShift(dto.shiftDate, dto.shiftType, now);
+    // (El temporal nunca es carga histórica: abre en vivo, sin día reportado.)
+    const pastShift =
+      !esTemporal && isPastShift(dto.shiftDate, dto.shiftType, now);
     const clientClockSkewMs =
       computeClientClockSkewMs(clientTimeHeader, now) ?? discardedSkewMs;
 
@@ -461,10 +488,12 @@ export class ShiftsService {
     });
     if (!equipoPrecheck) throw new NotFoundException('Equipo no encontrado');
     // El mantenedor y el prevencionista solo se mueven en camioneta: un
-    // pesado lo abre el supervisor, con su operador.
+    // pesado lo abre el supervisor, con su operador. «Mi camioneta» del
+    // supervisor temporal, igual (sus pesados van por «Mis equipos»).
     if (
       (sessionHasRole(session.user.role, ROLES.MANTENEDOR) ||
-        sessionHasRole(session.user.role, ROLES.PREVENCIONISTA)) &&
+        sessionHasRole(session.user.role, ROLES.PREVENCIONISTA) ||
+        (rolTemporal && !esTemporal)) &&
       equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT
     ) {
       throw new ForbiddenException(
@@ -482,11 +511,7 @@ export class ShiftsService {
     }
     // Módulo 3: con el checklist del día por validar o rechazado, el equipo
     // no se libera (se repite dentro de la tx, igual que el estado).
-    await assertChecklistNotPending(
-      this.prisma,
-      dto.equipoId,
-      parseDateOnlyUtc(dto.shiftDate),
-    );
+    await assertChecklistNotPending(this.prisma, dto.equipoId, checklistDay);
 
     const supervisorId = session.user.id;
 
@@ -494,11 +519,10 @@ export class ShiftsService {
     // de la transacción de la tarjeta: el turno es un recurso
     // compartido entre tarjetas (y con el Módulo B) — no debe
     // depender de que ESTA tarjeta específica llegue a crearse.
-    const shift = await this.upsertShift(
-      supervisorId,
-      dto.shiftDate,
-      dto.shiftType,
-    );
+    // El temporal no tiene turno: ni se crea uno.
+    const shift = esTemporal
+      ? null
+      : await this.upsertShift(supervisorId, dto.shiftDate, dto.shiftType);
 
     try {
       const card = await this.prisma.$transaction(async (tx) => {
@@ -542,11 +566,7 @@ export class ShiftsService {
             code: ERROR_CODES.EQUIPMENT_NOT_OPERATIONAL,
           });
         }
-        await assertChecklistNotPending(
-          tx,
-          dto.equipoId,
-          parseDateOnlyUtc(dto.shiftDate),
-        );
+        await assertChecklistNotPending(tx, dto.equipoId, checklistDay);
 
         // Fast-path aplicativo — la garantía dura es el índice único parcial
         // `(equipo_id) WHERE "valorFinal" IS NULL` (mismo índice que usa
@@ -589,7 +609,8 @@ export class ShiftsService {
               operador: operator?.name ?? '',
               operatorId: operator?.id ?? null,
               supervisorId,
-              shiftId: shift.id,
+              shiftId: shift?.id ?? null,
+              temporal: esTemporal,
               fecha: pastShift
                 ? businessDayInstant(
                     dto.shiftDate,
@@ -627,12 +648,19 @@ export class ShiftsService {
    * `POST /api/shift-cards/:id/close` — cierra una tarjeta abierta. Requiere
    * litros (0 permitido) y SIEMPRE una foto (aun con 0 L). Idempotente por
    * `dto.closeClientId`.
+   *
+   * La tarjeta del supervisor temporal (`temporal`) no se cierra por acá:
+   * se cierra con su informe, que llama con `opts.viaInforme` (sin turno de
+   * quien cierra y con `closedShiftId = null`). Sin él, 409 `TEMPORAL_CARD`
+   * — salvo el ADMIN, que puede cerrar cualquier tarjeta.
    */
   async closeCard(
     id: string,
     dto: CloseShiftCardDto,
     session: UserSession,
+    opts?: { viaInforme?: boolean },
   ): Promise<ShiftCardResponse> {
+    const viaInforme = opts?.viaInforme === true;
     const now = new Date();
 
     const card = await this.prisma.registroHorometro.findUnique({
@@ -648,23 +676,37 @@ export class ShiftsService {
       });
     }
 
+    const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
+    // La tarjeta del supervisor temporal se cierra con su informe, junto con
+    // las demás de su jornada — ni él ni otro supervisor la cierran suelta
+    // (el ADMIN sí, como cualquier otra). Antes del chequeo de dueño: un
+    // liviano temporal ajeno no debe llegar ni a decir «no es tuya».
+    if (card.temporal && !viaInforme && !isAdmin) {
+      throw this.temporalCard();
+    }
+
     // El chequeo de dueño va INMEDIATAMENTE después del 404, ANTES que el
     // replay idempotente de abajo. Si no, un
     // supervisor B que reenviara (adivinado, filtrado, o simplemente
     // reintentado a mano) el `closeClientId` de una tarjeta A ajena caería en
     // la rama de replay, que devolvería la tarjeta COMPLETA de A —incluida la
     // URL firmada de su foto— sin pasar nunca por este chequeo.
-    const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
     // Un vehículo LIVIANO lo puede cerrar cualquier supervisor: la carga de
     // combustible se hace a veces 24–48 h después, en otro turno, y no
     // siempre por quien abrió la tarjeta (pedido del cliente, 24/10). Los
-    // pesados mantienen la regla de dueño.
+    // pesados mantienen la regla de dueño — y la tarjeta temporal también,
+    // aunque sea de un liviano: solo su supervisor la cierra (con el informe).
     const equipoCierre = await this.prisma.equipment.findUnique({
       where: { id: card.equipoId },
       select: { equipmentClass: true },
     });
     const esLiviano = equipoCierre?.equipmentClass === EquipmentClass.LIGHT;
-    if (card.supervisorId !== session.user.id && !isAdmin && !esLiviano) {
+    const cualquieraCierra = esLiviano && !card.temporal;
+    if (
+      card.supervisorId !== session.user.id &&
+      !isAdmin &&
+      !cualquieraCierra
+    ) {
       throw new ForbiddenException({
         message: 'No puedes cerrar la tarjeta de otro supervisor',
         code: ERROR_CODES.NOT_OWNER,
@@ -714,7 +756,13 @@ export class ShiftsService {
     let fuelShiftDay = card.shift
       ? { day: formatDateOnly(card.shift.date), type: card.shift.type }
       : { day: shiftDayOf(card.fecha), type: card.turno };
-    if (esLiviano) {
+    // Una tarjeta temporal NUNCA entra a un turno — ni cerrada por su informe
+    // ni cerrada suelta por el ADMIN (que si no la colgaría de SU `Shift` y
+    // se filtraría a su reporte de salida): no se exige ni se crea el turno
+    // de quien cierra, `closedShiftId` queda `null` y la carga se fecha por
+    // el reloj de apertura (`shiftDayOf(card.fecha)`, arriba).
+    const sinTurno = viaInforme || card.temporal;
+    if (esLiviano && !sinTurno) {
       if (!dto.shiftDate || !dto.shiftType) {
         throw new BadRequestException(
           'Falta el turno de quien cierra la tarjeta del liviano.',
@@ -1026,6 +1074,7 @@ export class ShiftsService {
         valorInicial: true,
         valorFinal: true,
         closedAt: true,
+        temporal: true,
         equipo: {
           select: {
             internalCode: true,
@@ -1038,6 +1087,10 @@ export class ShiftsService {
       },
     });
     if (!card) throw this.cardNotFound();
+    // La tarjeta temporal informa su combustible al cerrarse con el informe:
+    // no admite cargas en curso de nadie (ni del ADMIN), que quedarían
+    // colgando de una tarjeta que no se cierra por el flujo normal.
+    if (card.temporal) throw this.temporalCard();
 
     // Sin chequeo de dueño: un liviano lo puede cerrar cualquier supervisor
     // (ver `closeCard`), y cargarle combustible es parte de ese mismo flujo.
@@ -1451,7 +1504,8 @@ export class ShiftsService {
   }
 
   /**
-   * `PATCH /api/shift-cards/:id` — corrige una tarjeta ya enviada. Solo el supervisor dueño o un ADMIN.
+   * `PATCH /api/shift-cards/:id` — corrige una tarjeta ya enviada. Solo el
+   * supervisor dueño o un ADMIN; la SECRETARIA, solo una tarjeta temporal.
    *
    * Es seguro de reintentar desde la cola offline: la fila se bloquea
    * (`FOR UPDATE`) y se relee dentro de la transacción, y `X-Expected` deja
@@ -1576,6 +1630,29 @@ export class ShiftsService {
       throw new ForbiddenException({
         message: 'No puedes eliminar la tarjeta de otro supervisor',
         code: ERROR_CODES.NOT_OWNER,
+      });
+    }
+    // El supervisor temporal borra solo tarjetas de su informe: su camioneta
+    // la trata como el prevencionista, que no elimina tarjetas.
+    if (
+      !card.temporal &&
+      !isAdmin &&
+      sessionHasRole(session.user.role, ROLES.SUPERVISOR_TEMPORAL) &&
+      !sessionHasRole(session.user.role, ROLES.SUPERVISOR)
+    ) {
+      throw new ForbiddenException({
+        message: 'No puedes eliminar el uso de tu camioneta.',
+        code: ERROR_CODES.NOT_OWNER,
+      });
+    }
+    // El supervisor temporal solo borra su tarjeta ABIERTA (abierta por
+    // error). Una cerrada ya es parte de su informe —o de un lote que se
+    // enlazará al siguiente—: la elimina el ADMIN, con el informe.
+    if (card.temporal && !isAdmin && card.valorFinal != null) {
+      throw new ConflictException({
+        message:
+          'Esta tarjeta ya se cerró con el informe: solo el administrador puede eliminarla.',
+        code: ERROR_CODES.TEMPORAL_CARD,
       });
     }
     const abierta = card.valorFinal === null;
@@ -2223,7 +2300,11 @@ export class ShiftsService {
     }
   }
 
-  /** La tarjeta si existe y la sesión es su dueña o ADMIN; si no, 404 / 403. */
+  /**
+   * La tarjeta si existe y la sesión es su dueña o ADMIN; si no, 404 / 403.
+   * La SECRETARIA solo corrige tarjetas del supervisor temporal (lecturas y
+   * litros desde el detalle de su informe): cualquier otra, 403.
+   */
   private async findOwnedCard(id: string, session: UserSession) {
     const card = await this.prisma.registroHorometro.findUnique({
       where: { id },
@@ -2231,6 +2312,7 @@ export class ShiftsService {
         supervisorId: true,
         operatorId: true,
         valorFinal: true,
+        temporal: true,
         // El turno al que pertenece: la clave del `Shift` de destino cuando la
         // edición corrige el turno (mismo día y supervisor, otro tipo).
         shift: { select: { type: true, date: true, supervisorId: true } },
@@ -2239,7 +2321,10 @@ export class ShiftsService {
     if (!card) throw this.cardNotFound();
 
     const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
+    const secretariaEnTemporal =
+      card.temporal && sessionHasRole(session.user.role, ROLES.SECRETARIA);
     if (card.supervisorId !== session.user.id && !isAdmin) {
+      if (secretariaEnTemporal) return card;
       throw new ForbiddenException({
         message: 'No puedes modificar la tarjeta de otro supervisor',
         code: ERROR_CODES.NOT_OWNER,
@@ -2308,6 +2393,14 @@ export class ShiftsService {
     this.assertReadingCoversFuelLoads(valorFinal, _max.lectura);
   }
 
+  /** 409 de una tarjeta del supervisor temporal fuera de su informe. */
+  private temporalCard(): ConflictException {
+    return new ConflictException({
+      message: 'Esta tarjeta se cierra con el informe del supervisor temporal.',
+      code: ERROR_CODES.TEMPORAL_CARD,
+    });
+  }
+
   private cardNotFound(): NotFoundException {
     return new NotFoundException({
       message: 'Tarjeta no encontrada',
@@ -2325,7 +2418,12 @@ export class ShiftsService {
     const cutoff = new Date(Date.now() - MINE_CLOSED_WINDOW_MS);
 
     // Además de las propias: las tarjetas de livianos ABIERTAS (cualquiera
-    // las puede cerrar) y las de livianos que cerró este supervisor.
+    // las puede cerrar) y las de livianos que cerró este supervisor. Las del
+    // supervisor temporal son privadas: nadie más que el ADMIN ve un liviano
+    // temporal ajeno — no lo puede cerrar (`TEMPORAL_CARD`). El supervisor
+    // temporal ve lo mismo que el resto: sus tarjetas (temporales y las de su
+    // camioneta) y los livianos ajenos para «Mi camioneta»; el campo
+    // `temporal` le dice a «Mis equipos» cuáles van en su informe.
     const visibles: Prisma.RegistroHorometroWhereInput = isAdmin
       ? {}
       : {
@@ -2333,6 +2431,7 @@ export class ShiftsService {
             { supervisorId: session.user.id },
             {
               equipo: { equipmentClass: EquipmentClass.LIGHT },
+              temporal: false,
               OR: [{ valorFinal: null }, { closedById: session.user.id }],
             },
           ],
@@ -2786,6 +2885,7 @@ export class ShiftsService {
               : null,
           })),
         ),
+        temporal: card.temporal,
       })),
     );
   }

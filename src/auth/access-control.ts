@@ -72,10 +72,17 @@ const prevencionistaRole = ac.newRole({
   session: [],
 });
 
+/** SUPERVISOR_TEMPORAL: igual, sin permisos del plugin admin. */
+const supervisorTemporalRole = ac.newRole({
+  user: [],
+  session: [],
+});
+
 export const roles = {
   [ROLES.ADMIN]: adminRole,
   [ROLES.SUPERVISOR]: supervisorRole,
   [ROLES.MANTENEDOR]: mantenedorRole,
   [ROLES.SECRETARIA]: secretariaRole,
   [ROLES.PREVENCIONISTA]: prevencionistaRole,
+  [ROLES.SUPERVISOR_TEMPORAL]: supervisorTemporalRole,
 };
