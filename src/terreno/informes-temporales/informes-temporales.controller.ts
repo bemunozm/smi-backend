@@ -44,6 +44,14 @@ export class InformesTemporalesController {
     return { data: await this.service.findAll(query), message: 'ok' };
   }
 
+  /** «Mis reportes»: los informes que envió el supervisor de la sesión.
+   * Va ANTES de `:id` para que `mine` no se lea como un id. */
+  @Get('mine')
+  @Roles([ROLES.SUPERVISOR_TEMPORAL])
+  async findMine(@Session() session: UserSession) {
+    return { data: await this.service.findMine(session), message: 'ok' };
+  }
+
   /** El supervisor temporal solo ve el suyo (lo valida el servicio). */
   @Get(':id')
   @Roles([ROLES.ADMIN, ROLES.SECRETARIA, ROLES.SUPERVISOR_TEMPORAL])

@@ -323,6 +323,21 @@ export class InformesTemporalesService {
     return Promise.all(rows.map((row) => this.shape(row)));
   }
 
+  /**
+   * `GET /api/informes-temporales/mine` — «Mis reportes» del supervisor
+   * temporal: solo los que envió él, del más nuevo al más viejo, con tope de
+   * 100 (es un historial para consultar en terreno, no un archivo).
+   */
+  async findMine(session: UserSession): Promise<InformeTemporalResponse[]> {
+    const rows = await this.prisma.informeTemporal.findMany({
+      where: { supervisorId: session.user.id },
+      include: INFORME_INCLUDE,
+      orderBy: { numero: 'desc' },
+      take: 100,
+    });
+    return Promise.all(rows.map((row) => this.shape(row)));
+  }
+
   /** Un supervisor temporal solo ve SUS informes; ADMIN/SECRETARIA, todos. */
   async findOne(
     id: string,

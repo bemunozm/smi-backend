@@ -334,7 +334,7 @@ describe('InformesTemporalesService.create', () => {
   it('más de 10 personas en una actividad da 400', async () => {
     prisma.informeTemporal.findUnique.mockResolvedValue(null);
     const personal = Array.from({ length: 11 }, (_, i) => ({
-      actividad: 1,
+      actividad: 1 as const,
       nombre: `Persona ${i}`,
     }));
 
@@ -366,7 +366,7 @@ describe('InformesTemporalesService (listar, corregir, eliminar)', () => {
 
   const prisma = {
     informeTemporal: {
-      findMany: jest.fn<unknown, [Record<string, unknown>]>(),
+      findMany: jest.fn<Promise<unknown>, [Record<string, unknown>]>(),
       findUnique: jest.fn(),
       update: jest.fn<unknown, [Record<string, unknown>]>(),
       delete: jest.fn<unknown, [Record<string, unknown>]>(),
@@ -465,6 +465,26 @@ describe('InformesTemporalesService (listar, corregir, eliminar)', () => {
     expect(prisma.informeTemporal.findMany.mock.calls[0][0]).toMatchObject({
       where: {},
     });
+  });
+
+  it('findMine trae solo los del supervisor de la sesión, del más nuevo al más viejo', async () => {
+    prisma.informeTemporal.findMany.mockResolvedValue([row()]);
+
+    const res = await service.findMine(
+      buildSession(SUP, 'SUPERVISOR_TEMPORAL'),
+    );
+
+    expect(prisma.informeTemporal.findMany.mock.calls[0][0]).toMatchObject({
+      where: { supervisorId: SUP },
+      orderBy: { numero: 'desc' },
+      take: 100,
+    });
+    expect(res).toHaveLength(1);
+    expect(res[0]).toMatchObject({ id: ID, fecha: '2026-11-24' });
+    expect(res[0].tarjetas.map((t) => t.equipo.internalCode)).toEqual([
+      'A',
+      'B',
+    ]);
   });
 
   it('findOne de otro supervisor temporal da 403', async () => {
