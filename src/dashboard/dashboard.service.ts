@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
+import { ROLES, sessionHasRole } from '../auth/roles';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { businessDayKey } from '../common/dates/business-time';
 import { cardShiftDay, parseDateOnlyUtc } from '../shifts/date-only';
@@ -451,6 +452,22 @@ export class DashboardService {
         s.supervisorId,
         (turnosPorSup.get(s.supervisorId) ?? 0) + 1,
       );
+    }
+
+    // El supervisor temporal tampoco figura por las tarjetas no temporales de
+    // su camioneta («Mi camioneta»): sus horas cuentan solo en el turno.
+    const idsSupervisores = [...supAcc.keys()].filter((id) => id !== '');
+    const temporales =
+      idsSupervisores.length > 0
+        ? await this.prisma.user.findMany({
+            where: { id: { in: idsSupervisores } },
+            select: { id: true, role: true },
+          })
+        : [];
+    for (const u of temporales) {
+      if (sessionHasRole(u.role ?? undefined, ROLES.SUPERVISOR_TEMPORAL)) {
+        supAcc.delete(u.id);
+      }
     }
 
     const nombres = await this.nombresDe([...supAcc.keys()]);
