@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsDateString,
   IsIn,
   IsNumber,
@@ -49,4 +50,13 @@ export class OpenShiftCardDto {
    * `capture-time.ts`. */
   @IsDateString()
   capturedAt!: string;
+
+  /** Apertura desde «Mi camioneta» del supervisor temporal: la camioneta con
+   * que se mueve va aparte de su informe — tarjeta de liviano normal, con
+   * turno, que se cierra sola (igual que la del prevencionista). Sin el
+   * campo, su tarjeta sigue siendo temporal («Mis equipos»). Los demás roles
+   * la ignoran: sus tarjetas nunca son temporales. */
+  @IsOptional()
+  @IsBoolean()
+  camioneta?: boolean;
 }

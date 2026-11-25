@@ -246,6 +246,9 @@ export interface ShiftCardResponse {
    * livianos), de la más vieja a la más nueva. Vacío si no hay. No incluye
    * la carga del cierre, que sigue en `fuelLiters`/`pumpPhotoUrl`. */
   fuelLoads: ShiftCardFuelLoadResponse[];
+  /** Tarjeta del supervisor temporal que se cierra con su informe («Mis
+   * equipos»). `false` en todas las demás, incluida su camioneta. */
+  temporal: boolean;
 }
 
 export interface ShiftCardSummaryResponse {
@@ -434,10 +437,13 @@ export class ShiftsService {
     // informe (`closeCard(..., { viaInforme: true })`). El `shiftDate` que
     // igual manda el DTO se ignora; `shiftType` queda como `turno` solo
     // porque la columna es obligatoria.
-    const esTemporal = sessionHasRole(
+    // Su camioneta («Mi camioneta», `dto.camioneta`) va aparte del informe:
+    // es una tarjeta de liviano normal, con turno, como la del prevencionista.
+    const rolTemporal = sessionHasRole(
       session.user.role,
       ROLES.SUPERVISOR_TEMPORAL,
     );
+    const esTemporal = rolTemporal && dto.camioneta !== true;
     // Día del checklist que libera el equipo: el del `shiftDate` reportado,
     // o —sin turno, en el temporal— el día de turno de CUANDO abrió (a las
     // 02:00 sigue corriendo el de ayer, mismo criterio que `shiftDayOf`). Se
@@ -482,10 +488,12 @@ export class ShiftsService {
     });
     if (!equipoPrecheck) throw new NotFoundException('Equipo no encontrado');
     // El mantenedor y el prevencionista solo se mueven en camioneta: un
-    // pesado lo abre el supervisor, con su operador.
+    // pesado lo abre el supervisor, con su operador. «Mi camioneta» del
+    // supervisor temporal, igual (sus pesados van por «Mis equipos»).
     if (
       (sessionHasRole(session.user.role, ROLES.MANTENEDOR) ||
-        sessionHasRole(session.user.role, ROLES.PREVENCIONISTA)) &&
+        sessionHasRole(session.user.role, ROLES.PREVENCIONISTA) ||
+        (rolTemporal && !esTemporal)) &&
       equipoPrecheck.equipmentClass !== EquipmentClass.LIGHT
     ) {
       throw new ForbiddenException(
@@ -1624,6 +1632,19 @@ export class ShiftsService {
         code: ERROR_CODES.NOT_OWNER,
       });
     }
+    // El supervisor temporal borra solo tarjetas de su informe: su camioneta
+    // la trata como el prevencionista, que no elimina tarjetas.
+    if (
+      !card.temporal &&
+      !isAdmin &&
+      sessionHasRole(session.user.role, ROLES.SUPERVISOR_TEMPORAL) &&
+      !sessionHasRole(session.user.role, ROLES.SUPERVISOR)
+    ) {
+      throw new ForbiddenException({
+        message: 'No puedes eliminar el uso de tu camioneta.',
+        code: ERROR_CODES.NOT_OWNER,
+      });
+    }
     // El supervisor temporal solo borra su tarjeta ABIERTA (abierta por
     // error). Una cerrada ya es parte de su informe —o de un lote que se
     // enlazará al siguiente—: la elimina el ADMIN, con el informe.
@@ -2394,32 +2415,27 @@ export class ShiftsService {
    */
   async mine(session: UserSession): Promise<ShiftCardResponse[]> {
     const isAdmin = sessionHasRole(session.user.role, ROLES.ADMIN);
-    const esTemporal = sessionHasRole(
-      session.user.role,
-      ROLES.SUPERVISOR_TEMPORAL,
-    );
     const cutoff = new Date(Date.now() - MINE_CLOSED_WINDOW_MS);
 
     // Además de las propias: las tarjetas de livianos ABIERTAS (cualquiera
     // las puede cerrar) y las de livianos que cerró este supervisor. Las del
-    // supervisor temporal son privadas: él ve solo las suyas (todas
-    // temporales), y nadie más que el ADMIN ve un liviano temporal ajeno —
-    // no lo puede cerrar (`TEMPORAL_CARD`). Las propias de un no-temporal
-    // nunca son temporales, así que esa rama no necesita el filtro.
+    // supervisor temporal son privadas: nadie más que el ADMIN ve un liviano
+    // temporal ajeno — no lo puede cerrar (`TEMPORAL_CARD`). El supervisor
+    // temporal ve lo mismo que el resto: sus tarjetas (temporales y las de su
+    // camioneta) y los livianos ajenos para «Mi camioneta»; el campo
+    // `temporal` le dice a «Mis equipos» cuáles van en su informe.
     const visibles: Prisma.RegistroHorometroWhereInput = isAdmin
       ? {}
-      : esTemporal
-        ? { supervisorId: session.user.id, temporal: true }
-        : {
-            OR: [
-              { supervisorId: session.user.id },
-              {
-                equipo: { equipmentClass: EquipmentClass.LIGHT },
-                temporal: false,
-                OR: [{ valorFinal: null }, { closedById: session.user.id }],
-              },
-            ],
-          };
+      : {
+          OR: [
+            { supervisorId: session.user.id },
+            {
+              equipo: { equipmentClass: EquipmentClass.LIGHT },
+              temporal: false,
+              OR: [{ valorFinal: null }, { closedById: session.user.id }],
+            },
+          ],
+        };
     const cards = await this.prisma.registroHorometro.findMany({
       where: {
         AND: [
@@ -2869,6 +2885,7 @@ export class ShiftsService {
               : null,
           })),
         ),
+        temporal: card.temporal,
       })),
     );
   }

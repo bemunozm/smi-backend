@@ -3807,6 +3807,17 @@ describe('ShiftsService', () => {
         });
       });
 
+      it('no elimina el uso de su camioneta (no temporal): 403', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue(
+          deletableCard({ temporal: false }),
+        );
+
+        expect(
+          await errorOf(service.removeCard('card_1', temporal)),
+        ).toMatchObject({ code: 'NOT_OWNER' });
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
       it('el ADMIN sí elimina la cerrada', async () => {
         prisma.registroHorometro.findUnique.mockResolvedValue(
           deletableCard({ temporal: true }),
@@ -4651,7 +4662,7 @@ describe('ShiftsService', () => {
       });
     });
 
-    it('mine de SUPERVISOR_TEMPORAL solo trae las suyas temporales', async () => {
+    it('mine de SUPERVISOR_TEMPORAL trae las suyas y los livianos no temporales para «Mi camioneta»', async () => {
       prisma.registroHorometro.findMany.mockResolvedValue([]);
 
       await service.mine(temporal);
@@ -4659,9 +4670,168 @@ describe('ShiftsService', () => {
       const [args] = prisma.registroHorometro.findMany.mock.calls[0] as [
         { where: { AND: [Record<string, unknown>, unknown] } },
       ];
+      // Las propias (temporales y de su camioneta) y los livianos ajenos no
+      // temporales; «Mis equipos» se queda con las `temporal` de la respuesta.
       expect(args.where.AND[0]).toEqual({
-        supervisorId: 'tmp_1',
-        temporal: true,
+        OR: [
+          { supervisorId: 'tmp_1' },
+          {
+            equipo: { equipmentClass: 'LIGHT' },
+            temporal: false,
+            OR: [{ valorFinal: null }, { closedById: 'tmp_1' }],
+          },
+        ],
+      });
+    });
+
+    it('la respuesta dice si la tarjeta es temporal', async () => {
+      prisma.registroHorometro.findMany.mockResolvedValue([
+        buildCardRecord({ id: 'card_t1', temporal: true, shift: null }),
+        buildCardRecord({ id: 'card_c1', temporal: false }),
+      ]);
+
+      const cards = await service.mine(temporal);
+
+      expect(cards.map((c) => [c.id, c.temporal])).toEqual([
+        ['card_t1', true],
+        ['card_c1', false],
+      ]);
+    });
+
+    describe('«Mi camioneta» (camioneta: true)', () => {
+      const camionetaDto: OpenShiftCardDto = {
+        ...openDto,
+        id: 'card_c1',
+        operatorId: undefined,
+        camioneta: true,
+      };
+
+      it('abre una tarjeta de liviano normal: con turno y no temporal', async () => {
+        prisma.equipment.findUnique.mockResolvedValueOnce({
+          status: 'OPERATIONAL',
+          equipmentClass: 'LIGHT',
+        });
+
+        await service.openCard(camionetaDto, temporal);
+
+        expect(prisma.shift.upsert).toHaveBeenCalled();
+        expect(lastCallData(tx.registroHorometro.create)).toMatchObject({
+          temporal: false,
+          shiftId: 'shift_1',
+          supervisorId: 'tmp_1',
+          operatorId: null,
+        });
+      });
+
+      it('igual que el prevencionista: un pesado da 403', async () => {
+        prisma.equipment.findUnique.mockResolvedValueOnce({
+          status: 'OPERATIONAL',
+          equipmentClass: 'HEAVY',
+        });
+
+        await expect(
+          service.openCard({ ...camionetaDto, operatorId: 'op_1' }, temporal),
+        ).rejects.toThrow('Solo puedes registrar el uso de vehículos livianos');
+        expect(tx.registroHorometro.create).not.toHaveBeenCalled();
+      });
+
+      it('valida la ventana del turno como cualquier apertura con turno', async () => {
+        prisma.equipment.findUnique.mockResolvedValueOnce({
+          status: 'OPERATIONAL',
+          equipmentClass: 'LIGHT',
+        });
+
+        await expect(
+          service.openCard(
+            { ...camionetaDto, shiftDate: todayShiftDate(-40) },
+            temporal,
+          ),
+        ).rejects.toMatchObject({ response: { code: 'INVALID_SHIFT_DATE' } });
+      });
+
+      it('sin el campo, «Mis equipos» sigue abriendo un liviano temporal', async () => {
+        prisma.equipment.findUnique.mockResolvedValueOnce({
+          status: 'OPERATIONAL',
+          equipmentClass: 'LIGHT',
+        });
+
+        await service.openCard({ ...openDto, operatorId: undefined }, temporal);
+
+        expect(prisma.shift.upsert).not.toHaveBeenCalled();
+        expect(lastCallData(tx.registroHorometro.create)).toMatchObject({
+          temporal: true,
+          shiftId: null,
+        });
+      });
+
+      it('en otro rol el campo no cambia nada', async () => {
+        prisma.equipment.findUnique.mockResolvedValueOnce({
+          status: 'OPERATIONAL',
+          equipmentClass: 'LIGHT',
+        });
+
+        await service.openCard(camionetaDto, buildSession('sup_1'));
+
+        expect(lastCallData(tx.registroHorometro.create)).toMatchObject({
+          temporal: false,
+          supervisorId: 'sup_1',
+        });
+      });
+
+      it('la cierra él mismo, sin informe, en su turno', async () => {
+        prisma.registroHorometro.findUnique.mockResolvedValue({
+          id: 'card_c1',
+          equipoId: 'e1',
+          valorInicial: 100,
+          valorFinal: null,
+          supervisorId: 'tmp_1',
+          closeClientId: null,
+          closedAt: null,
+          temporal: false,
+          turno: 'DIURNO',
+          shift: { date: new Date(), type: 'DIURNO' },
+          fecha: new Date(),
+          createdAt: new Date(),
+          clientClockSkewMs: null,
+          belowPreviousReading: false,
+        });
+        prisma.equipment.findUnique.mockResolvedValue({
+          equipmentClass: 'LIGHT',
+        });
+        tx.equipment.findUnique.mockResolvedValue({
+          controlUnit: 'KM',
+          currentHourmeter: null,
+          currentMileage: 100,
+        });
+        tx.registroHorometro.findUnique.mockResolvedValue(
+          buildCardRecord({
+            id: 'card_c1',
+            valorFinal: 130,
+            equipo: { ...EQUIPO_INCLUDE, equipmentClass: 'LIGHT' },
+          }),
+        );
+
+        await expect(
+          service.closeCard(
+            'card_c1',
+            {
+              closeClientId: 'close_c1',
+              valorFinal: 130,
+              fuelLiters: 0,
+              noFuelReason: 'Sin carga',
+              capturedAt: iso(),
+              shiftDate: todayShiftDate(),
+              shiftType: 'DIURNO',
+            },
+            temporal,
+          ),
+        ).resolves.toBeDefined();
+
+        expect(prisma.shift.upsert).toHaveBeenCalled();
+        expect(lastCallData(tx.registroHorometro.updateMany)).toMatchObject({
+          closedById: 'tmp_1',
+          closedShiftId: 'shift_1',
+        });
       });
     });
   });

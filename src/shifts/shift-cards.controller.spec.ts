@@ -25,4 +25,11 @@ describe('ShiftCardsController (roles)', () => {
     expect(rolesDe('remove')).not.toContain(ROLES.SECRETARIA);
     expect(rolesDe('close')).not.toContain(ROLES.SECRETARIA);
   });
+
+  it('el SUPERVISOR_TEMPORAL abre, cierra y carga combustible en su camioneta (el service rechaza sus temporales)', () => {
+    expect(rolesDe('open')).toContain(ROLES.SUPERVISOR_TEMPORAL);
+    expect(rolesDe('close')).toContain(ROLES.SUPERVISOR_TEMPORAL);
+    expect(rolesDe('addFuelLoad')).toContain(ROLES.SUPERVISOR_TEMPORAL);
+    expect(rolesDe('mine')).toContain(ROLES.SUPERVISOR_TEMPORAL);
+  });
 });

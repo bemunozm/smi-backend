@@ -90,12 +90,15 @@ export class ShiftCardsController {
   @Post(':id/close')
   @HttpCode(HttpStatus.OK)
   // También el MANTENEDOR: registra el km de la camioneta que usa para
-  // moverse en faena (solo livianos, lo valida el service).
+  // moverse en faena (solo livianos, lo valida el service). Y el
+  // SUPERVISOR_TEMPORAL, solo la de «Mi camioneta»: sus tarjetas temporales
+  // se cierran con el informe (409 `TEMPORAL_CARD`).
   @Roles([
     ROLES.SUPERVISOR,
     ROLES.ADMIN,
     ROLES.MANTENEDOR,
     ROLES.PREVENCIONISTA,
+    ROLES.SUPERVISOR_TEMPORAL,
   ])
   async close(
     @Param('id') id: string,
@@ -121,6 +124,7 @@ export class ShiftCardsController {
     ROLES.ADMIN,
     ROLES.MANTENEDOR,
     ROLES.PREVENCIONISTA,
+    ROLES.SUPERVISOR_TEMPORAL,
   ])
   async addFuelLoad(
     @Param('id') id: string,

@@ -44,6 +44,8 @@ const LIGHT_ASSIGNEE_ROLES: readonly string[] = [
   ROLES.MANTENEDOR,
   ROLES.ADMIN,
   ROLES.PREVENCIONISTA,
+  // Su camioneta («Mi camioneta»), aparte de los equipos de su informe.
+  ROLES.SUPERVISOR_TEMPORAL,
 ];
 
 /**

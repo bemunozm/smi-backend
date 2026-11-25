@@ -1225,7 +1225,7 @@ describe('EquipmentService', () => {
       });
     });
 
-    it.each([ROLES.ADMIN, ROLES.PREVENCIONISTA])(
+    it.each([ROLES.ADMIN, ROLES.PREVENCIONISTA, ROLES.SUPERVISOR_TEMPORAL])(
       'liviano: acepta un %s a cargo (la camioneta la usa quien se mueve en faena)',
       async (role) => {
         findUnique.mockResolvedValue({ id: 'eq_1', equipmentClass: 'LIGHT' });
@@ -1558,8 +1558,14 @@ describe('EquipmentService', () => {
         tipo: 'PREVENTIVA',
         updatedAt: new Date('2026-10-20T12:00:00Z'),
         tareas: [
-          { hechaAt: new Date('2026-10-18T10:00:00Z'), hechaPorNombre: 'Luis Vega' },
-          { hechaAt: new Date('2026-10-19T16:30:00Z'), hechaPorNombre: 'Pedro Soto' },
+          {
+            hechaAt: new Date('2026-10-18T10:00:00Z'),
+            hechaPorNombre: 'Luis Vega',
+          },
+          {
+            hechaAt: new Date('2026-10-19T16:30:00Z'),
+            hechaPorNombre: 'Pedro Soto',
+          },
           { hechaAt: null, hechaPorNombre: null },
         ],
       });
