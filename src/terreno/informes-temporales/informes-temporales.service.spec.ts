@@ -95,6 +95,7 @@ describe('InformesTemporalesService.create', () => {
     supervisorNombre: 'Ana Temporal',
     inicio: new Date('2026-11-24T10:00:00.000Z'),
     fin: new Date('2026-11-24T18:05:00.000Z'),
+    fotoKey: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     tarjetas: [
@@ -377,6 +378,7 @@ describe('InformesTemporalesService (listar, corregir, eliminar)', () => {
   const record = jest.fn();
   const findFor = jest.fn();
   const sign = jest.fn();
+  const deleteBestEffort = jest.fn();
 
   const tarjeta = (id: string, code: string) => ({
     id,
@@ -412,6 +414,7 @@ describe('InformesTemporalesService (listar, corregir, eliminar)', () => {
     supervisorNombre: 'Ana Temporal',
     inicio: new Date('2026-11-24T10:00:00.000Z'),
     fin: new Date('2026-11-24T18:05:00.000Z'),
+    fotoKey: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     tarjetas: [tarjeta('c1', 'A'), tarjeta('c2', 'B')],
@@ -424,7 +427,7 @@ describe('InformesTemporalesService (listar, corregir, eliminar)', () => {
         InformesTemporalesService,
         { provide: PrismaService, useValue: prisma },
         { provide: ShiftsService, useValue: { removeCard } },
-        { provide: StorageService, useValue: { sign } },
+        { provide: StorageService, useValue: { sign, deleteBestEffort } },
         { provide: ChangeLogService, useValue: { record, findFor } },
       ],
     }).compile();
@@ -435,6 +438,41 @@ describe('InformesTemporalesService (listar, corregir, eliminar)', () => {
     );
     sign.mockResolvedValue('https://storage.local/signed/x.jpg');
     removeCard.mockResolvedValue(undefined);
+    deleteBestEffort.mockResolvedValue(undefined);
+  });
+
+  it('la foto del report sale como URL firmada en list, mine y detalle, nunca la key', async () => {
+    const conFoto = row({ fotoKey: 'trabajo-extra-photo/abc.jpg' });
+    sign.mockImplementation((key: string) =>
+      Promise.resolve(`https://storage.local/signed/${key}`),
+    );
+    prisma.informeTemporal.findMany.mockResolvedValue([conFoto]);
+    prisma.informeTemporal.findUnique.mockResolvedValue(conFoto);
+
+    const [lista] = await service.findAll({});
+    const [mios] = await service.findMine(
+      buildSession(SUP, 'SUPERVISOR_TEMPORAL'),
+    );
+    const detalle = await service.findOne(ID, admin);
+
+    for (const res of [lista, mios, detalle]) {
+      expect(res.fotoUrl).toBe(
+        'https://storage.local/signed/trabajo-extra-photo/abc.jpg',
+      );
+      expect(res).not.toHaveProperty('fotoKey');
+    }
+    expect(sign).toHaveBeenCalledWith('trabajo-extra-photo/abc.jpg');
+  });
+
+  it('sin foto del report, fotoUrl es null y no se firma nada', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(row());
+
+    const res = await service.findOne(ID, admin);
+
+    expect(res.fotoUrl).toBeNull();
+    expect(res).not.toHaveProperty('fotoKey');
+    // Las tarjetas de `row()` no tienen foto de bomba: no hay nada que firmar.
+    expect(sign).not.toHaveBeenCalled();
   });
 
   it('list filtra por rango', async () => {
@@ -603,6 +641,34 @@ describe('InformesTemporalesService (listar, corregir, eliminar)', () => {
 
     expect(removeCard).toHaveBeenCalledTimes(2);
     expect(prisma.informeTemporal.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('delete suelta la foto del report DESPUÉS de borrar el informe', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(
+      row({ fotoKey: 'trabajo-extra-photo/abc.jpg' }),
+    );
+    const orden: string[] = [];
+    prisma.informeTemporal.delete.mockImplementation(() => {
+      orden.push('informe');
+      return Promise.resolve({});
+    });
+    deleteBestEffort.mockImplementation(() => {
+      orden.push('foto');
+      return Promise.resolve();
+    });
+
+    await service.remove(ID, admin);
+
+    expect(deleteBestEffort).toHaveBeenCalledWith(
+      'trabajo-extra-photo/abc.jpg',
+    );
+    expect(orden).toEqual(['informe', 'foto']);
+  });
+
+  it('delete sin foto del report no toca el bucket', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValue(row());
+    await service.remove(ID, admin);
+    expect(deleteBestEffort).not.toHaveBeenCalled();
   });
 
   it('delete de un informe ya borrado no falla', async () => {

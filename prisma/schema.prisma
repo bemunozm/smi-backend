@@ -889,6 +889,12 @@ model InformeTemporal {
   inicio DateTime
   fin    DateTime
 
+  /// Key de la foto del report en papel en el bucket (R2/MinIO). Hoy solo la
+  /// trae la migración de los «Report» viejos (`TrabajoExtraordinario.fotoKey`,
+  /// misma key, mismo objeto); la app no la sube. La API solo expone la URL
+  /// firmada (`fotoUrl`), igual que `TrabajoExtraordinario`.
+  fotoKey String? @map("foto_key")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

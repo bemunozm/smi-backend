@@ -98,6 +98,9 @@ export interface InformeTemporalResponse {
   supervisorNombre: string;
   inicio: Date;
   fin: Date;
+  /** Foto del report en papel: URL FIRMADA (`StorageService.sign`), `null`
+   * si no tiene. La key cruda del bucket nunca sale a la API. */
+  fotoUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
   tarjetas: InformeTemporalTarjetaResponse[];
@@ -439,7 +442,9 @@ export class InformesTemporalesService {
    * equipo, historial y aviso incluidos) y tiene su propia tx: si el proceso
    * se corta a la mitad, reintentar sigue donde quedó — una tarjeta que ya no
    * existe (NotFound) se da por borrada. El informe y su `ChangeLog` 'DELETE'
-   * van juntos al final.
+   * van juntos al final; la foto del report se suelta best-effort DESPUÉS de
+   * borrar la fila (si el borrado falla, la foto sigue donde debe) — mismo
+   * criterio que `TrabajosExtraService.remove`.
    */
   async remove(id: string, session: UserSession): Promise<void> {
     const informe = await this.findRecord(id);
@@ -482,6 +487,10 @@ export class InformesTemporalesService {
         'DELETE',
       );
     });
+
+    if (informe.fotoKey) {
+      await this.storage.deleteBestEffort(informe.fotoKey);
+    }
   }
 
   /** Máx. 10 personas por actividad, y la actividad 2 solo si existe. */
@@ -565,10 +574,11 @@ export class InformesTemporalesService {
   private async shape(
     informe: InformeRecord,
   ): Promise<InformeTemporalResponse> {
-    const { tarjetas, fecha, personal, ...campos } = informe;
+    const { tarjetas, fecha, personal, fotoKey, ...campos } = informe;
     return {
       ...campos,
       fecha: formatDateOnly(fecha),
+      fotoUrl: fotoKey ? await this.storage.sign(fotoKey) : null,
       personal: personal as unknown as InformePersonal[],
       tarjetas: await Promise.all(
         tarjetas.map(async ({ equipo, pumpPhotoKey, ...card }) => ({

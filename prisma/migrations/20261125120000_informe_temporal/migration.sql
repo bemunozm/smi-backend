@@ -18,6 +18,7 @@ CREATE TABLE "informe_temporal" (
     "supervisorNombre" TEXT NOT NULL,
     "inicio" TIMESTAMP(3) NOT NULL,
     "fin" TIMESTAMP(3) NOT NULL,
+    "foto_key" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
