@@ -94,8 +94,6 @@ export interface InformeTemporalResponse {
   observaciones: string | null;
   supervisorResponsable1: string;
   supervisorResponsable2: string | null;
-  fotosEnviadas: boolean;
-  infoSubidaApp: boolean;
   supervisorId: string;
   supervisorNombre: string;
   inicio: Date;
@@ -115,11 +113,7 @@ interface DatosInforme {
   observaciones: string | null;
   supervisorResponsable1: string;
   supervisorResponsable2: string | null;
-  fotosEnviadas: boolean;
-  infoSubidaApp: boolean;
 }
-
-const siNo = (v: unknown) => (v ? 'Sí' : 'No');
 
 /** Qué se compara y cómo se lee en el historial. */
 const CAMPOS_INFORME: readonly ComparableField<DatosInforme>[] = [
@@ -140,12 +134,6 @@ const CAMPOS_INFORME: readonly ComparableField<DatosInforme>[] = [
   { field: 'observaciones', label: 'Observaciones' },
   { field: 'supervisorResponsable1', label: 'Supervisor responsable 1' },
   { field: 'supervisorResponsable2', label: 'Supervisor responsable 2' },
-  { field: 'fotosEnviadas', label: 'Fotos enviadas', format: siNo },
-  {
-    field: 'infoSubidaApp',
-    label: 'Información subida a la app',
-    format: siNo,
-  },
 ];
 
 /**
@@ -282,8 +270,6 @@ export class InformesTemporalesService {
           observaciones: dto.observaciones || null,
           supervisorResponsable1: dto.supervisorResponsable1.trim(),
           supervisorResponsable2: dto.supervisorResponsable2?.trim() || null,
-          fotosEnviadas: dto.fotosEnviadas,
-          infoSubidaApp: dto.infoSubidaApp,
           supervisorId: userId,
           supervisorNombre: session.user.name?.trim() || session.user.email,
           inicio,
@@ -380,8 +366,6 @@ export class InformesTemporalesService {
         observaciones: actual.observaciones,
         supervisorResponsable1: actual.supervisorResponsable1,
         supervisorResponsable2: actual.supervisorResponsable2,
-        fotosEnviadas: actual.fotosEnviadas,
-        infoSubidaApp: actual.infoSubidaApp,
       };
       const actividad2 =
         dto.actividad2 !== undefined
@@ -408,8 +392,6 @@ export class InformesTemporalesService {
           dto.supervisorResponsable2 !== undefined
             ? dto.supervisorResponsable2.trim() || null
             : antes.supervisorResponsable2,
-        fotosEnviadas: dto.fotosEnviadas ?? antes.fotosEnviadas,
-        infoSubidaApp: dto.infoSubidaApp ?? antes.infoSubidaApp,
       };
 
       const diff = diffFields<DatosInforme>(antes, despues, CAMPOS_INFORME);

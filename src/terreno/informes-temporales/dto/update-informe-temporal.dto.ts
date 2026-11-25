@@ -2,7 +2,6 @@ import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
-  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsOptional,
@@ -75,12 +74,4 @@ export class UpdateInformeTemporalDto {
   @IsString()
   @MaxLength(120)
   supervisorResponsable2?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  fotosEnviadas?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  infoSubidaApp?: boolean;
 }

@@ -24,8 +24,6 @@ function base(overrides: Record<string, unknown> = {}) {
     actividad1: 'Limpieza de cancha',
     personal: [{ actividad: 1, operatorId: 'op1', nombre: 'Juan Rojas' }],
     supervisorResponsable1: 'Pedro Soto',
-    fotosEnviadas: true,
-    infoSubidaApp: false,
     cierres: [cierre()],
     ...overrides,
   };

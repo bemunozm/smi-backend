@@ -3,7 +3,6 @@ import {
   ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
-  IsBoolean,
   IsEmpty,
   IsIn,
   IsNotEmpty,
@@ -117,12 +116,6 @@ export class CreateInformeTemporalDto {
   @IsString()
   @MaxLength(120)
   supervisorResponsable2?: string;
-
-  @IsBoolean()
-  fotosEnviadas!: boolean;
-
-  @IsBoolean()
-  infoSubidaApp!: boolean;
 
   @IsArray()
   @ArrayNotEmpty({

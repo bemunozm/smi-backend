@@ -14,8 +14,6 @@ CREATE TABLE "informe_temporal" (
     "observaciones" TEXT,
     "supervisorResponsable1" TEXT NOT NULL,
     "supervisorResponsable2" TEXT,
-    "fotosEnviadas" BOOLEAN NOT NULL,
-    "infoSubidaApp" BOOLEAN NOT NULL,
     "supervisorId" TEXT NOT NULL,
     "supervisorNombre" TEXT NOT NULL,
     "inicio" TIMESTAMP(3) NOT NULL,

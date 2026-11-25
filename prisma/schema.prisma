@@ -880,9 +880,6 @@ model InformeTemporal {
   supervisorResponsable1 String
   supervisorResponsable2 String?
 
-  fotosEnviadas Boolean
-  infoSubidaApp Boolean
-
   /// Supervisor temporal que envía el informe — soft ref a `user.id` (sin FK,
   /// igual que `RegistroHorometro.supervisorId`) + snapshot del nombre.
   supervisorId     String
