@@ -729,6 +729,10 @@ describe('DashboardService.mantenedores', () => {
       hasta: '2026-10-31',
     });
     expect(res.total).toEqual({ horas: 10, trabajos: 3 });
+    // Un report NULO (papel anulado) no suma horas ni trabajos.
+    const [[consulta]] = prisma.trabajoExtraordinario.findMany.mock
+      .calls as unknown as [[{ where: unknown }]];
+    expect(consulta.where).toMatchObject({ nulo: false });
     expect(res.porEquipo).toEqual([
       { equipmentId: 'e1', internalCode: 'CG-002', horas: 5, trabajos: 2 },
       { equipmentId: 'e2', internalCode: 'EX-001', horas: 5, trabajos: 1 },
@@ -1071,6 +1075,10 @@ describe('DashboardService.resumenDia', () => {
       },
     ]);
     const res = await service.resumenDia();
+    // Un report NULO no suma HM al resumen del día.
+    const [[consulta]] = prisma.trabajoExtraordinario.findMany.mock
+      .calls as unknown as [[{ where: unknown }]];
+    expect(consulta.where).toMatchObject({ nulo: false });
     expect(res.reports).toEqual({
       totalHoras: 6.5,
       porEquipo: [

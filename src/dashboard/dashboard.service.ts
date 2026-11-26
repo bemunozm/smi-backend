@@ -504,7 +504,8 @@ export class DashboardService {
       dias.length === 0
         ? []
         : await this.prisma.trabajoExtraordinario.findMany({
-            where: { fecha: { gte: desde, lte: hasta } },
+            // Un report NULO (papel anulado) no suma horas ni trabajos.
+            where: { fecha: { gte: desde, lte: hasta }, nulo: false },
             select: {
               equipoId: true,
               totalHoras: true,
@@ -521,6 +522,8 @@ export class DashboardService {
     let trabajosTotal = 0;
     for (const t of trabajos) {
       if (!diasSet.has(businessDayKey(t.fecha))) continue;
+      // Solo un nulo queda sin equipo, y ya quedó fuera de la consulta.
+      if (!t.equipoId || !t.equipo) continue;
       const horas = t.totalHoras ?? 0;
       const acc = porEquipo.get(t.equipoId) ?? {
         internalCode: t.equipo.internalCode,
@@ -662,7 +665,8 @@ export class DashboardService {
           },
         }),
         this.prisma.trabajoExtraordinario.findMany({
-          where: { fecha: ventana },
+          // Un report NULO (papel anulado) no suma HM al resumen.
+          where: { fecha: ventana, nulo: false },
           select: {
             equipoId: true,
             totalHoras: true,
@@ -806,6 +810,7 @@ export class DashboardService {
     let totalHoras = 0;
     for (const t of trabajos) {
       if (businessDayKey(t.fecha) !== fecha) continue;
+      if (!t.equipoId || !t.equipo) continue;
       const h = t.totalHoras ?? 0;
       totalHoras += h;
       const r = horasPorEquipo.get(t.equipo.internalCode) ?? {

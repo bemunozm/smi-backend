@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -8,6 +9,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import type { TrabajoExtraordinario } from '@prisma/client';
 
+import { ROLES, sessionHasRole } from '../../auth/roles';
 import { assertExpectedLocked } from '../../common/concurrency/assert-expected-locked';
 import { type ExpectedValues } from '../../common/concurrency/expected-fields';
 import {
@@ -23,6 +25,7 @@ import { resolveRecordDate } from '../../common/dates/capture-time';
 import {
   businessDayInstant,
   formatBusinessDate,
+  formatBusinessDateTime,
 } from '../../common/dates/business-time';
 import {
   SHIFT_DATE_MAX_FUTURE_DAYS,
@@ -43,6 +46,7 @@ import {
   DESTINO_LABEL,
   ActividadDetalleDto,
   CreateTrabajoExtraDto,
+  NULO_SIN_TRABAJO,
 } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
 import { normalizarFolio } from './folio';
@@ -52,8 +56,14 @@ export interface FolioLibreResponse {
   /** El folio normalizado (sin ceros a la izquierda). */
   folio: string;
   libre: boolean;
-  /** El Report que ya lo usa, si lo hay. */
-  ocupadoPor: { id: string; equipo: string; fecha: Date } | null;
+  /** El Report que ya lo usa, si lo hay (`equipo` null: un report nulo sin
+   * equipo). */
+  ocupadoPor: {
+    id: string;
+    equipo: string | null;
+    nulo: boolean;
+    fecha: Date;
+  } | null;
 }
 
 /**
@@ -229,6 +239,31 @@ function datosDe(t: DatosTrabajo): DatosTrabajo {
 
 const horas = (v: unknown) => `${formatNumber(Number(v))} h`;
 
+/** Lo que la edición de un report NULO no acepta: no hubo trabajo. */
+const CAMPOS_DE_TRABAJO_EDICION = [
+  'horometroInicial',
+  'horometroFinal',
+  'actividades',
+  'detalle',
+  'otraActividad',
+] as const;
+
+/** Quién corrige un report nulo (decisión del cliente, 26-11). */
+const ROLES_EDITAN_NULO = [ROLES.ADMIN, ROLES.SECRETARIA] as const;
+
+/** Cómo se nombra, en el 409, el Report que ya tiene el folio. */
+function quienTieneElFolio(ocupado: {
+  nulo: boolean;
+  fecha: Date;
+  equipo: { internalCode: string } | null;
+}): string {
+  const codigo = ocupado.equipo?.internalCode;
+  const quien = ocupado.nulo
+    ? `report nulo${codigo ? ` de ${codigo}` : ''}`
+    : `equipo ${codigo ?? '—'}`;
+  return `${quien}, fecha ${formatBusinessDate(ocupado.fecha)}`;
+}
+
 @Injectable()
 export class TrabajosExtraService {
   constructor(
@@ -263,25 +298,32 @@ export class TrabajosExtraService {
     });
   }
 
-  private async createFresh(dto: CreateTrabajoExtraDto, userId: string) {
-    // `fecha` date-only = carga histórica de Terreno («subir reportes
-    // antiguos»): hasta un año atrás —un Report no mueve contadores ni
-    // turnos— y el instante se guarda DENTRO de ese día de negocio (por donde agrupan
-    // el dashboard y los filtros del admin) — por `resolveRecordDate` un
-    // date-only caería a medianoche UTC, el día ANTERIOR en Chile. Con hora
-    // (panel del admin) o sin `fecha`, la ruta de siempre.
-    let fecha: Date;
-    if (dto.fecha && isDateOnlyString(dto.fecha)) {
-      assertOldRecordDateWithinWindow(dto.fecha, {
+  /**
+   * `fecha` date-only = carga histórica de Terreno («subir reportes
+   * antiguos»): hasta un año atrás —un Report no mueve contadores ni
+   * turnos— y el instante se guarda DENTRO de ese día de negocio (por donde agrupan
+   * el dashboard y los filtros del admin) — por `resolveRecordDate` un
+   * date-only caería a medianoche UTC, el día ANTERIOR en Chile. Con hora
+   * (panel del admin) o sin `fecha`, la ruta de siempre.
+   */
+  private resolverFecha(fecha?: string, capturedAt?: string): Date {
+    if (fecha && isDateOnlyString(fecha)) {
+      assertOldRecordDateWithinWindow(fecha, {
         maxFutureDays: SHIFT_DATE_MAX_FUTURE_DAYS,
       });
-      fecha = businessDayInstant(dto.fecha);
-    } else {
-      fecha = resolveRecordDate(dto.fecha, dto.capturedAt);
+      return businessDayInstant(fecha);
     }
+    return resolveRecordDate(fecha, capturedAt);
+  }
 
+  private async createFresh(dto: CreateTrabajoExtraDto, userId: string) {
+    const fecha = this.resolverFecha(dto.fecha, dto.capturedAt);
+    if (dto.nulo === true) return this.createNulo(dto, userId, fecha);
+
+    // Un Report normal trae todo esto: el DTO lo exige salvo en un nulo.
+    const equipoId = dto.equipoId!;
     const equipo = await this.prisma.equipment.findUnique({
-      where: { id: dto.equipoId },
+      where: { id: equipoId },
     });
     if (!equipo) throw new NotFoundException('Equipo no encontrado');
 
@@ -292,7 +334,7 @@ export class TrabajosExtraService {
      * inexistente falla rápido. `operador` (snapshot) se arma acá con el
      * nombre del catálogo: el cliente no lo manda.
      */
-    const operator = await this.operators.assertActive(dto.operatorId);
+    const operator = await this.operators.assertActive(dto.operatorId!);
 
     /**
      * Un equipo con turno en curso **sí** admite un trabajo extraordinario:
@@ -303,22 +345,83 @@ export class TrabajosExtraService {
      */
     // El desglose por actividad valida sus reglas por fila y de él se deriva
     // el resumen `actividades` (el cliente ya no manda la lista suelta).
-    const detalle = normalizarDetalle(dto.detalle);
+    const detalle = normalizarDetalle(dto.detalle!);
     const datos = this.validar({
-      equipoId: dto.equipoId,
+      equipoId,
       operatorId: operator.id,
       operador: operator.name,
       faena: dto.faena,
       turno: dto.turno,
-      horometroInicial: dto.horometroInicial,
-      horometroFinal: dto.horometroFinal,
+      horometroInicial: dto.horometroInicial!,
+      horometroFinal: dto.horometroFinal!,
       totalHoras: 0,
       actividades: actividadesDe(detalle),
       otraActividad: dto.otraActividad ?? null,
-      descripcion: dto.descripcion,
+      descripcion: dto.descripcion!,
       observaciones: dto.observaciones ?? null,
       reportNumero: normalizarFolio(dto.reportNumero),
     });
+    return this.insertar(dto, userId, fecha, datos, detalle);
+  }
+
+  /**
+   * Report NULO: el papel se anuló y se registra solo para que el folio no
+   * deje un hueco. N°, fecha y foto como cualquier Report; equipo, operador
+   * y motivo si vienen. 0 h, sin desglose y con los horómetros en 0: nunca
+   * suma horas, cobro, HM ni asistencia, y no toca ningún contador.
+   */
+  private async createNulo(
+    dto: CreateTrabajoExtraDto,
+    userId: string,
+    fecha: Date,
+  ) {
+    // El DTO ya lo rechaza; se repite por si el servicio se llama sin el pipe.
+    if (
+      dto.horometroInicial !== undefined ||
+      dto.horometroFinal !== undefined ||
+      dto.detalle !== undefined ||
+      dto.otraActividad !== undefined
+    ) {
+      throw new BadRequestException(NULO_SIN_TRABAJO);
+    }
+    const equipoId = dto.equipoId?.trim() || null;
+    if (equipoId) {
+      const equipo = await this.prisma.equipment.findUnique({
+        where: { id: equipoId },
+        select: { id: true },
+      });
+      if (!equipo) throw new NotFoundException('Equipo no encontrado');
+    }
+    const operatorId = dto.operatorId?.trim() || null;
+    const operator = operatorId
+      ? await this.operators.assertActive(operatorId)
+      : null;
+    const datos = this.validar({
+      equipoId,
+      operatorId: operator?.id ?? null,
+      operador: operator?.name ?? null,
+      faena: dto.faena,
+      turno: dto.turno,
+      horometroInicial: 0,
+      horometroFinal: 0,
+      totalHoras: 0,
+      actividades: [],
+      otraActividad: null,
+      descripcion: dto.descripcion?.trim() ?? '',
+      observaciones: dto.observaciones ?? null,
+      reportNumero: normalizarFolio(dto.reportNumero),
+    });
+    return this.insertar(dto, userId, fecha, { ...datos, nulo: true }, null);
+  }
+
+  /** Folio libre → foto reclamada → insert (común al normal y al nulo). */
+  private async insertar(
+    dto: CreateTrabajoExtraDto,
+    userId: string,
+    fecha: Date,
+    datos: DatosTrabajo & { nulo?: boolean },
+    detalle: DetalleActividad[] | null,
+  ) {
     // El folio es EL número del Report: uno ya usado se rechaza antes de
     // reclamar la foto. Un reintento del MISMO registro no llega acá
     // (`createOrReturn` lo devuelve por su id).
@@ -339,7 +442,11 @@ export class TrabajosExtraService {
           createdById: userId,
           fecha,
           fotoKey,
-          detalleActividades: detalle as unknown as Prisma.InputJsonValue,
+          ...(detalle
+            ? {
+                detalleActividades: detalle as unknown as Prisma.InputJsonValue,
+              }
+            : {}),
           ...datos,
         },
         include: TRABAJO_EXTRA_INCLUDE,
@@ -398,7 +505,8 @@ export class TrabajosExtraService {
       ocupadoPor: ocupado
         ? {
             id: ocupado.id,
-            equipo: ocupado.equipo.internalCode,
+            equipo: ocupado.equipo?.internalCode ?? null,
+            nulo: ocupado.nulo,
             fecha: ocupado.fecha,
           }
         : null,
@@ -418,6 +526,7 @@ export class TrabajosExtraService {
       select: {
         id: true,
         fecha: true,
+        nulo: true,
         equipo: { select: { internalCode: true } },
       },
     });
@@ -432,7 +541,7 @@ export class TrabajosExtraService {
     const ocupado = await this.buscarFolio(folio, exceptoId, tx);
     if (ocupado) {
       throw new ConflictException({
-        message: `El N° de report ${folio} ya está registrado (equipo ${ocupado.equipo.internalCode}, fecha ${formatBusinessDate(ocupado.fecha)}).`,
+        message: `El N° de report ${folio} ya está registrado (${quienTieneElFolio(ocupado)}).`,
         code: ERROR_CODES.FOLIO_EN_USO,
       });
     }
@@ -486,6 +595,9 @@ export class TrabajosExtraService {
     dto: UpdateTrabajoExtraDto,
     editor: Editor,
     expected?: ExpectedValues,
+    /** Rol de la sesión: un report nulo lo corrigen solo ADMIN/SECRETARIA.
+     * Sin rol (llamada interna) no se restringe. */
+    rol?: string | string[],
   ): Promise<TrabajoExtraResponse> {
     let equipoNuevo: { internalCode: string } | null = null;
     if (dto.equipoId) {
@@ -502,9 +614,31 @@ export class TrabajosExtraService {
     // `operatorId`) sin exigir que el operador siga activo.
     const previo = await this.prisma.trabajoExtraordinario.findUnique({
       where: { id },
-      select: { operatorId: true },
+      select: { operatorId: true, nulo: true },
     });
     if (!previo) throw new NotFoundException('Registro no encontrado');
+    // Un report NULO solo corrige N°, fecha, motivo, equipo y operador (y
+    // faena/turno); no hay paso de nulo a normal. La fecha, al revés, solo se
+    // corrige en un nulo: en un Report normal es parte de la trazabilidad.
+    if (previo.nulo) {
+      if (
+        rol !== undefined &&
+        !ROLES_EDITAN_NULO.some((r) => sessionHasRole(rol, r))
+      ) {
+        throw new ForbiddenException(
+          'Un report nulo lo corrige un administrador o la secretaria.',
+        );
+      }
+      if (CAMPOS_DE_TRABAJO_EDICION.some((c) => dto[c] !== undefined)) {
+        throw new BadRequestException(NULO_SIN_TRABAJO);
+      }
+    } else if (dto.fecha !== undefined) {
+      throw new BadRequestException(
+        'La fecha solo se corrige en un report nulo.',
+      );
+    }
+    const fechaNueva =
+      dto.fecha !== undefined ? this.resolverFecha(dto.fecha) : undefined;
     // El folio corregido se normaliza antes de montarlo sobre lo guardado: así
     // «04615» contra un «4615» vigente no cuenta como cambio.
     const folioNuevo =
@@ -567,17 +701,21 @@ export class TrabajosExtraService {
             await this.assertFolioLibre(nuevo.reportNumero, id, tx);
           }
           const codigoNuevo =
-            equipoNuevo?.internalCode ?? vigente.equipo.internalCode;
+            equipoNuevo?.internalCode ?? vigente.equipo?.internalCode ?? null;
 
-          const codigos: Record<string, string> = {
-            [vigente.equipoId]: vigente.equipo.internalCode,
-            [nuevo.equipoId]: codigoNuevo,
-          };
+          const codigos: Record<string, string> = {};
+          if (vigente.equipoId && vigente.equipo) {
+            codigos[vigente.equipoId] = vigente.equipo.internalCode;
+          }
+          if (nuevo.equipoId && codigoNuevo) {
+            codigos[nuevo.equipoId] = codigoNuevo;
+          }
           const CAMPOS: readonly ComparableField<DatosTrabajo>[] = [
             {
               field: 'equipoId',
               label: 'Equipo',
-              format: (v) => codigos[v as string] ?? String(v),
+              format: (v) =>
+                v == null ? 'Sin equipo' : (codigos[v as string] ?? String(v)),
             },
             { field: 'operador', label: 'Operador' },
             { field: 'faena', label: 'Faena' },
@@ -598,6 +736,24 @@ export class TrabajosExtraService {
             { field: 'reportNumero', label: 'N° de report' },
           ];
           const diff = diffFields<DatosTrabajo>(vigente, nuevo, CAMPOS);
+          // La fecha (solo en un nulo): con hora si llegó con hora (panel).
+          const cambiaFecha =
+            fechaNueva !== undefined &&
+            fechaNueva.getTime() !== vigente.fecha.getTime() &&
+            (!isDateOnlyString(dto.fecha!) ||
+              formatBusinessDate(fechaNueva) !==
+                formatBusinessDate(vigente.fecha));
+          if (cambiaFecha) {
+            const formato = isDateOnlyString(dto.fecha!)
+              ? formatBusinessDate
+              : formatBusinessDateTime;
+            diff.push({
+              field: 'fecha',
+              label: 'Fecha',
+              before: formato(vigente.fecha),
+              after: formato(fechaNueva),
+            });
+          }
           // El desglose por actividad es JSON: se compara por su resumen
           // legible en vez de entrar a los diffs escalares (cubre también el
           // resumen `actividades`, que se deriva de él).
@@ -627,6 +783,7 @@ export class TrabajosExtraService {
             where: { id },
             data: {
               ...nuevo,
+              ...(cambiaFecha ? { fecha: fechaNueva } : {}),
               ...(detalleNuevo
                 ? {
                     detalleActividades:
@@ -638,7 +795,11 @@ export class TrabajosExtraService {
             omit: CON_DUENO,
           });
           await this.changeLog.record(tx, 'trabajo_extra', id, editor, diff);
-          return { registro: editado, cambios: diff, codigo: codigoNuevo };
+          return {
+            registro: editado,
+            cambios: diff,
+            codigo: codigoNuevo,
+          };
         }),
     );
 
@@ -647,7 +808,9 @@ export class TrabajosExtraService {
         entity: 'trabajo_extra',
         entityId: id,
         entityArticle: 'el',
-        entityLabel: `trabajo extra de ${codigo} del ${formatBusinessDate(registro.fecha)}`,
+        entityLabel: registro.nulo
+          ? `report nulo N° ${registro.reportNumero ?? '—'} del ${formatBusinessDate(registro.fecha)}`
+          : `trabajo extra de ${codigo ?? '—'} del ${formatBusinessDate(registro.fecha)}`,
         editedBy: editor.name,
         changes: cambios.map(({ label, before, after }) => ({
           label,

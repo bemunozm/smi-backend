@@ -70,10 +70,17 @@ export class TrabajosExtraController {
     @Param('id') id: string,
     @Body() dto: UpdateTrabajoExtraDto,
     @CurrentEditor() editor: Editor,
+    @Session() session: UserSession,
     @ExpectedFields() expected?: ExpectedValues,
   ) {
     return {
-      data: await this.service.update(id, dto, editor, expected),
+      data: await this.service.update(
+        id,
+        dto,
+        editor,
+        expected,
+        session.user.role ?? undefined,
+      ),
       message: 'Trabajo actualizado. Se avisó al administrador.',
     };
   }

@@ -76,7 +76,8 @@ export class AsistenciaService {
         },
       }),
       this.prisma.trabajoExtraordinario.findMany({
-        where: { fecha: { gte: margenDesde, lte: margenHasta } },
+        // Un report NULO (papel anulado) no es un día trabajado.
+        where: { fecha: { gte: margenDesde, lte: margenHasta }, nulo: false },
         select: { operatorId: true, fecha: true },
       }),
       this.prisma.informeTemporal.findMany({

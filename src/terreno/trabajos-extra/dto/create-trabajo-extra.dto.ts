@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsIn,
   IsNotEmpty,
@@ -14,7 +15,12 @@ import {
   Max,
   MaxLength,
   Min,
+  Validate,
+  ValidateIf,
   ValidateNested,
+  ValidatorConstraint,
+  type ValidationArguments,
+  type ValidatorConstraintInterface,
 } from 'class-validator';
 
 import { normalizeObservaciones } from '../../../common/normalize-observaciones';
@@ -113,7 +119,52 @@ export class ActividadDetalleDto {
   descripcion?: string;
 }
 
+/** Lo que un report NULO no lleva: no hubo trabajo que medir ni desglosar. */
+const CAMPOS_DE_TRABAJO = [
+  'horometroInicial',
+  'horometroFinal',
+  'detalle',
+  'otraActividad',
+] as const;
+
+export const NULO_SIN_TRABAJO =
+  'Un report nulo no lleva horómetros ni actividades.';
+
+/** `nulo: true` ⇒ ninguno de `CAMPOS_DE_TRABAJO` viene en el body. */
+@ValidatorConstraint({ name: 'nuloSinTrabajo', async: false })
+class NuloSinTrabajo implements ValidatorConstraintInterface {
+  validate(nulo: unknown, args: ValidationArguments): boolean {
+    if (nulo !== true) return true;
+    const dto = args.object as Record<string, unknown>;
+    return CAMPOS_DE_TRABAJO.every((campo) => dto[campo] === undefined);
+  }
+
+  defaultMessage(): string {
+    return NULO_SIN_TRABAJO;
+  }
+}
+
+/** Valida el campo salvo en un report nulo. */
+const salvoNulo = (o: CreateTrabajoExtraDto) => o.nulo !== true;
+/** En un nulo el campo es opcional: se valida solo si viene. */
+const salvoNuloSinDato =
+  (campo: 'equipoId' | 'operatorId' | 'descripcion') =>
+  (o: CreateTrabajoExtraDto) =>
+    o.nulo !== true || o[campo] != null;
+
 export class CreateTrabajoExtraDto {
+  /**
+   * Report NULO: el papel se anuló («NULO») y se registra solo para que el
+   * folio no deje un hueco. Lleva N°, fecha y foto (obligatorios, como
+   * cualquier Report); equipo, operador y motivo (`descripcion`) son
+   * opcionales, y horómetros y actividades NO vienen (400). Se guarda con
+   * 0 h y nunca suma horas, cobro, HM ni asistencia.
+   */
+  @IsOptional()
+  @IsBoolean()
+  @Validate(NuloSinTrabajo)
+  nulo?: boolean;
+
   /** UUID v4 generado por el cliente: clave de idempotencia para el reenvío
    * offline. Opcional para no romper a un cliente que no lo manda. */
   @IsOptional()
@@ -137,19 +188,22 @@ export class CreateTrabajoExtraDto {
   @IsDateString()
   fecha?: string;
 
+  /** Opcional solo en un report nulo. */
+  @ValidateIf(salvoNuloSinDato('equipoId'))
   @IsString()
-  equipoId!: string;
+  equipoId?: string;
 
   /**
    * Operador del catálogo propio (`Operator`) — OBLIGATORIO. `operador` no
    * se recibe acá: el servicio lo arma desde
    * `OperatorsService.assertActive(operatorId).name`, nunca desde texto que
    * mande el cliente. Con `forbidNonWhitelisted: true` global, mandar
-   * `operador` en el body es un 400.
+   * `operador` en el body es un 400. Opcional solo en un report nulo.
    */
+  @ValidateIf(salvoNuloSinDato('operatorId'))
   @IsString()
   @IsNotEmpty()
-  operatorId!: string;
+  operatorId?: string;
 
   @IsString()
   @MaxLength(100)
@@ -158,15 +212,17 @@ export class CreateTrabajoExtraDto {
   @IsIn(SHIFT_TYPES)
   turno!: ShiftType;
 
+  @ValidateIf(salvoNulo)
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0)
   @Max(1_000_000)
-  horometroInicial!: number;
+  horometroInicial?: number;
 
+  @ValidateIf(salvoNulo)
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0)
   @Max(1_000_000)
-  horometroFinal!: number;
+  horometroFinal?: number;
 
   /**
    * El desglose del report, UNA FILA POR ACTIVIDAD (cliente, 05-11): qué se
@@ -175,12 +231,13 @@ export class CreateTrabajoExtraDto {
    * menos una: un trabajo sin actividad no se puede cobrar ni justificar.
    * `actividades` ya no viaja: el servicio lo deriva de acá (resumen).
    */
+  @ValidateIf(salvoNulo)
   @IsArray()
   @ArrayNotEmpty({ message: 'Agregá al menos una actividad' })
   @ArrayMaxSize(12)
   @ValidateNested({ each: true })
   @Type(() => ActividadDetalleDto)
-  detalle!: ActividadDetalleDto[];
+  detalle?: ActividadDetalleDto[];
 
   /**
    * Texto libre para la tarea que no estaba en la lista. El servicio exige que
@@ -210,9 +267,11 @@ export class CreateTrabajoExtraDto {
   @IsNotEmpty({ message: 'La foto del report es obligatoria' })
   fotoKey!: string;
 
+  /** En un report nulo es el MOTIVO de la anulación, opcional. */
+  @ValidateIf(salvoNuloSinDato('descripcion'))
   @IsString()
   @MaxLength(1000)
-  descripcion!: string;
+  descripcion?: string;
 
   /** Mismo normalizado + tope que `CloseShiftCardDto.observaciones` (ver
    * `common/normalize-observaciones.ts`) — texto libre que un supervisor

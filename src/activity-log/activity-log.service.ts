@@ -209,6 +209,7 @@ export class ActivityLogService {
         select: {
           id: true,
           reportNumero: true,
+          nulo: true,
           fecha: true,
           operador: true,
           totalHoras: true,
@@ -393,9 +394,18 @@ export class ActivityLogService {
         occurredAt: t.createdAt,
         dataDate: businessDayKey(t.fecha),
         actorName: nombre(t.createdById),
-        summary: `N° ${t.reportNumero ?? 'sin N°'} · ${t.equipo.internalCode} · ${t.operador} · ${formatNumber(
-          t.totalHoras,
-        )} h`,
+        summary: t.nulo
+          ? [
+              `N° ${t.reportNumero ?? 'sin N°'}`,
+              'NULO',
+              t.equipo?.internalCode,
+              t.operador,
+            ]
+              .filter(Boolean)
+              .join(' · ')
+          : `N° ${t.reportNumero ?? 'sin N°'} · ${t.equipo?.internalCode ?? '—'} · ${t.operador ?? '—'} · ${formatNumber(
+              t.totalHoras,
+            )} h`,
         changes: null,
       });
     }

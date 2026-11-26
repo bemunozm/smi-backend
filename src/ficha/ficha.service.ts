@@ -77,7 +77,9 @@ export class FichaService {
         take: LIMITE_POR_ORIGEN,
       }),
       this.prisma.trabajoExtraordinario.findMany({
-        where: { equipoId: id },
+        // Un report NULO no es trabajo del equipo: ni en la línea de tiempo ni
+        // en el conteo (no suma horas).
+        where: { equipoId: id, nulo: false },
         orderBy: { fecha: 'desc' },
         take: LIMITE_POR_ORIGEN,
       }),
@@ -104,7 +106,9 @@ export class FichaService {
       }),
       this.prisma.registroCombustible.count({ where: { equipoId: id } }),
       this.prisma.registroHorometro.count({ where: { equipoId: id } }),
-      this.prisma.trabajoExtraordinario.count({ where: { equipoId: id } }),
+      this.prisma.trabajoExtraordinario.count({
+        where: { equipoId: id, nulo: false },
+      }),
       this.prisma.hallazgo.count({ where: { equipoId: id } }),
       this.prisma.hallazgo.count({
         where: { equipoId: id, estado: { not: 'CERRADO' } },

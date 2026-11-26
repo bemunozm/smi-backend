@@ -185,3 +185,88 @@ describe('CreateTrabajoExtraDto', () => {
     });
   });
 });
+
+describe('CreateTrabajoExtraDto — report nulo', () => {
+  /** Lo mínimo de un nulo: N°, foto, faena y turno (fecha opcional). */
+  const nulo = (overrides: Record<string, unknown> = {}) => ({
+    nulo: true,
+    faena: 'Patillo',
+    turno: 'DIURNO',
+    reportNumero: '4510',
+    fotoKey: 'tmp/u1/nulo.jpg',
+    fecha: '2026-11-20',
+    ...overrides,
+  });
+  const errores = async (body: Record<string, unknown>) =>
+    (await validate(plainToInstance(CreateTrabajoExtraDto, body))).map(
+      (e) => e.property,
+    );
+
+  it('acepta solo N°, fecha y foto (sin equipo, operador, horómetros ni actividades)', async () => {
+    expect(await errores(nulo())).toEqual([]);
+  });
+
+  it('acepta equipo, operador y motivo opcionales', async () => {
+    expect(
+      await errores(
+        nulo({ equipoId: 'e1', operatorId: 'op1', descripcion: 'Tachado' }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('exige la foto y el N° igual que un Report normal', async () => {
+    expect(await errores(nulo({ fotoKey: undefined }))).toContain('fotoKey');
+    expect(await errores(nulo({ fotoKey: '' }))).toContain('fotoKey');
+    expect(await errores(nulo({ reportNumero: '' }))).toContain('reportNumero');
+    expect(await errores(nulo({ reportNumero: '45A' }))).toContain(
+      'reportNumero',
+    );
+  });
+
+  it.each([
+    ['horometroInicial', 0],
+    ['horometroFinal', 10],
+    [
+      'detalle',
+      [{ actividad: 'LIMPIEZA_CANCHA', lugar: 'TRANSPORTE', horas: 1 }],
+    ],
+    ['otraActividad', 'algo'],
+  ])('rechaza %s en un nulo', async (campo, valor) => {
+    const dto = plainToInstance(
+      CreateTrabajoExtraDto,
+      nulo({ [campo]: valor }),
+    );
+    const res = await validate(dto);
+    const delNulo = res.find((e) => e.property === 'nulo');
+    expect(delNulo?.constraints).toMatchObject({
+      nuloSinTrabajo: 'Un report nulo no lleva horómetros ni actividades.',
+    });
+  });
+
+  it('un operador vacío en un nulo se rechaza (si viene, se valida)', async () => {
+    expect(await errores(nulo({ operatorId: '' }))).toContain('operatorId');
+  });
+
+  it('`nulo` no booleano → error', async () => {
+    expect(await errores(nulo({ nulo: 'si' }))).toContain('nulo');
+  });
+
+  it('sin `nulo` (o en false) sigue exigiendo todo lo de un Report normal', async () => {
+    for (const body of [
+      { ...nulo(), nulo: undefined },
+      { ...nulo(), nulo: false },
+    ]) {
+      const props = await errores(body);
+      expect(props).toEqual(
+        expect.arrayContaining([
+          'equipoId',
+          'operatorId',
+          'horometroInicial',
+          'horometroFinal',
+          'detalle',
+          'descripcion',
+        ]),
+      );
+    }
+  });
+});
