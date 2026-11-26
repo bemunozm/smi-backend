@@ -899,8 +899,9 @@ model InformeTemporal {
 
   /// «Subido después»: un informe en papel que se digitaliza más tarde (por
   /// el propio supervisor temporal o por la oficina). NO abre ni cierra
-  /// tarjetas ni mueve contadores, asistencia o dashboard: sus equipos van a
-  /// mano en `equiposRegistrados`. Su `numero` lo escribe quien lo sube (el
+  /// tarjetas ni mueve contadores de equipos ni el dashboard: sus equipos van
+  /// a mano en `equiposRegistrados`. Su `personal` sí cuenta en Asistencia
+  /// (es un día trabajado real, igual que en un informe normal). Su `numero` lo escribe quien lo sube (el
   /// del papel) y la numeración automática se lo salta.
   antiguo            Boolean @default(false)
   /// Solo en los `antiguo`: los equipos del papel, escritos a mano —

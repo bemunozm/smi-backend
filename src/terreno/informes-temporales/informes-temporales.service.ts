@@ -205,6 +205,16 @@ function equiposDe(valor: Prisma.JsonValue | null): EquipoRegistrado[] {
   return Array.isArray(valor) ? (valor as unknown as EquipoRegistrado[]) : [];
 }
 
+/** `inicio`/`fin` de un informe subido después: un instante DENTRO de su día
+ * de negocio (12:00 el diurno, 20:30 el nocturno). */
+function instanteDelDia(fecha: string, turno: string) {
+  const instante = businessDayInstant(
+    fecha,
+    turno === 'NOCTURNO' ? '20:30' : '12:00',
+  );
+  return { inicio: instante, fin: instante };
+}
+
 /** `YYYY-MM-DD` → `DD-MM-YYYY`. */
 const fechaLegible = (dia: string) => dia.split('-').reverse().join('-');
 
@@ -357,8 +367,12 @@ export class InformesTemporalesService {
         );
         return;
       } catch (error) {
-        if (intento < 3 && isUniqueViolationOn(error, 'numero')) continue;
-        throw error;
+        if (!isUniqueViolationOn(error, 'numero')) throw error;
+        if (intento < 3) continue;
+        throw new ConflictException({
+          message: 'No se pudo asignar el N° del informe. Vuelve a enviarlo.',
+          code: ERROR_CODES.NUMERO_EN_USO,
+        });
       }
     }
   }
@@ -481,10 +495,7 @@ export class InformesTemporalesService {
       : null;
     // Sin tarjetas no hay ventana real: el instante va DENTRO del día del
     // informe (mismo criterio que la carga histórica).
-    const instante = businessDayInstant(
-      dto.fecha,
-      dto.turno === 'NOCTURNO' ? '20:30' : '12:00',
-    );
+    const { inicio: instante } = instanteDelDia(dto.fecha, dto.turno);
     try {
       await this.prisma.informeTemporal.create({
         data: {
@@ -508,6 +519,8 @@ export class InformesTemporalesService {
         },
       });
     } catch (error) {
+      // La foto reclamada es de este intento: si el insert no entró, se suelta.
+      if (fotoKey) await this.storage.deleteBestEffort(fotoKey);
       // Otro se llevó el N° justo entre el chequeo y el insert.
       if (isUniqueViolationOn(error, 'numero')) {
         await this.assertNumeroLibre(dto.numero);
@@ -765,6 +778,12 @@ export class InformesTemporalesService {
           ...despues,
           fecha: parseDateOnlyUtc(despues.fecha),
           personal: despues.personal as unknown as Prisma.InputJsonValue,
+          // Uno subido después no tiene ventana real: su instante sigue al
+          // día y turno corregidos (mismo criterio que al subirlo).
+          ...(actual.antiguo &&
+          (despues.fecha !== antes.fecha || despues.turno !== antes.turno)
+            ? instanteDelDia(despues.fecha, despues.turno)
+            : {}),
           ...(equipos
             ? {
                 equiposRegistrados: equipos as unknown as Prisma.InputJsonValue,

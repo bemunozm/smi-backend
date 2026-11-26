@@ -330,7 +330,7 @@ describe('ActivityLogService', () => {
     prisma.trabajoExtraordinario.findMany.mockResolvedValue([
       {
         id: 'te1',
-        numero: 7,
+        reportNumero: '4615',
         fecha: d('2026-11-12T13:00:00.000Z'),
         operador: 'Pedro Rojas',
         totalHoras: 5.5,
@@ -341,7 +341,7 @@ describe('ActivityLogService', () => {
       {
         // Registrado el 13 (día de negocio siguiente): fuera del rango pedido.
         id: 'te2',
-        numero: 8,
+        reportNumero: '4616',
         fecha: d('2026-11-13T13:00:00.000Z'),
         operador: 'Pedro Rojas',
         totalHoras: 2,
@@ -372,7 +372,7 @@ describe('ActivityLogService', () => {
       'extra:created:te1',
     ]);
     expect(evento(res, 'extra:created:te1')).toMatchObject({
-      summary: 'N° 7 · CAM-31 · Pedro Rojas · 5,5 h',
+      summary: 'N° 4615 · CAM-31 · Pedro Rojas · 5,5 h',
     });
     expect(evento(res, 'finding:created:h1')).toMatchObject({
       summary: 'Ruta interna · Patillo · Camino cortado',

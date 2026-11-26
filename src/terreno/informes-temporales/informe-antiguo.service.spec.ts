@@ -33,6 +33,7 @@ describe('InformesTemporalesService — informe subido después', () => {
     $transaction: jest.fn(),
   };
   const claimTmp = jest.fn();
+  const deleteBestEffort = jest.fn();
   const sign = jest.fn();
   const record = jest.fn();
 
@@ -95,7 +96,10 @@ describe('InformesTemporalesService — informe subido después', () => {
         InformesTemporalesService,
         { provide: PrismaService, useValue: prisma },
         { provide: ShiftsService, useValue: {} },
-        { provide: StorageService, useValue: { claimTmp, sign } },
+        {
+          provide: StorageService,
+          useValue: { claimTmp, sign, deleteBestEffort },
+        },
         { provide: ChangeLogService, useValue: { record } },
       ],
     }).compile();
@@ -217,9 +221,13 @@ describe('InformesTemporalesService — informe subido después', () => {
     prisma.informeTemporal.create.mockRejectedValueOnce(
       prismaError('P2002', { target: ['numero'] }),
     );
-    await expect(service.createAntiguo(dto(), temporal)).rejects.toMatchObject({
-      response: { code: 'NUMERO_EN_USO' },
-    });
+    await expect(
+      service.createAntiguo(dto({ fotoKey: 'tmp/sup_t1/x.jpg' }), temporal),
+    ).rejects.toMatchObject({ response: { code: 'NUMERO_EN_USO' } });
+    // La foto reclamada por el intento fallido no queda huérfana.
+    expect(deleteBestEffort).toHaveBeenCalledWith(
+      'trabajo-extra-photos/abc.jpg',
+    );
   });
 
   it('el reintento offline con el mismo id devuelve el ya creado', async () => {

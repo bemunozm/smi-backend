@@ -346,6 +346,9 @@ export class TrabajosExtraService {
         omit: CON_DUENO,
       });
     } catch (error: unknown) {
+      // La foto reclamada tiene una key propia de este intento: si el insert
+      // no entró (folio tomado entre medio, carrera por id), se suelta.
+      if (fotoKey) await this.storage.deleteBestEffort(fotoKey);
       return this.folioDuplicado(error, folio);
     }
     const nombres = await resolveNombresUsuarios(this.prisma, [userId]);
