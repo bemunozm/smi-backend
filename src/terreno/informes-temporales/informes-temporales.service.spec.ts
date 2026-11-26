@@ -187,6 +187,20 @@ describe('InformesTemporalesService.create', () => {
     expect(prisma.informeTemporal.create.mock.calls[1][0].data.numero).toBe(6);
   });
 
+  it('tras 3 choques seguidos del N° automático responde 503 (la cola reintenta), no NUMERO_EN_USO', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValueOnce(null);
+    prisma.informeTemporal.create.mockRejectedValue(
+      prismaError('P2002', { target: ['numero'] }),
+    );
+
+    await expect(service.create(dto(), session)).rejects.toMatchObject({
+      status: 503,
+      response: { code: 'NUMERO_AUTOMATICO_OCUPADO' },
+    });
+    expect(prisma.informeTemporal.create).toHaveBeenCalledTimes(3);
+    prisma.informeTemporal.create.mockReset();
+  });
+
   it('cierra cada tarjeta con viaInforme y crea el informe enlazado', async () => {
     prisma.informeTemporal.findUnique
       .mockResolvedValueOnce(null)

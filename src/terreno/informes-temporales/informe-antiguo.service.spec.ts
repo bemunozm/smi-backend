@@ -4,6 +4,8 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 
 import { ChangeLogService } from '../../change-log/change-log.service';
 import { todayInBusinessTimeZone } from '../../common/dates/business-time';
@@ -11,7 +13,10 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { buildSession, prismaError } from '../../common/testing/fixtures';
 import { ShiftsService } from '../../shifts/shifts.service';
 import { StorageService } from '../../storage/storage.service';
-import { CreateInformeAntiguoDto } from './dto/create-informe-antiguo.dto';
+import {
+  CreateInformeAntiguoDto,
+  EquipoRegistradoDto,
+} from './dto/create-informe-antiguo.dto';
 import { InformesTemporalesService } from './informes-temporales.service';
 
 /** «Subir informe antiguo»: sin tarjetas, con los equipos escritos a mano. */
@@ -359,6 +364,44 @@ describe('InformesTemporalesService — informe subido después', () => {
           after: 'COMPRESOR 484,92 → 488 h · 12 L',
         },
       ]);
+    });
+
+    it('un cambio de una centésima se detecta (compara las cifras, no el texto)', async () => {
+      prisma.informeTemporal.findUnique
+        .mockResolvedValueOnce(row())
+        .mockResolvedValueOnce(row());
+      await service.update(
+        ID,
+        { equipos: [{ equipoId: 'e1', inicial: 484.93, final: 487.1 }] },
+        admin,
+      );
+      expect(
+        prisma.informeTemporal.update.mock.calls[0][0].data.equiposRegistrados,
+      ).toEqual([{ ...equipoRegistrado, inicial: 484.93 }]);
+      expect(record).toHaveBeenCalledTimes(1);
+    });
+
+    it('las lecturas y litros admiten hasta 2 decimales', async () => {
+      const errores = async (fila: Record<string, unknown>) =>
+        (await validate(plainToInstance(EquipoRegistradoDto, fila))).map(
+          (e) => e.property,
+        );
+      await expect(
+        errores({
+          equipoId: 'e1',
+          inicial: 484.92,
+          final: 487.1,
+          litros: 1.25,
+        }),
+      ).resolves.toEqual([]);
+      await expect(
+        errores({
+          equipoId: 'e1',
+          inicial: 484.925,
+          final: 487.1,
+          litros: 1.255,
+        }),
+      ).resolves.toEqual(['inicial', 'litros']);
     });
 
     it('los mismos equipos no son un cambio', async () => {

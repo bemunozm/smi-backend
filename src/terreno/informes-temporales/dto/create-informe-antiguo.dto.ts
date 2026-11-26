@@ -38,19 +38,25 @@ export class EquipoRegistradoDto {
   @MaxLength(64)
   equipoId!: string;
 
-  @IsNumber({ allowNaN: false, allowInfinity: false })
+  // Hasta 2 decimales, como se escriben en el papel (484,92): así un
+  // cambio de lectura nunca se pierde al compararlo.
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 })
   @Min(0)
   @Max(10_000_000)
   inicial!: number;
 
-  @IsNumber({ allowNaN: false, allowInfinity: false })
+  // Hasta 2 decimales, como se escriben en el papel (484,92): así un
+  // cambio de lectura nunca se pierde al compararlo.
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 })
   @Min(0)
   @Max(10_000_000)
   final!: number;
 
   /** Combustible cargado — opcional (`null` o ausente = sin dato). */
   @IsOptional()
-  @IsNumber({ allowNaN: false, allowInfinity: false })
+  // Hasta 2 decimales, como se escriben en el papel (484,92): así un
+  // cambio de lectura nunca se pierde al compararlo.
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 })
   @Min(0)
   @Max(100_000)
   litros?: number | null;

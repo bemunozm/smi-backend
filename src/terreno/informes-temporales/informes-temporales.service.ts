@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
@@ -215,6 +216,11 @@ function instanteDelDia(fecha: string, turno: string) {
   return { inicio: instante, fin: instante };
 }
 
+/** Lo que se compara de cada equipo escrito a mano (el snapshot de código y
+ * nombre sale del catálogo y no es un cambio del usuario). */
+const cifrasDe = (equipos: EquipoRegistrado[]) =>
+  equipos.map((e) => [e.equipoId, e.inicial, e.final, e.litros]);
+
 /** `YYYY-MM-DD` → `DD-MM-YYYY`. */
 const fechaLegible = (dia: string) => dia.split('-').reverse().join('-');
 
@@ -369,9 +375,12 @@ export class InformesTemporalesService {
       } catch (error) {
         if (!isUniqueViolationOn(error, 'numero')) throw error;
         if (intento < 3) continue;
-        throw new ConflictException({
-          message: 'No se pudo asignar el N° del informe. Vuelve a enviarlo.',
-          code: ERROR_CODES.NUMERO_EN_USO,
+        // El N° lo asigna el sistema: no es culpa del supervisor ni hay nada
+        // que corregir. 503 = transitorio, la cola lo reintenta sola (el envío
+        // es idempotente por id y por `closeClientId`).
+        throw new ServiceUnavailableException({
+          message: 'No se pudo asignar el N° del informe. Se reintentará.',
+          code: ERROR_CODES.NUMERO_AUTOMATICO_OCUPADO,
         });
       }
     }
@@ -756,17 +765,18 @@ export class InformesTemporalesService {
           );
         }
         const nuevos = await this.validarEquipos(dto.equipos);
-        const resumenAntes = resumenEquipos(
-          equiposDe(actual.equiposRegistrados),
-        );
-        const resumenDespues = resumenEquipos(nuevos);
-        if (resumenAntes !== resumenDespues) {
+        const previos = equiposDe(actual.equiposRegistrados);
+        // El cambio se detecta por las cifras tal cual (no por el resumen
+        // formateado); el resumen es solo cómo se lee en el historial.
+        if (
+          JSON.stringify(cifrasDe(previos)) !== JSON.stringify(cifrasDe(nuevos))
+        ) {
           equipos = nuevos;
           diff.push({
             field: 'equiposRegistrados',
             label: 'Equipos',
-            before: resumenAntes,
-            after: resumenDespues,
+            before: resumenEquipos(previos),
+            after: resumenEquipos(nuevos),
           });
         }
       }
