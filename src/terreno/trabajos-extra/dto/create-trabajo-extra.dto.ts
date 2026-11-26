@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -18,6 +19,7 @@ import {
 
 import { normalizeObservaciones } from '../../../common/normalize-observaciones';
 import { SHIFT_TYPES, type ShiftType } from '../../../shifts/shift-type';
+import { FOLIO_REGEX, FOLIO_SOLO_NUMEROS } from '../folio';
 
 export const ACTIVIDADES = [
   'REGULACION_CARGA',
@@ -127,7 +129,7 @@ export class CreateTrabajoExtraDto {
    * Fecha elegida explícitamente, que gana sobre `capturedAt`. Dos formas:
    * con hora (panel del admin, `resolveRecordDate`: solo no puede ser
    * futura) o `YYYY-MM-DD` a secas (carga histórica de Terreno: misma
-   * ventana de 30 días de las tarjetas y se guarda DENTRO de ese día de
+   * ventana de hasta un año atrás — «subir reportes antiguos» — y se guarda DENTRO de ese día de
    * negocio chileno — un date-only por `new Date()` caería a medianoche UTC,
    * o sea las ~21:00 del día ANTERIOR en Chile).
    */
@@ -189,11 +191,14 @@ export class CreateTrabajoExtraDto {
   @MaxLength(120)
   otraActividad?: string;
 
-  /** N° del report en papel que respalda el trabajo — obligatorio: el
-   * cliente folia cada report y el Excel que exporta el admin lo lleva. */
+  /** N° del report en papel que respalda el trabajo — obligatorio y ÚNICO:
+   * es EL número del Report (cliente, 26-11). Solo dígitos; el servicio lo
+   * guarda sin ceros a la izquierda y rechaza uno ya usado (409
+   * `FOLIO_EN_USO`). */
   @IsString()
   @IsNotEmpty({ message: 'Indicá el número del report' })
   @MaxLength(30)
+  @Matches(FOLIO_REGEX, { message: FOLIO_SOLO_NUMEROS })
   reportNumero!: string;
 
   /**

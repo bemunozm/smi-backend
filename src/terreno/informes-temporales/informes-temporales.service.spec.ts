@@ -8,7 +8,7 @@ import { Test } from '@nestjs/testing';
 
 import { ChangeLogService } from '../../change-log/change-log.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { buildSession } from '../../common/testing/fixtures';
+import { buildSession, prismaError } from '../../common/testing/fixtures';
 import { ShiftsService } from '../../shifts/shifts.service';
 import { StorageService } from '../../storage/storage.service';
 import { CreateInformeTemporalDto } from './dto/create-informe-temporal.dto';
@@ -23,7 +23,9 @@ describe('InformesTemporalesService.create', () => {
   const prisma = {
     informeTemporal: {
       findUnique: jest.fn(),
-      create: jest.fn<unknown, [{ data: Record<string, unknown> }]>(),
+      create: jest.fn<Promise<unknown>, [{ data: Record<string, unknown> }]>(),
+      // ¿El N° que da la secuencia ya lo tomó un informe subido después?
+      count: jest.fn(),
     },
     registroHorometro: {
       findMany: jest.fn(),
@@ -33,6 +35,8 @@ describe('InformesTemporalesService.create', () => {
       >(),
     },
     $transaction: jest.fn(),
+    // `nextval` de la secuencia del correlativo.
+    $queryRaw: jest.fn(),
   };
   const closeCard = jest.fn<
     Promise<unknown>,
@@ -144,6 +148,57 @@ describe('InformesTemporalesService.create', () => {
     );
     closeCard.mockResolvedValue({});
     sign.mockResolvedValue('https://storage.local/signed/x.jpg');
+    prisma.$queryRaw.mockReset().mockResolvedValue([{ numero: 1 }]);
+    prisma.informeTemporal.count.mockReset().mockResolvedValue(0);
+  });
+
+  it('el N° automático se salta los que ya tomó un informe subido después', async () => {
+    prisma.informeTemporal.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(informeRow());
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ numero: 5 }])
+      .mockResolvedValueOnce([{ numero: 6 }])
+      .mockResolvedValueOnce([{ numero: 7 }]);
+    prisma.informeTemporal.count
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(0);
+
+    await service.create(dto(), session);
+
+    expect(prisma.informeTemporal.create.mock.calls[0][0].data.numero).toBe(7);
+  });
+
+  it('si otro se lleva el N° justo entre medio (P2002), reintenta con el siguiente', async () => {
+    prisma.informeTemporal.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(informeRow());
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ numero: 5 }])
+      .mockResolvedValueOnce([{ numero: 6 }]);
+    prisma.informeTemporal.create.mockRejectedValueOnce(
+      prismaError('P2002', { target: ['numero'] }),
+    );
+
+    await service.create(dto(), session);
+
+    expect(prisma.informeTemporal.create).toHaveBeenCalledTimes(2);
+    expect(prisma.informeTemporal.create.mock.calls[1][0].data.numero).toBe(6);
+  });
+
+  it('tras 3 choques seguidos del N° automático responde 503 (la cola reintenta), no NUMERO_EN_USO', async () => {
+    prisma.informeTemporal.findUnique.mockResolvedValueOnce(null);
+    prisma.informeTemporal.create.mockRejectedValue(
+      prismaError('P2002', { target: ['numero'] }),
+    );
+
+    await expect(service.create(dto(), session)).rejects.toMatchObject({
+      status: 503,
+      response: { code: 'NUMERO_AUTOMATICO_OCUPADO' },
+    });
+    expect(prisma.informeTemporal.create).toHaveBeenCalledTimes(3);
+    prisma.informeTemporal.create.mockReset();
   });
 
   it('cierra cada tarjeta con viaInforme y crea el informe enlazado', async () => {

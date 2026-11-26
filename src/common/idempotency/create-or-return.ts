@@ -117,3 +117,28 @@ export function isPrimaryKeyViolation(error: unknown): boolean {
   if (Array.isArray(target)) return target.length === 1 && target[0] === 'id';
   return typeof target === 'string' && target.endsWith('_pkey');
 }
+
+/**
+ * P2002 sobre una columna única que NO es la PK (`report_numero`, `numero`):
+ * se acepta el nombre de la columna, el del campo Prisma o el del constraint
+ * (`<tabla>_<columna>_key`), igual que `isPrimaryKeyViolation`.
+ */
+export function isUniqueViolationOn(
+  error: unknown,
+  ...columnas: string[]
+): boolean {
+  if (
+    !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+    error.code !== 'P2002'
+  ) {
+    return false;
+  }
+  const target: unknown = error.meta?.target;
+  if (Array.isArray(target)) {
+    return target.some((t) => columnas.includes(String(t)));
+  }
+  return (
+    typeof target === 'string' &&
+    columnas.some((c) => target === c || target.endsWith(`_${c}_key`))
+  );
+}

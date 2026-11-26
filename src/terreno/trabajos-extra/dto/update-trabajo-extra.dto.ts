@@ -8,6 +8,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -17,6 +18,7 @@ import {
 import { normalizeObservaciones } from '../../../common/normalize-observaciones';
 import { SHIFT_TYPES, type ShiftType } from '../../../shifts/shift-type';
 import { ACTIVIDADES, ActividadDetalleDto } from './create-trabajo-extra.dto';
+import { FOLIO_REGEX, FOLIO_SOLO_NUMEROS } from '../folio';
 
 /**
  * Edición de un trabajo ya registrado: se puede cambiar
@@ -79,11 +81,13 @@ export class UpdateTrabajoExtraDto {
   descripcion?: string;
 
   /** N° del report en papel. Editable (corregir un folio mal tipeado); no se
-   * puede dejar vacío. */
+   * puede dejar vacío, lleva solo números y no puede ser el de otro Report
+   * (409 `FOLIO_EN_USO`). */
   @IsOptional()
   @IsString()
   @IsNotEmpty({ message: 'Indicá el número del report' })
   @MaxLength(30)
+  @Matches(FOLIO_REGEX, { message: FOLIO_SOLO_NUMEROS })
   reportNumero?: string;
 
   /** Desglose por actividad (reemplaza COMPLETO al vigente cuando viene).

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,7 +10,11 @@ import type { TrabajoExtraordinario } from '@prisma/client';
 
 import { assertExpectedLocked } from '../../common/concurrency/assert-expected-locked';
 import { type ExpectedValues } from '../../common/concurrency/expected-fields';
-import { createOrReturn } from '../../common/idempotency/create-or-return';
+import {
+  createOrReturn,
+  isUniqueViolationOn,
+} from '../../common/idempotency/create-or-return';
+import { ERROR_CODES } from '../../common/errors/error-codes';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { formatNumber } from '../../common/format/number';
 import { OperatorsService } from '../../operators/operators.service';
@@ -20,7 +25,8 @@ import {
   formatBusinessDate,
 } from '../../common/dates/business-time';
 import {
-  assertShiftDateWithinWindow,
+  SHIFT_DATE_MAX_FUTURE_DAYS,
+  assertOldRecordDateWithinWindow,
   isDateOnlyString,
 } from '../../shifts/date-only';
 import { DOMAIN_EVENTS } from '../../common/events/domain-events';
@@ -39,6 +45,16 @@ import {
   CreateTrabajoExtraDto,
 } from './dto/create-trabajo-extra.dto';
 import { UpdateTrabajoExtraDto } from './dto/update-trabajo-extra.dto';
+import { normalizarFolio } from './folio';
+
+/** Lo que responde `GET /trabajos-extra/folio-libre`. */
+export interface FolioLibreResponse {
+  /** El folio normalizado (sin ceros a la izquierda). */
+  folio: string;
+  libre: boolean;
+  /** El Report que ya lo usa, si lo hay. */
+  ocupadoPor: { id: string; equipo: string; fecha: Date } | null;
+}
 
 /**
  * Relación que toda lectura/escritura devuelve. Una sola definición para que
@@ -248,14 +264,17 @@ export class TrabajosExtraService {
   }
 
   private async createFresh(dto: CreateTrabajoExtraDto, userId: string) {
-    // `fecha` date-only = carga histórica de Terreno: ventana de 30 días y
-    // el instante se guarda DENTRO de ese día de negocio (por donde agrupan
+    // `fecha` date-only = carga histórica de Terreno («subir reportes
+    // antiguos»): hasta un año atrás —un Report no mueve contadores ni
+    // turnos— y el instante se guarda DENTRO de ese día de negocio (por donde agrupan
     // el dashboard y los filtros del admin) — por `resolveRecordDate` un
     // date-only caería a medianoche UTC, el día ANTERIOR en Chile. Con hora
     // (panel del admin) o sin `fecha`, la ruta de siempre.
     let fecha: Date;
     if (dto.fecha && isDateOnlyString(dto.fecha)) {
-      assertShiftDateWithinWindow(dto.fecha);
+      assertOldRecordDateWithinWindow(dto.fecha, {
+        maxFutureDays: SHIFT_DATE_MAX_FUTURE_DAYS,
+      });
       fecha = businessDayInstant(dto.fecha);
     } else {
       fecha = resolveRecordDate(dto.fecha, dto.capturedAt);
@@ -298,8 +317,13 @@ export class TrabajosExtraService {
       otraActividad: dto.otraActividad ?? null,
       descripcion: dto.descripcion,
       observaciones: dto.observaciones ?? null,
-      reportNumero: dto.reportNumero,
+      reportNumero: normalizarFolio(dto.reportNumero),
     });
+    // El folio es EL número del Report: uno ya usado se rechaza antes de
+    // reclamar la foto. Un reintento del MISMO registro no llega acá
+    // (`createOrReturn` lo devuelve por su id).
+    const folio = datos.reportNumero!;
+    await this.assertFolioLibre(folio);
 
     // La foto del report se reclama DESPUÉS de validar: una key tmp reclamada
     // por un create que luego rebota quedaría huérfana en el bucket.
@@ -307,18 +331,26 @@ export class TrabajosExtraService {
       ? await this.storage.claimTmp(dto.fotoKey, userId, 'trabajo-extra-photo')
       : null;
 
-    const creado = await this.prisma.trabajoExtraordinario.create({
-      data: {
-        ...(dto.id ? { id: dto.id } : {}),
-        createdById: userId,
-        fecha,
-        fotoKey,
-        detalleActividades: detalle as unknown as Prisma.InputJsonValue,
-        ...datos,
-      },
-      include: TRABAJO_EXTRA_INCLUDE,
-      omit: CON_DUENO,
-    });
+    let creado;
+    try {
+      creado = await this.prisma.trabajoExtraordinario.create({
+        data: {
+          ...(dto.id ? { id: dto.id } : {}),
+          createdById: userId,
+          fecha,
+          fotoKey,
+          detalleActividades: detalle as unknown as Prisma.InputJsonValue,
+          ...datos,
+        },
+        include: TRABAJO_EXTRA_INCLUDE,
+        omit: CON_DUENO,
+      });
+    } catch (error: unknown) {
+      // La foto reclamada tiene una key propia de este intento: si el insert
+      // no entró (folio tomado entre medio, carrera por id), se suelta.
+      if (fotoKey) await this.storage.deleteBestEffort(fotoKey);
+      return this.folioDuplicado(error, folio);
+    }
     const nombres = await resolveNombresUsuarios(this.prisma, [userId]);
     return this.shape(creado, nombres);
   }
@@ -347,6 +379,98 @@ export class TrabajosExtraService {
       reg.createdById,
     ]);
     return this.shape(reg, nombres);
+  }
+
+  /**
+   * `GET /trabajos-extra/folio-libre?folio=&exceptoId=`: si el folio está
+   * libre, para que el formulario lo avise antes de enviar (sin señal revisa
+   * la lista guardada). `exceptoId`: al corregir, el Report propio no cuenta.
+   */
+  async folioLibre(
+    folio: string,
+    exceptoId?: string,
+  ): Promise<FolioLibreResponse> {
+    const normalizado = normalizarFolio(folio);
+    const ocupado = await this.buscarFolio(normalizado, exceptoId);
+    return {
+      folio: normalizado,
+      libre: ocupado == null,
+      ocupadoPor: ocupado
+        ? {
+            id: ocupado.id,
+            equipo: ocupado.equipo.internalCode,
+            fecha: ocupado.fecha,
+          }
+        : null,
+    };
+  }
+
+  private buscarFolio(
+    folio: string,
+    exceptoId?: string,
+    tx: Prisma.TransactionClient = this.prisma,
+  ) {
+    return tx.trabajoExtraordinario.findFirst({
+      where: {
+        reportNumero: folio,
+        ...(exceptoId ? { id: { not: exceptoId } } : {}),
+      },
+      select: {
+        id: true,
+        fecha: true,
+        equipo: { select: { internalCode: true } },
+      },
+    });
+  }
+
+  /** 409 `FOLIO_EN_USO` si otro Report ya tiene el folio. */
+  private async assertFolioLibre(
+    folio: string,
+    exceptoId?: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<void> {
+    const ocupado = await this.buscarFolio(folio, exceptoId, tx);
+    if (ocupado) {
+      throw new ConflictException({
+        message: `El N° de report ${folio} ya está registrado (equipo ${ocupado.equipo.internalCode}, fecha ${formatBusinessDate(ocupado.fecha)}).`,
+        code: ERROR_CODES.FOLIO_EN_USO,
+      });
+    }
+  }
+
+  /**
+   * Dos envíos con el mismo folio a la vez: el índice único deja pasar uno y
+   * el otro choca (P2002). Se traduce al mismo 409 legible que el chequeo
+   * previo; cualquier otro error sigue su camino.
+   */
+  private async folioDuplicado(
+    error: unknown,
+    folio: string,
+    exceptoId?: string,
+  ): Promise<never> {
+    if (isUniqueViolationOn(error, 'report_numero', 'reportNumero')) {
+      await this.assertFolioLibre(folio, exceptoId);
+      throw new ConflictException({
+        message: `El N° de report ${folio} ya está registrado.`,
+        code: ERROR_CODES.FOLIO_EN_USO,
+      });
+    }
+    throw error;
+  }
+
+  /** Corre `fn` traduciendo el choque del índice único del folio (si se está
+   * cambiando) al 409 legible. */
+  private async conFolioUnico<T>(
+    folio: string | undefined,
+    exceptoId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (error: unknown) {
+      if (folio) return this.folioDuplicado(error, folio, exceptoId);
+      throw error;
+    }
   }
 
   /**
@@ -381,119 +505,141 @@ export class TrabajosExtraService {
       select: { operatorId: true },
     });
     if (!previo) throw new NotFoundException('Registro no encontrado');
+    // El folio corregido se normaliza antes de montarlo sobre lo guardado: así
+    // «04615» contra un «4615» vigente no cuenta como cambio.
+    const folioNuevo =
+      dto.reportNumero !== undefined
+        ? normalizarFolio(dto.reportNumero)
+        : undefined;
+    if (folioNuevo !== undefined) dto = { ...dto, reportNumero: folioNuevo };
     let operadorValidado: { id: string; name: string } | null =
       dto.operatorId && dto.operatorId !== previo.operatorId
         ? await this.operators.assertActive(dto.operatorId)
         : null;
 
-    const { registro, cambios, codigo } = await this.prisma.$transaction(
-      async (tx) => {
-        // Todo se calcula sobre la fila vigente, leída con el bloqueo tomado:
-        // una edición ajena de OTRO campo, confirmada antes de este bloqueo,
-        // no se revierte al escribir ni queda mal registrada en el historial.
-        const montar = async (actual: DatosTrabajo): Promise<DatosTrabajo> => {
-          let operador: { id: string; name: string } | null = null;
-          if (dto.operatorId && dto.operatorId !== actual.operatorId) {
-            // Un operador que cambió entre la validación y el bloqueo
-            // (carrera improbable) se valida de nuevo en vez de guardarse sin
-            // chequear.
-            if (operadorValidado?.id !== dto.operatorId) {
-              operadorValidado = await this.operators.assertActive(
-                dto.operatorId,
-              );
+    const { registro, cambios, codigo } = await this.conFolioUnico(
+      folioNuevo,
+      id,
+      () =>
+        this.prisma.$transaction(async (tx) => {
+          // Todo se calcula sobre la fila vigente, leída con el bloqueo tomado:
+          // una edición ajena de OTRO campo, confirmada antes de este bloqueo,
+          // no se revierte al escribir ni queda mal registrada en el historial.
+          const montar = async (
+            actual: DatosTrabajo,
+          ): Promise<DatosTrabajo> => {
+            let operador: { id: string; name: string } | null = null;
+            if (dto.operatorId && dto.operatorId !== actual.operatorId) {
+              // Un operador que cambió entre la validación y el bloqueo
+              // (carrera improbable) se valida de nuevo en vez de guardarse sin
+              // chequear.
+              if (operadorValidado?.id !== dto.operatorId) {
+                operadorValidado = await this.operators.assertActive(
+                  dto.operatorId,
+                );
+              }
+              operador = operadorValidado;
             }
-            operador = operadorValidado;
-          }
-          return this.mezclar(actual, dto, operador);
-        };
+            return this.mezclar(actual, dto, operador);
+          };
 
-        const vigente = await assertExpectedLocked({
-          tx,
-          table: 'trabajoExtraordinario',
-          id,
-          expected,
-          read: (t) =>
-            t.trabajoExtraordinario.findUnique({
-              where: { id },
-              include: TRABAJO_EXTRA_INCLUDE,
-              omit: CON_DUENO,
-            }),
-          comparable: datosDe,
-          desired: async (actual) => ({ ...(await montar(actual)) }),
-          labels: CAMPO_LABEL,
-          notFoundMessage: 'Registro no encontrado',
-        });
-        const nuevo = await montar(vigente);
-        const codigoNuevo =
-          equipoNuevo?.internalCode ?? vigente.equipo.internalCode;
-
-        const codigos: Record<string, string> = {
-          [vigente.equipoId]: vigente.equipo.internalCode,
-          [nuevo.equipoId]: codigoNuevo,
-        };
-        const CAMPOS: readonly ComparableField<DatosTrabajo>[] = [
-          {
-            field: 'equipoId',
-            label: 'Equipo',
-            format: (v) => codigos[v as string] ?? String(v),
-          },
-          { field: 'operador', label: 'Operador' },
-          { field: 'faena', label: 'Faena' },
-          { field: 'turno', label: 'Turno' },
-          {
-            field: 'horometroInicial',
-            label: 'Horómetro inicial',
-            format: horas,
-          },
-          { field: 'horometroFinal', label: 'Horómetro final', format: horas },
-          { field: 'otraActividad', label: 'Otra actividad' },
-          { field: 'descripcion', label: 'Descripción' },
-          { field: 'observaciones', label: 'Observaciones' },
-          { field: 'reportNumero', label: 'N° de report' },
-        ];
-        const diff = diffFields<DatosTrabajo>(vigente, nuevo, CAMPOS);
-        // El desglose por actividad es JSON: se compara por su resumen
-        // legible en vez de entrar a los diffs escalares (cubre también el
-        // resumen `actividades`, que se deriva de él).
-        const detalleNuevo = dto.detalle
-          ? normalizarDetalle(dto.detalle)
-          : null;
-        const resumenAntes = resumenDetalle(
-          vigente.detalleActividades,
-          vigente.actividades,
-        );
-        const resumenDespues = detalleNuevo
-          ? resumenDetalle(detalleNuevo, nuevo.actividades)
-          : resumenAntes;
-        if (resumenAntes !== resumenDespues) {
-          diff.push({
-            field: 'detalle',
-            label: 'Actividades',
-            before: resumenAntes,
-            after: resumenDespues,
+          const vigente = await assertExpectedLocked({
+            tx,
+            table: 'trabajoExtraordinario',
+            id,
+            expected,
+            read: (t) =>
+              t.trabajoExtraordinario.findUnique({
+                where: { id },
+                include: TRABAJO_EXTRA_INCLUDE,
+                omit: CON_DUENO,
+              }),
+            comparable: datosDe,
+            desired: async (actual) => ({ ...(await montar(actual)) }),
+            labels: CAMPO_LABEL,
+            notFoundMessage: 'Registro no encontrado',
           });
-        }
-        if (diff.length === 0) {
-          return { registro: vigente, cambios: diff, codigo: codigoNuevo };
-        }
+          const nuevo = await montar(vigente);
+          if (
+            nuevo.reportNumero &&
+            nuevo.reportNumero !== vigente.reportNumero
+          ) {
+            await this.assertFolioLibre(nuevo.reportNumero, id, tx);
+          }
+          const codigoNuevo =
+            equipoNuevo?.internalCode ?? vigente.equipo.internalCode;
 
-        const editado = await tx.trabajoExtraordinario.update({
-          where: { id },
-          data: {
-            ...nuevo,
-            ...(detalleNuevo
-              ? {
-                  detalleActividades:
-                    detalleNuevo as unknown as Prisma.InputJsonValue,
-                }
-              : {}),
-          },
-          include: TRABAJO_EXTRA_INCLUDE,
-          omit: CON_DUENO,
-        });
-        await this.changeLog.record(tx, 'trabajo_extra', id, editor, diff);
-        return { registro: editado, cambios: diff, codigo: codigoNuevo };
-      },
+          const codigos: Record<string, string> = {
+            [vigente.equipoId]: vigente.equipo.internalCode,
+            [nuevo.equipoId]: codigoNuevo,
+          };
+          const CAMPOS: readonly ComparableField<DatosTrabajo>[] = [
+            {
+              field: 'equipoId',
+              label: 'Equipo',
+              format: (v) => codigos[v as string] ?? String(v),
+            },
+            { field: 'operador', label: 'Operador' },
+            { field: 'faena', label: 'Faena' },
+            { field: 'turno', label: 'Turno' },
+            {
+              field: 'horometroInicial',
+              label: 'Horómetro inicial',
+              format: horas,
+            },
+            {
+              field: 'horometroFinal',
+              label: 'Horómetro final',
+              format: horas,
+            },
+            { field: 'otraActividad', label: 'Otra actividad' },
+            { field: 'descripcion', label: 'Descripción' },
+            { field: 'observaciones', label: 'Observaciones' },
+            { field: 'reportNumero', label: 'N° de report' },
+          ];
+          const diff = diffFields<DatosTrabajo>(vigente, nuevo, CAMPOS);
+          // El desglose por actividad es JSON: se compara por su resumen
+          // legible en vez de entrar a los diffs escalares (cubre también el
+          // resumen `actividades`, que se deriva de él).
+          const detalleNuevo = dto.detalle
+            ? normalizarDetalle(dto.detalle)
+            : null;
+          const resumenAntes = resumenDetalle(
+            vigente.detalleActividades,
+            vigente.actividades,
+          );
+          const resumenDespues = detalleNuevo
+            ? resumenDetalle(detalleNuevo, nuevo.actividades)
+            : resumenAntes;
+          if (resumenAntes !== resumenDespues) {
+            diff.push({
+              field: 'detalle',
+              label: 'Actividades',
+              before: resumenAntes,
+              after: resumenDespues,
+            });
+          }
+          if (diff.length === 0) {
+            return { registro: vigente, cambios: diff, codigo: codigoNuevo };
+          }
+
+          const editado = await tx.trabajoExtraordinario.update({
+            where: { id },
+            data: {
+              ...nuevo,
+              ...(detalleNuevo
+                ? {
+                    detalleActividades:
+                      detalleNuevo as unknown as Prisma.InputJsonValue,
+                  }
+                : {}),
+            },
+            include: TRABAJO_EXTRA_INCLUDE,
+            omit: CON_DUENO,
+          });
+          await this.changeLog.record(tx, 'trabajo_extra', id, editor, diff);
+          return { registro: editado, cambios: diff, codigo: codigoNuevo };
+        }),
     );
 
     if (cambios.length > 0) {
