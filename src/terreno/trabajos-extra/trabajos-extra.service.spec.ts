@@ -20,6 +20,7 @@ import {
   businessDayKey,
   todayInBusinessTimeZone,
 } from '../../common/dates/business-time';
+import { prismaError } from '../../common/testing/fixtures';
 
 /** El desglose por defecto de un fixture: cada actividad en VARIADO, 1 h. */
 const detalleDe = (actividades: string[]) =>
@@ -183,9 +184,15 @@ describe('TrabajosExtraService', () => {
       expect(businessDayKey(createData().fecha)).toBe(fecha);
     });
 
-    it('fecha fuera de la ventana de 30 días → 400 INVALID_SHIFT_DATE', async () => {
+    it('subir un report antiguo: acepta una fecha de hace meses', async () => {
+      const fecha = dateOnlyDaysAgo(120);
+      await createAs({ ...base, fecha });
+      expect(businessDayKey(createData().fecha)).toBe(fecha);
+    });
+
+    it('fecha de hace más de un año → 400 INVALID_SHIFT_DATE', async () => {
       await expect(
-        createAs({ ...base, fecha: dateOnlyDaysAgo(40) }),
+        createAs({ ...base, fecha: dateOnlyDaysAgo(400) }),
       ).rejects.toMatchObject({
         response: { code: 'INVALID_SHIFT_DATE' },
       });
@@ -816,6 +823,169 @@ describe('TrabajosExtraService', () => {
    * pero cada cambio queda registrado (quién, qué dato, antes y después) y
    * se le avisa al administrador.
    */
+  describe('folio — el N° de report es único', () => {
+    const base: DtoSinReport = {
+      equipoId: 'e1',
+      operatorId: 'op_1',
+      faena: 'Patillo',
+      turno: 'DIURNO',
+      horometroInicial: 1200,
+      horometroFinal: 1212,
+      detalle: detalleDe(['REGULACION_CARGA']),
+      descripcion: 'Carga',
+    };
+    const ocupado = {
+      id: 't9',
+      fecha: new Date('2026-11-20T15:00:00Z'),
+      equipo: { internalCode: 'SEM 02' },
+    };
+
+    it('guarda el folio sin ceros a la izquierda', async () => {
+      await createAs({ ...base, reportNumero: ' 04615 ' });
+      expect(prisma.trabajoExtraordinario.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ reportNumero: '4615' }),
+        }),
+      );
+      expect(prisma.trabajoExtraordinario.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { reportNumero: '4615' } }),
+      );
+    });
+
+    it('un folio ya usado → 409 FOLIO_EN_USO con equipo y fecha, sin reclamar la foto', async () => {
+      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(ocupado);
+      await expect(
+        createAs({ ...base, reportNumero: '4615' }),
+      ).rejects.toMatchObject({
+        response: {
+          code: 'FOLIO_EN_USO',
+          message:
+            'El N° de report 4615 ya está registrado (equipo SEM 02, fecha 20-11-2026).',
+        },
+      });
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    });
+
+    it('el reintento offline del MISMO report no choca con su propio folio', async () => {
+      prisma.trabajoExtraordinario.findUnique
+        .mockResolvedValueOnce({ createdById: USER_ID })
+        .mockResolvedValueOnce({
+          id: 'c1',
+          createdById: USER_ID,
+          fotoKey: null,
+        });
+      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(ocupado);
+      await expect(
+        createAs({
+          ...base,
+          id: '0b9c7c1e-5a55-4d6e-9d0b-1f1f4b1e2c3d',
+          reportNumero: '4615',
+        }),
+      ).resolves.toMatchObject({ id: 'c1' });
+      expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    });
+
+    it('dos envíos a la vez: el P2002 del índice único se traduce a FOLIO_EN_USO', async () => {
+      prisma.trabajoExtraordinario.findFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(ocupado);
+      prisma.trabajoExtraordinario.create.mockRejectedValueOnce(
+        prismaError('P2002', { target: ['report_numero'] }),
+      );
+      await expect(
+        createAs({ ...base, reportNumero: '4615' }),
+      ).rejects.toMatchObject({ response: { code: 'FOLIO_EN_USO' } });
+    });
+
+    it('un folio con letras → 400', async () => {
+      await expect(
+        createAs({ ...base, reportNumero: '46A' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('folioLibre: libre y ocupado, con el propio excluido', async () => {
+      await expect(service.folioLibre('04615')).resolves.toEqual({
+        folio: '4615',
+        libre: true,
+        ocupadoPor: null,
+      });
+      prisma.trabajoExtraordinario.findFirst.mockResolvedValue(ocupado);
+      await expect(service.folioLibre('4615', 't1')).resolves.toEqual({
+        folio: '4615',
+        libre: false,
+        ocupadoPor: { id: 't9', equipo: 'SEM 02', fecha: ocupado.fecha },
+      });
+      expect(prisma.trabajoExtraordinario.findFirst).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          where: { reportNumero: '4615', id: { not: 't1' } },
+        }),
+      );
+    });
+
+    describe('al corregir', () => {
+      const editor = { id: 'u1', name: 'Supervisor' };
+      const guardado = {
+        id: 't1',
+        equipoId: 'e1',
+        operatorId: 'op_1',
+        equipo: { internalCode: 'CA-011' },
+        operador: 'Juan Rojas',
+        faena: 'Patillo',
+        turno: 'DIURNO',
+        horometroInicial: 1200,
+        horometroFinal: 1212,
+        totalHoras: 12,
+        actividades: ['REGULACION_CARGA'],
+        otraActividad: null,
+        descripcion: 'Carga',
+        observaciones: null,
+        reportNumero: '4600',
+        fecha: new Date(2026, 9, 1, 10, 0),
+      };
+      beforeEach(() => {
+        prisma.trabajoExtraordinario.findUnique.mockResolvedValue(guardado);
+        prisma.trabajoExtraordinario.update.mockImplementation(
+          ({ data }: { data: Record<string, unknown> }) => ({
+            ...guardado,
+            ...data,
+          }),
+        );
+        prisma.$transaction.mockImplementation(
+          (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+        );
+      });
+
+      it('un folio que ya usa otro Report → 409 sin escribir', async () => {
+        prisma.trabajoExtraordinario.findFirst.mockResolvedValue(ocupado);
+        await expect(
+          service.update('t1', { reportNumero: '4615' }, editor),
+        ).rejects.toMatchObject({ response: { code: 'FOLIO_EN_USO' } });
+        expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
+        expect(prisma.trabajoExtraordinario.findFirst).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { reportNumero: '4615', id: { not: 't1' } },
+          }),
+        );
+      });
+
+      it('el mismo folio con ceros a la izquierda no es un cambio', async () => {
+        await service.update('t1', { reportNumero: '04600' }, editor);
+        expect(prisma.trabajoExtraordinario.findFirst).not.toHaveBeenCalled();
+        expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
+      });
+
+      it('un folio libre se guarda normalizado', async () => {
+        const res = await service.update(
+          't1',
+          { reportNumero: '04615' },
+          editor,
+        );
+        expect(res.reportNumero).toBe('4615');
+      });
+    });
+  });
+
   describe('update', () => {
     const editor = { id: 'u1', name: 'Supervisor de Prueba' };
     const guardado = {

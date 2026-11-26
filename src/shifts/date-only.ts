@@ -231,3 +231,37 @@ export function assertShiftDateWithinWindow(
     });
   }
 }
+
+/**
+ * Ventana de un registro «subido después» (un Report o un informe temporal en
+ * papel que se digitaliza días o semanas más tarde): hasta UN AÑO de pasado.
+ * No mueve contadores ni turnos, así que no necesita la ventana corta de las
+ * tarjetas; el futuro sí queda cerrado (`maxFutureDays`, 0 por defecto).
+ */
+export const OLD_RECORD_MAX_PAST_DAYS = 366;
+
+/** 400 `INVALID_SHIFT_DATE` si `date` (ya validada como `YYYY-MM-DD`) cae
+ * fuera de `[hoy - 366 días, hoy + maxFutureDays]` en el calendario chileno. */
+export function assertOldRecordDateWithinWindow(
+  date: string,
+  {
+    maxFutureDays = 0,
+    now = new Date(),
+  }: { maxFutureDays?: number; now?: Date } = {},
+): void {
+  const fecha = parseDateOnlyUtc(date);
+  const today = parseDateOnlyUtc(todayInBusinessTimeZone(now));
+  const diffDays = Math.round((fecha.getTime() - today.getTime()) / MS_PER_DAY);
+  if (diffDays > maxFutureDays) {
+    throw new BadRequestException({
+      message: `La fecha (${date}) no puede ser futura.`,
+      code: ERROR_CODES.INVALID_SHIFT_DATE,
+    });
+  }
+  if (diffDays < -OLD_RECORD_MAX_PAST_DAYS) {
+    throw new BadRequestException({
+      message: `La fecha (${date}) tiene más de un año de antigüedad.`,
+      code: ERROR_CODES.INVALID_SHIFT_DATE,
+    });
+  }
+}

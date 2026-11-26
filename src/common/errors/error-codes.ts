@@ -63,6 +63,10 @@ export const ERROR_CODES = {
   /** `POST /informes-temporales` cuyo lote no son EXACTAMENTE las tarjetas
    * pendientes del supervisor temporal (falta una abierta o sobra una). */
   INFORME_TARJETAS_DESCUADRADAS: 'INFORME_TARJETAS_DESCUADRADAS',
+  /** El N° de report (folio del papel) ya está en otro Report. */
+  FOLIO_EN_USO: 'FOLIO_EN_USO',
+  /** El N° de un informe temporal subido después ya lo tiene otro informe. */
+  NUMERO_EN_USO: 'NUMERO_EN_USO',
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

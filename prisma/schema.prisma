@@ -1052,9 +1052,11 @@ model TrabajoExtraordinario {
   descripcion      String
   observaciones    String?
   /// N° del report en papel que respalda el trabajo (pedido del cliente:
-  /// cada trabajo extra sale de un report foliado). Obligatorio para filas
-  /// nuevas a nivel de DTO; null en las legacy.
-  reportNumero     String?   @map("report_numero")
+  /// cada trabajo extra sale de un report foliado). Es EL número del Report
+  /// (26-11): solo dígitos, sin ceros a la izquierda y ÚNICO (`numero`, el
+  /// correlativo, queda solo en la base). Obligatorio para filas nuevas a
+  /// nivel de DTO; null en las legacy (NULL no choca con el índice único).
+  reportNumero     String?   @unique @map("report_numero")
   /// Desglose POR ACTIVIDAD (cliente, 05-11): filas `{actividad, lugar:
   /// TRANSPORTE|PLANTA|VARIADO, planta: string|null, horas: number}`. Es la
   /// fuente de la tabla del formulario y del Excel (una fila por actividad).

@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
@@ -27,6 +28,19 @@ export class TrabajosExtraController {
   @Get()
   async findAll() {
     return { data: await this.service.findAll(), message: 'ok' };
+  }
+
+  /** ¿El folio está libre? Para avisar en el formulario antes de enviar.
+   * Va ANTES de `:id` para que `folio-libre` no se lea como un id. */
+  @Get('folio-libre')
+  async folioLibre(
+    @Query('folio') folio: string = '',
+    @Query('exceptoId') exceptoId?: string,
+  ) {
+    return {
+      data: await this.service.folioLibre(folio, exceptoId || undefined),
+      message: 'ok',
+    };
   }
 
   @Get(':id')
