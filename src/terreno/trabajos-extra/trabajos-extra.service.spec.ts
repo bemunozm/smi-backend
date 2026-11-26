@@ -1651,6 +1651,12 @@ describe('TrabajosExtraService', () => {
         );
       });
 
+      it('sin rol de sesión un nulo no se edita (403)', async () => {
+        await expect(
+          service.update('t1', { descripcion: 'x' }, editor),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+      });
+
       it('SECRETARIA también puede; un SUPERVISOR no (403)', async () => {
         await expect(
           service.update(

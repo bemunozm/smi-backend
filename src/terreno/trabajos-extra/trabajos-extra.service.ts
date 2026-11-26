@@ -596,7 +596,7 @@ export class TrabajosExtraService {
     editor: Editor,
     expected?: ExpectedValues,
     /** Rol de la sesión: un report nulo lo corrigen solo ADMIN/SECRETARIA.
-     * Sin rol (llamada interna) no se restringe. */
+     * Sin rol, un nulo no se edita (403). */
     rol?: string | string[],
   ): Promise<TrabajoExtraResponse> {
     let equipoNuevo: { internalCode: string } | null = null;
@@ -621,10 +621,7 @@ export class TrabajosExtraService {
     // faena/turno); no hay paso de nulo a normal. La fecha, al revés, solo se
     // corrige en un nulo: en un Report normal es parte de la trazabilidad.
     if (previo.nulo) {
-      if (
-        rol !== undefined &&
-        !ROLES_EDITAN_NULO.some((r) => sessionHasRole(rol, r))
-      ) {
+      if (!rol || !ROLES_EDITAN_NULO.some((r) => sessionHasRole(rol, r))) {
         throw new ForbiddenException(
           'Un report nulo lo corrige un administrador o la secretaria.',
         );
