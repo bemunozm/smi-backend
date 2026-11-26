@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
+  IsDateString,
   IsIn,
   IsNotEmpty,
   IsNumber,
@@ -31,9 +32,20 @@ import { FOLIO_REGEX, FOLIO_SOLO_NUMEROS } from '../folio';
  * nombre (`operador`) lo deriva el servidor, y mandarlo en el body es un 400.
  *
  * Lo que no se edita: `totalHoras` (se recalcula) y `fecha` (es cuándo se
- * registró, y es parte de lo que la trazabilidad tiene que conservar).
+ * registró, y es parte de lo que la trazabilidad tiene que conservar) — salvo
+ * en un report NULO, donde la fecha es lo único que lo ubica y se corrige.
+ *
+ * Un report nulo solo admite N°, fecha, motivo (`descripcion`), equipo,
+ * operador, faena y turno; horómetros y actividades son un 400. No hay paso
+ * de nulo a normal ni al revés (`nulo` no es un campo de la edición).
  */
 export class UpdateTrabajoExtraDto {
+  /** Solo en un report nulo (400 en uno normal). Mismas formas y reglas que
+   * al crear: `YYYY-MM-DD` hasta un año atrás, o con hora y no futura. */
+  @IsOptional()
+  @IsDateString()
+  fecha?: string;
+
   @IsOptional()
   @IsString()
   equipoId?: string;

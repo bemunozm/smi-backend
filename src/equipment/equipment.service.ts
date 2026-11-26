@@ -271,7 +271,9 @@ export class EquipmentService {
           select: {
             combustibles: true,
             horometros: true,
-            trabajosExtra: true,
+            // Un report NULO (papel anulado) no es trabajo del equipo: mismo
+            // criterio que la ficha. El guard de borrado sí los cuenta.
+            trabajosExtra: { where: { nulo: false } },
             hallazgos: true,
             stockMovements: true,
           },

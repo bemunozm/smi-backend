@@ -129,6 +129,10 @@ describe('AsistenciaService', () => {
 
     expect(persona(res, 'op1')).toMatchObject({ dias: [10], total: 1 });
     expect(persona(res, 'sup1')).toMatchObject({ dias: [], total: 0 });
+    // Un report NULO (papel anulado) no marca X.
+    const [[consulta]] = prisma.trabajoExtraordinario.findMany.mock
+      .calls as unknown as [[{ where: unknown }]];
+    expect(consulta.where).toMatchObject({ nulo: false });
   });
 
   it('una tarjeta de un mes vecino que entra por el margen de la query NO marca X en este mes', async () => {

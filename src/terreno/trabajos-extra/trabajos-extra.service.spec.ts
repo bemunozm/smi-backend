@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -1415,6 +1416,298 @@ describe('TrabajosExtraService', () => {
       expect(ownerQuery).toEqual({
         where: { id: ID },
         select: { createdById: true },
+      });
+    });
+  });
+
+  describe('report nulo — papel anulado, folio registrado', () => {
+    /** Lo mínimo de un nulo: N°, fecha, foto (DTO_REPORT) + faena/turno. */
+    const nulo = {
+      nulo: true,
+      faena: 'Patillo',
+      turno: 'DIURNO',
+    } as const;
+    const crearNulo = (extra: Partial<CreateTrabajoExtraDto> = {}) =>
+      service.create({ ...DTO_REPORT, ...nulo, ...extra }, USER_ID);
+    const datosCreados = () =>
+      (
+        prisma.trabajoExtraordinario.create.mock.calls as unknown as Array<
+          [{ data: Record<string, unknown> }]
+        >
+      )[0][0].data;
+
+    it('sin equipo ni operador: 0 h, horómetros en 0, sin desglose y con la foto reclamada', async () => {
+      await crearNulo({ fecha: '2026-11-20' });
+
+      const data = datosCreados();
+      expect(data).toMatchObject({
+        nulo: true,
+        equipoId: null,
+        operatorId: null,
+        operador: null,
+        horometroInicial: 0,
+        horometroFinal: 0,
+        totalHoras: 0,
+        actividades: [],
+        otraActividad: null,
+        descripcion: '',
+        reportNumero: '4509',
+        fotoKey: 'trabajo-extra-photo/u1/report.jpg',
+      });
+      expect(data).not.toHaveProperty('detalleActividades');
+      expect(businessDayKey(data.fecha as Date)).toBe('2026-11-20');
+      expect(prisma.equipment.findUnique).not.toHaveBeenCalled();
+      expect(assertActive).not.toHaveBeenCalled();
+      expect(claimTmp).toHaveBeenCalledWith(
+        'tmp/u1/report.jpg',
+        USER_ID,
+        'trabajo-extra-photo',
+      );
+    });
+
+    it('con equipo, operador y motivo: los valida y guarda el nombre del catálogo', async () => {
+      await crearNulo({
+        equipoId: 'e1',
+        operatorId: 'op_1',
+        descripcion: '  Se tachó: folio mal impreso ',
+      });
+
+      expect(prisma.equipment.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'e1' } }),
+      );
+      expect(assertActive).toHaveBeenCalledWith('op_1');
+      expect(datosCreados()).toMatchObject({
+        nulo: true,
+        equipoId: 'e1',
+        operatorId: 'op_1',
+        operador: 'Juan Rojas',
+        totalHoras: 0,
+        descripcion: 'Se tachó: folio mal impreso',
+      });
+    });
+
+    it('un equipo que no existe → 404', async () => {
+      prisma.equipment.findUnique.mockResolvedValue(null);
+      await expect(crearNulo({ equipoId: 'nope' })).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('un folio ya usado → 409 FOLIO_EN_USO sin reclamar la foto', async () => {
+      prisma.trabajoExtraordinario.findFirst.mockResolvedValue({
+        id: 't9',
+        nulo: false,
+        fecha: new Date('2026-11-20T15:00:00Z'),
+        equipo: { internalCode: 'SEM 02' },
+      });
+      await expect(crearNulo({ reportNumero: '04509' })).rejects.toMatchObject({
+        response: {
+          code: 'FOLIO_EN_USO',
+          message:
+            'El N° de report 4509 ya está registrado (equipo SEM 02, fecha 20-11-2026).',
+        },
+      });
+      expect(claimTmp).not.toHaveBeenCalled();
+      expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    });
+
+    it('un folio tomado por un nulo sin equipo se nombra como «report nulo» en el 409', async () => {
+      prisma.trabajoExtraordinario.findFirst.mockResolvedValue({
+        id: 't9',
+        nulo: true,
+        fecha: new Date('2026-11-20T15:00:00Z'),
+        equipo: null,
+      });
+      await expect(
+        createAs({
+          equipoId: 'e1',
+          operatorId: 'op_1',
+          faena: 'Patillo',
+          turno: 'DIURNO',
+          horometroInicial: 1,
+          horometroFinal: 2,
+          detalle: detalleDe(['REGULACION_CARGA']),
+          descripcion: '',
+        }),
+      ).rejects.toMatchObject({
+        response: {
+          code: 'FOLIO_EN_USO',
+          message:
+            'El N° de report 4509 ya está registrado (report nulo, fecha 20-11-2026).',
+        },
+      });
+    });
+
+    it('con horómetros o actividades → 400, aunque se salte el pipe', async () => {
+      await expect(crearNulo({ horometroInicial: 1 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(
+        crearNulo({ detalle: detalleDe(['REGULACION_CARGA']) }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.trabajoExtraordinario.create).not.toHaveBeenCalled();
+    });
+
+    it('un Report normal sigue igual: sin `nulo`, con desglose y horas por horómetros', async () => {
+      await createAs({
+        equipoId: 'e1',
+        operatorId: 'op_1',
+        faena: 'Patillo',
+        turno: 'DIURNO',
+        horometroInicial: 1200,
+        horometroFinal: 1203.5,
+        detalle: detalleDe(['REGULACION_CARGA']),
+        descripcion: 'Carga',
+      });
+      const data = datosCreados();
+      expect(data).not.toHaveProperty('nulo');
+      expect(data).toMatchObject({ equipoId: 'e1', totalHoras: 3.5 });
+      expect(data.detalleActividades).toHaveLength(1);
+    });
+
+    describe('al corregir', () => {
+      const editor = { id: 'u1', name: 'Admin' };
+      const guardadoNulo = {
+        id: 't1',
+        nulo: true,
+        equipoId: null,
+        operatorId: null,
+        equipo: null,
+        operador: null,
+        faena: 'Patillo',
+        turno: 'DIURNO',
+        horometroInicial: 0,
+        horometroFinal: 0,
+        totalHoras: 0,
+        actividades: [],
+        otraActividad: null,
+        descripcion: '',
+        observaciones: null,
+        reportNumero: '4600',
+        detalleActividades: null,
+        fecha: new Date('2026-11-20T15:00:00Z'),
+      };
+      beforeEach(() => {
+        prisma.trabajoExtraordinario.findUnique.mockResolvedValue(guardadoNulo);
+        prisma.trabajoExtraordinario.update.mockImplementation(
+          ({ data }: { data: Record<string, unknown> }) => ({
+            ...guardadoNulo,
+            ...data,
+          }),
+        );
+        prisma.$transaction.mockImplementation(
+          (fn: (tx: typeof prisma) => unknown) => fn(prisma),
+        );
+      });
+
+      it('ADMIN corrige N°, fecha, motivo y equipo; queda en el historial', async () => {
+        prisma.equipment.findUnique.mockResolvedValue({
+          internalCode: 'SEM 02',
+        });
+        const res = await service.update(
+          't1',
+          {
+            reportNumero: '4601',
+            fecha: '2026-11-21',
+            descripcion: 'Mal folio',
+            equipoId: 'e2',
+          },
+          editor,
+          undefined,
+          'ADMIN',
+        );
+        expect(res).toMatchObject({
+          nulo: true,
+          reportNumero: '4601',
+          equipoId: 'e2',
+          descripcion: 'Mal folio',
+          totalHoras: 0,
+        });
+        expect(businessDayKey(res.fecha)).toBe('2026-11-21');
+        const cambios = (changeLog.record.mock.calls[0] as unknown[])[4] as {
+          field: string;
+          before: string;
+          after: string;
+        }[];
+        expect(cambios).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              field: 'equipoId',
+              before: 'Sin equipo',
+              after: 'SEM 02',
+            }),
+            expect.objectContaining({
+              field: 'fecha',
+              before: '20-11-2026',
+              after: '21-11-2026',
+            }),
+          ]),
+        );
+        expect(eventEmitter.emit).toHaveBeenCalledWith(
+          DOMAIN_EVENTS.RECORD_EDITED,
+          expect.objectContaining({
+            entityLabel: 'report nulo N° 4601 del 21-11-2026',
+          }),
+        );
+      });
+
+      it('sin rol de sesión un nulo no se edita (403)', async () => {
+        await expect(
+          service.update('t1', { descripcion: 'x' }, editor),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+      });
+
+      it('SECRETARIA también puede; un SUPERVISOR no (403)', async () => {
+        await expect(
+          service.update(
+            't1',
+            { descripcion: 'x' },
+            editor,
+            undefined,
+            'SECRETARIA',
+          ),
+        ).resolves.toBeDefined();
+        await expect(
+          service.update(
+            't1',
+            { descripcion: 'y' },
+            editor,
+            undefined,
+            'SUPERVISOR',
+          ),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+      });
+
+      it('horómetros o actividades en un nulo → 400 sin escribir', async () => {
+        await expect(
+          service.update(
+            't1',
+            { horometroFinal: 10 },
+            editor,
+            undefined,
+            'ADMIN',
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(prisma.trabajoExtraordinario.update).not.toHaveBeenCalled();
+      });
+
+      it('la fecha de un Report NORMAL no se corrige (400)', async () => {
+        prisma.trabajoExtraordinario.findUnique.mockResolvedValue({
+          ...guardadoNulo,
+          nulo: false,
+          equipoId: 'e1',
+          equipo: { internalCode: 'CA-011' },
+          operador: 'Juan Rojas',
+        });
+        await expect(
+          service.update(
+            't1',
+            { fecha: '2026-11-21' },
+            editor,
+            undefined,
+            'ADMIN',
+          ),
+        ).rejects.toBeInstanceOf(BadRequestException);
       });
     });
   });

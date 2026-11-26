@@ -379,6 +379,42 @@ describe('ActivityLogService', () => {
     });
   });
 
+  it('un report NULO sale marcado NULO, sin horas, y sin equipo ni operador si no los tiene', async () => {
+    prisma.trabajoExtraordinario.findMany.mockResolvedValue([
+      {
+        id: 'te3',
+        reportNumero: '4617',
+        nulo: true,
+        fecha: d('2026-11-12T13:00:00.000Z'),
+        operador: null,
+        totalHoras: 0,
+        createdAt: d('2026-11-12T13:00:00.000Z'),
+        createdById: 'sup1',
+        equipo: null,
+      },
+      {
+        id: 'te4',
+        reportNumero: '4618',
+        nulo: true,
+        fecha: d('2026-11-12T13:00:00.000Z'),
+        operador: 'Pedro Rojas',
+        totalHoras: 0,
+        createdAt: d('2026-11-12T13:00:00.000Z'),
+        createdById: 'sup1',
+        equipo: { internalCode: 'CAM-31' },
+      },
+    ]);
+
+    const res = await service.feed('2026-11-12', '2026-11-12');
+
+    expect(evento(res, 'extra:created:te3')).toMatchObject({
+      summary: 'N° 4617 · NULO',
+    });
+    expect(evento(res, 'extra:created:te4')).toMatchObject({
+      summary: 'N° 4618 · NULO · CAM-31 · Pedro Rojas',
+    });
+  });
+
   it('sin `from`/`to` cubre los últimos 7 días terminando hoy', async () => {
     const res = await service.feed();
 

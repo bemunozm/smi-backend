@@ -1032,9 +1032,20 @@ model TrabajoExtraordinario {
   /// columna se numeraron por orden de creación (migración
   /// `trabajo_extra_numero`).
   numero           Int       @unique @default(autoincrement())
-  equipoId         String    @map("equipo_id")
-  equipo           Equipment @relation(fields: [equipoId], references: [id])
-  operador         String // nombre y apellido — snapshot armado por el SERVIDOR; ver `operatorId` para el catálogo
+  /// Report NULO (papel anulado, «NULO»): se registra solo para que el folio
+  /// no deje un hueco en la secuencia. No suma horas, cobro, HM, KPIs ni
+  /// asistencia: 0 h, sin desglose, horómetros en 0; equipo y operador son
+  /// opcionales. Un CHECK (migración `report_nulo`) exige equipo y operador
+  /// en los que NO son nulos.
+  nulo             Boolean   @default(false)
+  /// Null solo en un report nulo sin equipo (ver `nulo`).
+  equipoId         String?   @map("equipo_id")
+  /// `Restrict` explícito: el de una relación opcional sería `SetNull`, y un
+  /// equipo con reports no se borra (igual que antes de ser opcional).
+  equipo           Equipment? @relation(fields: [equipoId], references: [id], onDelete: Restrict)
+  /// Nombre y apellido — snapshot armado por el SERVIDOR; ver `operatorId`
+  /// para el catálogo. Null solo en un report nulo sin operador.
+  operador         String?
   /// Operador del catálogo propio (`Operator`), aditivo sobre `operador`
   /// (que se mantiene como snapshot de texto, igual que en `RegistroHorometro`
   /// — el nombre no cambia con retroactividad si el operador se renombra o
