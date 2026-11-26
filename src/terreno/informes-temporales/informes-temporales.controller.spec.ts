@@ -47,6 +47,18 @@ describe('InformesTemporalesController (roles)', () => {
     ]);
   });
 
+  it('subir un informe antiguo: el supervisor temporal y la oficina', () => {
+    const roles = [ROLES.SUPERVISOR_TEMPORAL, ROLES.ADMIN, ROLES.SECRETARIA];
+    expect(rolesDe('createAntiguo')).toEqual(roles);
+    expect(rolesDe('numeroLibre')).toEqual(roles);
+  });
+
+  it('`numero-libre` se declara antes de `:id`', () => {
+    const rutas = rutasGet();
+    expect(rutas.indexOf('numero-libre')).toBeGreaterThanOrEqual(0);
+    expect(rutas.indexOf('numero-libre')).toBeLessThan(rutas.indexOf(':id'));
+  });
+
   it('el listado completo, corregir y eliminar no son del supervisor temporal', () => {
     expect(rolesDe('findAll')).not.toContain(ROLES.SUPERVISOR_TEMPORAL);
     expect(rolesDe('update')).not.toContain(ROLES.SUPERVISOR_TEMPORAL);

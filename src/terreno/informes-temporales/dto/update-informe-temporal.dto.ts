@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
+  ArrayNotEmpty,
   IsArray,
   IsIn,
   IsNotEmpty,
@@ -18,6 +19,10 @@ import {
   MAX_PERSONAL_POR_ACTIVIDAD,
   PersonalInformeDto,
 } from './create-informe-temporal.dto';
+import {
+  EquipoRegistradoDto,
+  MAX_EQUIPOS_INFORME,
+} from './create-informe-antiguo.dto';
 
 /**
  * `PATCH /api/informes-temporales/:id` — corrección de un informe ya enviado.
@@ -74,4 +79,14 @@ export class UpdateInformeTemporalDto {
   @IsString()
   @MaxLength(120)
   supervisorResponsable2?: string;
+
+  /** Solo en un informe subido después (`antiguo`): reemplaza COMPLETOS sus
+   * equipos escritos a mano. En uno normal es 400 (sus equipos son tarjetas). */
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty({ message: 'Agrega al menos un equipo.' })
+  @ArrayMaxSize(MAX_EQUIPOS_INFORME)
+  @ValidateNested({ each: true })
+  @Type(() => EquipoRegistradoDto)
+  equipos?: EquipoRegistradoDto[];
 }

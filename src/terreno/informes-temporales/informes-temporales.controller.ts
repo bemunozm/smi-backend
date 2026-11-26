@@ -14,7 +14,9 @@ import { Roles, Session } from '@thallesp/nestjs-better-auth';
 import type { UserSession } from '@thallesp/nestjs-better-auth';
 
 import { ROLES } from '../../auth/roles';
+import { CreateInformeAntiguoDto } from './dto/create-informe-antiguo.dto';
 import { CreateInformeTemporalDto } from './dto/create-informe-temporal.dto';
+import { QueryNumeroLibreDto } from './dto/query-numero-libre.dto';
 import { QueryInformesTemporalesDto } from './dto/query-informes-temporales.dto';
 import { UpdateInformeTemporalDto } from './dto/update-informe-temporal.dto';
 import { InformesTemporalesService } from './informes-temporales.service';
@@ -35,6 +37,34 @@ export class InformesTemporalesController {
     return {
       data: await this.service.create(dto, session),
       message: 'Informe registrado',
+    };
+  }
+
+  /**
+   * «Subir informe antiguo»: un informe en papel sin tarjetas, con sus equipos
+   * a mano. El supervisor temporal sube los suyos; la oficina elige de quién es.
+   */
+  @Post('antiguo')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles([ROLES.SUPERVISOR_TEMPORAL, ROLES.ADMIN, ROLES.SECRETARIA])
+  async createAntiguo(
+    @Body() dto: CreateInformeAntiguoDto,
+    @Session() session: UserSession,
+  ) {
+    return {
+      data: await this.service.createAntiguo(dto, session),
+      message: 'Informe registrado',
+    };
+  }
+
+  /** ¿El N° está libre? Para avisar en el formulario del informe antiguo.
+   * Va ANTES de `:id` para que `numero-libre` no se lea como un id. */
+  @Get('numero-libre')
+  @Roles([ROLES.SUPERVISOR_TEMPORAL, ROLES.ADMIN, ROLES.SECRETARIA])
+  async numeroLibre(@Query() query: QueryNumeroLibreDto) {
+    return {
+      data: await this.service.numeroLibre(query.numero),
+      message: 'ok',
     };
   }
 

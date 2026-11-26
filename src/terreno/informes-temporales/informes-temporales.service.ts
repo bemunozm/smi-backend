@@ -16,9 +16,18 @@ import {
 } from '../../change-log/change-log.service';
 import { toEditor } from '../../change-log/current-editor.decorator';
 import { ERROR_CODES } from '../../common/errors/error-codes';
-import { createOrReturn } from '../../common/idempotency/create-or-return';
+import {
+  createOrReturn,
+  isUniqueViolationOn,
+} from '../../common/idempotency/create-or-return';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { formatDateOnly, parseDateOnlyUtc } from '../../shifts/date-only';
+import { businessDayInstant } from '../../common/dates/business-time';
+import { formatNumber } from '../../common/format/number';
+import {
+  assertOldRecordDateWithinWindow,
+  formatDateOnly,
+  parseDateOnlyUtc,
+} from '../../shifts/date-only';
 import { ShiftsService } from '../../shifts/shifts.service';
 import { StorageService } from '../../storage/storage.service';
 import {
@@ -26,6 +35,10 @@ import {
   MAX_PERSONAL_POR_ACTIVIDAD,
   type PersonalInformeDto,
 } from './dto/create-informe-temporal.dto';
+import {
+  CreateInformeAntiguoDto,
+  type EquipoRegistradoDto,
+} from './dto/create-informe-antiguo.dto';
 import { QueryInformesTemporalesDto } from './dto/query-informes-temporales.dto';
 import { UpdateInformeTemporalDto } from './dto/update-informe-temporal.dto';
 
@@ -82,9 +95,49 @@ export interface InformeTemporalTarjetaResponse {
   fechaSalida: Date | null;
 }
 
+/**
+ * Un equipo de un informe subido después (`antiguo`), escrito a mano: así se
+ * guarda en `equipos_registrados` y así sale a la API. `codigo`, `nombre` y
+ * `unidad` son un snapshot del catálogo al subirlo.
+ */
+export interface EquipoRegistrado {
+  equipoId: string;
+  codigo: string;
+  /** Tipo, marca y modelo (como `InformeTemporalTarjetaResponse.equipo.name`). */
+  nombre: string;
+  /** `km` en un liviano (camioneta), `h` en el resto. */
+  unidad: 'h' | 'km';
+  inicial: number;
+  final: number;
+  litros: number | null;
+}
+
+/** `SEM 02 4.713 → 4.720 h · 12 L; …` — cómo se leen en el historial. */
+function resumenEquipos(equipos: EquipoRegistrado[]): string {
+  if (equipos.length === 0) return '—';
+  return equipos
+    .map(
+      (e) =>
+        `${e.codigo} ${formatNumber(e.inicial)} → ${formatNumber(e.final)} ${e.unidad}${
+          e.litros != null ? ` · ${formatNumber(e.litros)} L` : ''
+        }`,
+    )
+    .join('; ');
+}
+
+/** Lo que responde `GET /informes-temporales/numero-libre`. */
+export interface NumeroLibreResponse {
+  numero: number;
+  libre: boolean;
+}
+
 export interface InformeTemporalResponse {
   id: string;
   numero: number;
+  /** Subido después: sin tarjetas, con `equiposRegistrados`. */
+  antiguo: boolean;
+  /** Los equipos escritos a mano de un informe `antiguo` (`[]` en uno normal). */
+  equiposRegistrados: EquipoRegistrado[];
   /** `YYYY-MM-DD`, mismo criterio que `Shift.date` en la API. */
   fecha: string;
   turno: string;
@@ -138,6 +191,22 @@ const CAMPOS_INFORME: readonly ComparableField<DatosInforme>[] = [
   { field: 'supervisorResponsable1', label: 'Supervisor responsable 1' },
   { field: 'supervisorResponsable2', label: 'Supervisor responsable 2' },
 ];
+
+/** ADMIN o SECRETARIA: la oficina, que ve y corrige todos los informes. */
+function esStaff(session: UserSession): boolean {
+  return (
+    sessionHasRole(session.user.role, ROLES.ADMIN) ||
+    sessionHasRole(session.user.role, ROLES.SECRETARIA)
+  );
+}
+
+/** `equipos_registrados` tal como se guardó; `[]` si es null (informe normal). */
+function equiposDe(valor: Prisma.JsonValue | null): EquipoRegistrado[] {
+  return Array.isArray(valor) ? (valor as unknown as EquipoRegistrado[]) : [];
+}
+
+/** `YYYY-MM-DD` → `DD-MM-YYYY`. */
+const fechaLegible = (dia: string) => dia.split('-').reverse().join('-');
 
 /**
  * Informes del supervisor temporal: su jornada no tiene `Shift` ni reporte de
@@ -261,10 +330,168 @@ export class InformesTemporalesService {
     const inicio = new Date(
       Math.min(...pendientes.map((card) => card.fecha.getTime())),
     );
-    await this.prisma.$transaction(async (tx) => {
-      await tx.informeTemporal.create({
+    await this.conNumeroAutomatico((tx, numero) =>
+      this.guardarNuevo(tx, numero, dto, session, personal, enlazar, inicio),
+    );
+
+    const creado = await this.findRecord(dto.id);
+    // Recién creado en la tx de arriba: solo falta si alguien lo borró entre
+    // medio, y entonces no hay nada que devolver.
+    if (!creado) throw new ConflictException('El informe ya no existe.');
+    return this.shape(creado);
+  }
+
+  /**
+   * Corre la tx del informe normal con el siguiente N° LIBRE: un informe
+   * subido después pudo tomar el que tocaba (`siguienteNumero` se lo salta),
+   * y si uno se lo lleva justo entre medio (P2002 sobre `numero`) se reintenta
+   * con el que sigue.
+   */
+  private async conNumeroAutomatico(
+    fn: (tx: Prisma.TransactionClient, numero: number) => Promise<void>,
+  ): Promise<void> {
+    for (let intento = 1; ; intento++) {
+      try {
+        await this.prisma.$transaction(async (tx) =>
+          fn(tx, await this.siguienteNumero(tx)),
+        );
+        return;
+      } catch (error) {
+        if (intento < 3 && isUniqueViolationOn(error, 'numero')) continue;
+        throw error;
+      }
+    }
+  }
+
+  /** El próximo valor de la secuencia que ningún informe tenga tomado. */
+  private async siguienteNumero(tx: Prisma.TransactionClient): Promise<number> {
+    for (;;) {
+      const [{ numero }] = await tx.$queryRaw<{ numero: number }[]>`
+        SELECT nextval(pg_get_serial_sequence('informe_temporal', 'numero'))::int AS numero`;
+      // ¿Ya lo tomó un informe subido después (N° del papel)?
+      const tomados = await tx.informeTemporal.count({ where: { numero } });
+      if (tomados === 0) return numero;
+    }
+  }
+
+  /** El informe normal y el enlace de sus tarjetas, en la tx de `conNumeroAutomatico`. */
+  private async guardarNuevo(
+    tx: Prisma.TransactionClient,
+    numero: number,
+    dto: CreateInformeTemporalDto,
+    session: UserSession,
+    personal: InformePersonal[],
+    enlazar: string[],
+    inicio: Date,
+  ): Promise<void> {
+    const userId = session.user.id;
+    await tx.informeTemporal.create({
+      data: {
+        id: dto.id,
+        numero,
+        fecha: parseDateOnlyUtc(dto.fecha),
+        turno: dto.turno,
+        actividad1: dto.actividad1.trim(),
+        actividad2: dto.actividad2?.trim() || null,
+        personal: personal as unknown as Prisma.InputJsonValue,
+        observaciones: dto.observaciones || null,
+        supervisorResponsable1: dto.supervisorResponsable1.trim(),
+        supervisorResponsable2: dto.supervisorResponsable2?.trim() || null,
+        supervisorId: userId,
+        supervisorNombre: session.user.name?.trim() || session.user.email,
+        inicio,
+        fin: new Date(),
+      },
+    });
+    // Solo las que siguen sin informe: si otro envío concurrente ya se
+    // llevó alguna, el conteo no cuadra y se deshace todo (el informe
+    // incluido) en vez de quedar con un lote a medias.
+    const { count } = await tx.registroHorometro.updateMany({
+      where: {
+        id: { in: enlazar },
+        supervisorId: userId,
+        informeTemporalId: null,
+      },
+      data: { informeTemporalId: dto.id },
+    });
+    if (count !== enlazar.length) {
+      throw new ConflictException({
+        message:
+          'Algunas tarjetas ya quedaron en otro informe. Recarga y vuelve a cerrar.',
+        code: ERROR_CODES.INFORME_TARJETAS_DESCUADRADAS,
+      });
+    }
+  }
+
+  /**
+   * `POST /api/informes-temporales/antiguo` — «Subir informe antiguo»: el
+   * informe en papel de una jornada pasada, SIN tarjetas. Sus equipos van a
+   * mano (`equiposRegistrados`) y no abren ni cierran nada, ni mueven
+   * contadores. El N° es el del papel y tiene que estar libre (409
+   * `NUMERO_EN_USO`).
+   *
+   * Quién: el supervisor temporal sube los suyos (`supervisorId` no aplica);
+   * ADMIN/SECRETARIA eligen a qué supervisor temporal pertenece.
+   *
+   * Idempotente por `dto.id` (la cola offline reintenta): el reintento del
+   * supervisor devuelve el suyo; el de la oficina, cualquiera subido después
+   * (la oficina ve todos los informes).
+   */
+  async createAntiguo(
+    dto: CreateInformeAntiguoDto,
+    session: UserSession,
+  ): Promise<InformeTemporalResponse> {
+    const userId = session.user.id;
+    const staff = esStaff(session);
+    return createOrReturn({
+      id: dto.id,
+      userId,
+      conflictMessage: 'Ya existe un informe con ese id.',
+      findExisting: async (id) => {
+        const existing = await this.findRecord(id);
+        if (!existing) return null;
+        return {
+          ownerId:
+            existing.supervisorId === userId || (staff && existing.antiguo)
+              ? userId
+              : existing.supervisorId,
+          result: () => this.shape(existing),
+        };
+      },
+      create: () => this.createAntiguoNuevo(dto, session, staff),
+    });
+  }
+
+  private async createAntiguoNuevo(
+    dto: CreateInformeAntiguoDto,
+    session: UserSession,
+    staff: boolean,
+  ): Promise<InformeTemporalResponse> {
+    const userId = session.user.id;
+    assertOldRecordDateWithinWindow(dto.fecha);
+    const personal = this.validarPersonal(dto);
+    const supervisor = await this.supervisorDelAntiguo(dto, session, staff);
+    const equipos = await this.validarEquipos(dto.equipos);
+    await this.assertNumeroLibre(dto.numero);
+
+    // La foto se reclama al final, ya validado todo: un rechazo antes no deja
+    // una foto huérfana en el bucket.
+    const fotoKey = dto.fotoKey
+      ? await this.storage.claimTmp(dto.fotoKey, userId, 'trabajo-extra-photo')
+      : null;
+    // Sin tarjetas no hay ventana real: el instante va DENTRO del día del
+    // informe (mismo criterio que la carga histórica).
+    const instante = businessDayInstant(
+      dto.fecha,
+      dto.turno === 'NOCTURNO' ? '20:30' : '12:00',
+    );
+    try {
+      await this.prisma.informeTemporal.create({
         data: {
           id: dto.id,
+          numero: dto.numero,
+          antiguo: true,
+          equiposRegistrados: equipos as unknown as Prisma.InputJsonValue,
           fecha: parseDateOnlyUtc(dto.fecha),
           turno: dto.turno,
           actividad1: dto.actividad1.trim(),
@@ -273,37 +500,131 @@ export class InformesTemporalesService {
           observaciones: dto.observaciones || null,
           supervisorResponsable1: dto.supervisorResponsable1.trim(),
           supervisorResponsable2: dto.supervisorResponsable2?.trim() || null,
-          supervisorId: userId,
-          supervisorNombre: session.user.name?.trim() || session.user.email,
-          inicio,
-          fin: new Date(),
+          supervisorId: supervisor.id,
+          supervisorNombre: supervisor.nombre,
+          inicio: instante,
+          fin: instante,
+          fotoKey,
         },
       });
-      // Solo las que siguen sin informe: si otro envío concurrente ya se
-      // llevó alguna, el conteo no cuadra y se deshace todo (el informe
-      // incluido) en vez de quedar con un lote a medias.
-      const { count } = await tx.registroHorometro.updateMany({
-        where: {
-          id: { in: enlazar },
-          supervisorId: userId,
-          informeTemporalId: null,
-        },
-        data: { informeTemporalId: dto.id },
-      });
-      if (count !== enlazar.length) {
+    } catch (error) {
+      // Otro se llevó el N° justo entre el chequeo y el insert.
+      if (isUniqueViolationOn(error, 'numero')) {
+        await this.assertNumeroLibre(dto.numero);
         throw new ConflictException({
-          message:
-            'Algunas tarjetas ya quedaron en otro informe. Recarga y vuelve a cerrar.',
-          code: ERROR_CODES.INFORME_TARJETAS_DESCUADRADAS,
+          message: `El N° de informe ${dto.numero} ya está registrado.`,
+          code: ERROR_CODES.NUMERO_EN_USO,
         });
       }
-    });
+      throw error;
+    }
 
     const creado = await this.findRecord(dto.id);
-    // Recién creado en la tx de arriba: solo falta si alguien lo borró entre
-    // medio, y entonces no hay nada que devolver.
     if (!creado) throw new ConflictException('El informe ya no existe.');
     return this.shape(creado);
+  }
+
+  /** `GET /informes-temporales/numero-libre?numero=`: para avisar en el formulario. */
+  async numeroLibre(numero: number): Promise<NumeroLibreResponse> {
+    const tomado = await this.prisma.informeTemporal.findUnique({
+      where: { numero },
+      select: { id: true },
+    });
+    return { numero, libre: tomado == null };
+  }
+
+  /** 409 `NUMERO_EN_USO` si otro informe ya tiene ese N°. */
+  private async assertNumeroLibre(numero: number): Promise<void> {
+    const tomado = await this.prisma.informeTemporal.findUnique({
+      where: { numero },
+      select: { fecha: true, supervisorNombre: true },
+    });
+    if (tomado) {
+      throw new ConflictException({
+        message: `El N° de informe ${numero} ya está registrado (${tomado.supervisorNombre}, ${fechaLegible(formatDateOnly(tomado.fecha))}).`,
+        code: ERROR_CODES.NUMERO_EN_USO,
+      });
+    }
+  }
+
+  /** El supervisor temporal dueño del informe subido después. */
+  private async supervisorDelAntiguo(
+    dto: CreateInformeAntiguoDto,
+    session: UserSession,
+    staff: boolean,
+  ): Promise<{ id: string; nombre: string }> {
+    if (!staff) {
+      if (dto.supervisorId && dto.supervisorId !== session.user.id) {
+        throw new ForbiddenException({
+          message: 'Solo puedes subir tus propios informes.',
+          code: ERROR_CODES.NOT_OWNER,
+        });
+      }
+      return {
+        id: session.user.id,
+        nombre: session.user.name?.trim() || session.user.email,
+      };
+    }
+    if (!dto.supervisorId) {
+      throw new BadRequestException(
+        'Elige a qué supervisor temporal pertenece el informe.',
+      );
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: dto.supervisorId },
+      select: { id: true, name: true, email: true, role: true },
+    });
+    if (!user || !sessionHasRole(user.role, ROLES.SUPERVISOR_TEMPORAL)) {
+      throw new BadRequestException(
+        'El usuario elegido no es un supervisor temporal.',
+      );
+    }
+    return { id: user.id, nombre: user.name?.trim() || user.email };
+  }
+
+  /**
+   * Los equipos del papel con su snapshot del catálogo: cada uno existe, va
+   * una sola vez y su lectura final no es menor que la inicial.
+   */
+  private async validarEquipos(
+    filas: EquipoRegistradoDto[],
+  ): Promise<EquipoRegistrado[]> {
+    const ids = filas.map((f) => f.equipoId);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('Un equipo viene dos veces en el informe.');
+    }
+    const catalogo = await this.prisma.equipment.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        internalCode: true,
+        equipmentClass: true,
+        type: true,
+        brand: true,
+        model: true,
+      },
+    });
+    const porId = new Map(catalogo.map((e) => [e.id, e]));
+    return filas.map((f): EquipoRegistrado => {
+      const equipo = porId.get(f.equipoId);
+      if (!equipo) throw new NotFoundException('Equipo no encontrado');
+      if (f.final < f.inicial) {
+        throw new BadRequestException(
+          `${equipo.internalCode}: la lectura final (${formatNumber(f.final)}) no puede ser menor que la inicial (${formatNumber(f.inicial)}).`,
+        );
+      }
+      return {
+        equipoId: equipo.id,
+        codigo: equipo.internalCode,
+        nombre: [equipo.type, equipo.brand, equipo.model]
+          .filter(Boolean)
+          .join(' '),
+        unidad: equipo.equipmentClass === 'LIGHT' ? 'km' : 'h',
+        inicial: f.inicial,
+        final: f.final,
+        litros: f.litros ?? null,
+      };
+    });
   }
 
   /**
@@ -348,10 +669,7 @@ export class InformesTemporalesService {
   ): Promise<InformeTemporalResponse> {
     const informe = await this.findRecord(id);
     if (!informe) throw new NotFoundException('Informe no encontrado');
-    const esStaff =
-      sessionHasRole(session.user.role, ROLES.ADMIN) ||
-      sessionHasRole(session.user.role, ROLES.SECRETARIA);
-    if (!esStaff && informe.supervisorId !== session.user.id) {
+    if (!esStaff(session) && informe.supervisorId !== session.user.id) {
       throw new ForbiddenException({
         message: 'No puedes ver el informe de otro supervisor',
         code: ERROR_CODES.NOT_OWNER,
@@ -413,6 +731,32 @@ export class InformesTemporalesService {
       };
 
       const diff = diffFields<DatosInforme>(antes, despues, CAMPOS_INFORME);
+
+      // Los equipos escritos a mano: solo en un informe subido después (en
+      // uno normal son tarjetas, que se corrigen una por una). Son JSON: se
+      // comparan y se registran por su resumen legible.
+      let equipos: EquipoRegistrado[] | null = null;
+      if (dto.equipos) {
+        if (!actual.antiguo) {
+          throw new BadRequestException(
+            'Los equipos de este informe son tarjetas: se corrigen una por una.',
+          );
+        }
+        const nuevos = await this.validarEquipos(dto.equipos);
+        const resumenAntes = resumenEquipos(
+          equiposDe(actual.equiposRegistrados),
+        );
+        const resumenDespues = resumenEquipos(nuevos);
+        if (resumenAntes !== resumenDespues) {
+          equipos = nuevos;
+          diff.push({
+            field: 'equiposRegistrados',
+            label: 'Equipos',
+            before: resumenAntes,
+            after: resumenDespues,
+          });
+        }
+      }
       if (diff.length === 0) return;
 
       await tx.informeTemporal.update({
@@ -421,6 +765,11 @@ export class InformesTemporalesService {
           ...despues,
           fecha: parseDateOnlyUtc(despues.fecha),
           personal: despues.personal as unknown as Prisma.InputJsonValue,
+          ...(equipos
+            ? {
+                equiposRegistrados: equipos as unknown as Prisma.InputJsonValue,
+              }
+            : {}),
         },
       });
       await this.changeLog.record(tx, 'informe_temporal', id, editor, diff);
@@ -574,9 +923,17 @@ export class InformesTemporalesService {
   private async shape(
     informe: InformeRecord,
   ): Promise<InformeTemporalResponse> {
-    const { tarjetas, fecha, personal, fotoKey, ...campos } = informe;
+    const {
+      tarjetas,
+      fecha,
+      personal,
+      fotoKey,
+      equiposRegistrados,
+      ...campos
+    } = informe;
     return {
       ...campos,
+      equiposRegistrados: equiposDe(equiposRegistrados),
       fecha: formatDateOnly(fecha),
       fotoUrl: fotoKey ? await this.storage.sign(fotoKey) : null,
       personal: personal as unknown as InformePersonal[],
